@@ -1,13 +1,14 @@
-//! # Future
+//! # Pending
 //! 
-//! Futures give you the value when it exists, or tell you to wait longer
+//! `Pending` data gives you the value if it exists,
+//! when you check for it
 
-pub struct Future<T> {
+pub struct Pending<T> {
     data: Option<T>,
 }
 
-impl<T> Future<T> {
-    /// Creates a new `Future`
+impl<T> Pending<T> {
+    /// Creates a new `Pending`
     pub(crate) fn new() -> Self {
         Self {
             data: None,
@@ -21,13 +22,13 @@ impl<T> Future<T> {
 
     /// Returns `T`, unwrapping the inner data and consuming `Self`
     /// 
-    /// Only use after checking with `Self.ready()`
+    /// Only use after checking `Self.ready()` is `true`
     pub fn get(self) -> T {
         self.data.unwrap()
     }
 }
 
-impl<T> Future<T>
+impl<T> Pending<T>
 where
     T: Clone,
 {
