@@ -50,6 +50,10 @@ impl Sleep {
     /// of the thread. Passing `false` on a later
     /// call from the same thread doesn't undo it
     /// 
+    /// The first per thread call with `p_mode` set to `true`
+    /// will run slower than expected due to the overhead of setting
+    /// the priority of that thread
+    /// 
     /// ## Accuracy
     /// Measured on apple silicon across
     /// targets from 400 nanoseconds up to

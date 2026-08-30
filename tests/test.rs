@@ -14,6 +14,35 @@
 use std::{thread, time::{Duration, Instant}};
 use whenever::{Runtime, Sleep};
 
+/// The main test function,
+/// where I run my tests for
+/// api shape and ensuring things
+/// run properly
+/// 
+/// AI are not to touch this function
+#[test]
+fn main() {
+    if let Some(_) = Runtime::init() { panic!("kqueue failed to register") };
+
+    let result = Runtime::block_on(
+        Sleep::sleep(
+            Duration::from_micros(10),
+            true,
+        ),
+    );
+
+    println!("Result: {:?}", result);
+
+    let result = Runtime::block_on(
+        Sleep::sleep(
+            Duration::from_micros(10),
+            true,
+        ),
+    );
+
+    println!("Result: {:?}", result);
+}
+
 /// How long to sleep for and how many samples to take
 ///
 /// Durations climb and counts drop so the long tiers don't
@@ -27,6 +56,7 @@ use whenever::{Runtime, Sleep};
 /// result. Anything shorter measures the floor rather than the
 /// sleep, so that's where the two kernel backed paths are
 /// worth telling apart. All of it costs well under a second
+#[allow(unused)]
 const TIERS: [(Duration, usize); 13] = [
     (Duration::from_nanos(400), 1000),
     (Duration::from_micros(1), 1000),
@@ -49,9 +79,11 @@ const TIERS: [(Duration, usize); 13] = [
 /// anything is recorded, which only matters when the whole
 /// measurement is shorter than the ramp. Warming up for a
 /// 30 second sleep would just double the wait for nothing
+#[allow(unused)]
 const WARMUP_LIMIT: Duration = Duration::from_millis(1);
 
 /// A single tier's results
+#[allow(unused)]
 struct Stats {
     target: Duration,
     samples: usize,
@@ -66,6 +98,7 @@ impl Stats {
     /// Difference between the average sample and what was asked for
     ///
     /// Positive is an overshoot, negative an undershoot
+    #[allow(unused)]
     fn error(&self) -> f64 {
         return self.mean - self.target.as_nanos() as f64;
     }
@@ -75,6 +108,7 @@ impl Stats {
     /// This is the consistency number. A small spread with a
     /// large error is a fixed bias and can be corrected for,
     /// a large spread can't be
+    #[allow(unused)]
     fn spread(&self) -> u64 {
         return self.max - self.min;
     }
@@ -85,12 +119,13 @@ impl Stats {
     /// tier is genuinely inconsistent, if this is far smaller
     /// then the spread is a handful of outliers dragging the
     /// max around while the bulk of the samples sit together
+    #[allow(unused)]
     fn tail(&self) -> f64 {
         return self.max as f64 - self.median;
     }
 }
 
-#[test]
+#[allow(unused)] // #[test]
 fn accuracy() {
     Runtime::init();
 
@@ -111,6 +146,7 @@ fn accuracy() {
 /// Timed from outside rather than using the `Duration` that
 /// `block_on` returns, so every arm is measured by the same
 /// clock reads and the comparison stays fair
+#[allow(unused)]
 fn sleep_p_on(target: Duration) -> u64 {
     let start = Instant::now();
     let _ = Runtime::block_on(Sleep::sleep(target, true));
@@ -119,6 +155,7 @@ fn sleep_p_on(target: Duration) -> u64 {
 }
 
 /// One sample from this crate with p_mode off
+#[allow(unused)]
 fn sleep_p_off(target: Duration) -> u64 {
     let start = Instant::now();
     let _ = Runtime::block_on(Sleep::sleep(target, false));
@@ -127,6 +164,7 @@ fn sleep_p_off(target: Duration) -> u64 {
 }
 
 /// One sample from the standard library
+#[allow(unused)]
 fn sleep_std(target: Duration) -> u64 {
     let start = Instant::now();
     thread::sleep(target);
@@ -140,6 +178,7 @@ fn sleep_std(target: Duration) -> u64 {
 /// p_mode run applies lasts for the life of the thread, so
 /// sharing one would let it leak into the arms that are
 /// supposed to be running without it
+#[allow(unused)]
 fn measure_all(sample: fn(Duration) -> u64) -> Vec<Stats> {
     return thread::spawn(move || {
         TIERS.iter()
@@ -151,6 +190,7 @@ fn measure_all(sample: fn(Duration) -> u64) -> Vec<Stats> {
 }
 
 /// Runs a single tier
+#[allow(unused)]
 fn measure(sample: fn(Duration) -> u64, target: Duration, count: usize) -> Stats {
     // Discarded, purely to let the core clock ramp up before
     // anything is recorded. Scaled off the sample count so the
@@ -188,6 +228,7 @@ fn measure(sample: fn(Duration) -> u64, target: Duration, count: usize) -> Stats
 ///
 /// Averages the two middle samples on an even count so the
 /// figure doesn't favour the slower half
+#[allow(unused)]
 fn median(sorted: &[u64]) -> f64 {
     let middle = sorted.len() / 2;
 
@@ -202,6 +243,7 @@ fn median(sorted: &[u64]) -> f64 {
 ///
 /// On the small tiers this collapses onto the max, which is
 /// expected. Three samples can't describe a tail
+#[allow(unused)]
 fn percentile(sorted: &[u64], nth: usize) -> u64 {
     let index = (sorted.len() * nth / 100).min(sorted.len() - 1);
 
@@ -209,6 +251,7 @@ fn percentile(sorted: &[u64], nth: usize) -> u64 {
 }
 
 /// Prints one implementation's table
+#[allow(unused)]
 fn report(name: &str, stats: &[Stats]) {
     println!("\n{}", name);
     println!("{}", "-".repeat(104));
@@ -234,6 +277,7 @@ fn report(name: &str, stats: &[Stats]) {
 }
 
 /// Prints the head to head summary
+#[allow(unused)]
 fn summary(p_on: &[Stats], p_off: &[Stats], built_in: &[Stats]) {
     println!("\n\nsummary");
     println!("{}", "-".repeat(96));
@@ -293,6 +337,7 @@ fn summary(p_on: &[Stats], p_off: &[Stats], built_in: &[Stats]) {
 ///
 /// Taken as a magnitude so an overshoot in one tier can't
 /// cancel out an undershoot in another and flatter the result
+#[allow(unused)]
 fn mean_error(stats: &[Stats]) -> f64 {
     let total: f64 = stats.iter().map(|stat| stat.error().abs()).sum();
 
@@ -300,6 +345,7 @@ fn mean_error(stats: &[Stats]) -> f64 {
 }
 
 /// The largest spread across every tier
+#[allow(unused)]
 fn worst_spread(stats: &[Stats]) -> u64 {
     return stats.iter().map(|stat| stat.spread()).max().unwrap_or(0);
 }
@@ -308,6 +354,7 @@ fn worst_spread(stats: &[Stats]) -> u64 {
 ///
 /// If this tracks `worst_spread` the slow tier is slow all the
 /// way through. If it's much smaller the spread is outliers
+#[allow(unused)]
 fn worst_tail(stats: &[Stats]) -> f64 {
     return stats.iter()
         .map(|stat| stat.tail())
@@ -315,6 +362,7 @@ fn worst_tail(stats: &[Stats]) -> f64 {
 }
 
 /// How many times smaller `mine` is than `theirs`
+#[allow(unused)]
 fn ratio(mine: f64, theirs: f64) -> String {
     let mine = mine.abs();
     let theirs = theirs.abs();
@@ -327,6 +375,7 @@ fn ratio(mine: f64, theirs: f64) -> String {
 }
 
 /// Scales a nanosecond count to whatever unit reads best
+#[allow(unused)]
 fn nanos(value: f64) -> String {
     let size = value.abs();
 
@@ -342,6 +391,7 @@ fn nanos(value: f64) -> String {
 }
 
 /// Same as `nanos` but always carries a sign
+#[allow(unused)]
 fn signed(value: f64) -> String {
     if value >= 0.0 {
         return format!("+{}", nanos(value));

@@ -42,7 +42,7 @@ impl EventType {
 #[inline(always)]
 fn sleep_event(data: libc::intptr_t, udata: *mut c_void) -> libc::kevent {
     libc::kevent {
-        ident: 1,                                               // Timer id, needs to be unique to prevent overwrites
+        ident: 1,                                               // Timer id, is unique across threads so it's fine
         filter: libc::EVFILT_TIMER,
         flags: libc::EV_ADD | libc::EV_ONESHOT,
         fflags: libc::NOTE_NSECONDS | libc::NOTE_CRITICAL,

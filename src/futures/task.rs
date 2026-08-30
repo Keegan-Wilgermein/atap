@@ -65,7 +65,7 @@ impl Task for SleepTask {
     #[inline(always)]
     fn execute(
         &self,
-        _reactor_id: i32,
+        reactor_id: i32,
         called_at: Instant,
     ) -> Self::Output {
         if self.p_mode {
@@ -73,7 +73,8 @@ impl Task for SleepTask {
         }
 
         if !self.p_mode || self.sleep_for > SLEEP_TOLERANCE {
-            return self.offload(kqueue::id(), called_at);
+            let id = kqueue::id().unwrap_or(-reactor_id);
+            return self.offload(id, called_at);
         }
 
         let until = called_at + self.sleep_for;
@@ -113,17 +114,26 @@ impl Task for SleepTask {
         // Sleep functions wait on their own thread's
         // queue rather than going through the reactor,
         // which avoids the overhead of the unpark
+        //
+        // Unless the individual reactor id could not be resolved
+        // in which case it falls back to the usual path
         let _ = unsafe {
+            let udata = if sleep_id < 0 {
+                Box::into_raw(Box::new(thread::current())) as *mut c_void
+            } else {
+                self.get_udata()
+            };
+
             KEvent::register(
-                sleep_id,
+                sleep_id.abs(),
                 self.as_event(),
                 self.get_intptr_t_data(called_at),
-                self.get_udata(),
+                udata,
             )
         }.check();
 
         let mut events = eventlist();
-        let _ = unsafe { KEvent::listen(sleep_id, &mut events) }.check();
+        let _ = unsafe { KEvent::listen(sleep_id.abs(), &mut events) }.check();
 
         if self.p_mode {
             let until = called_at + self.sleep_for;

@@ -7,7 +7,7 @@
 //! queue per thread costs those syscalls once instead
 
 use std::cell::Cell;
-use crate::modules::int_check::IntCheck;
+use crate::{RuntimeError, modules::int_check::IntCheck};
 
 /// Owns a thread's kqueue descriptor
 ///
@@ -43,17 +43,17 @@ thread_local! {
 /// ## Panics
 /// If `kqueue` can't be created
 #[inline(always)]
-pub(crate) fn id() -> i32 {
+pub(crate) fn id() -> Result<i32, RuntimeError> {
     return QUEUE.with(|queue| {
         let existing = queue.0.get();
 
         if existing >= 0 {
-            return existing;
+            return Ok(existing);
         }
 
-        let created = unsafe { libc::kqueue() }.check();
+        let created = unsafe { libc::kqueue() }.check()?;
         queue.0.set(created);
 
-        return created;
+        return Ok(created);
     });
 }
