@@ -7,4 +7,6 @@ use std::time::Duration;
 /// when sleeping or starting a syscall
 pub(crate) const SLEEP_TOLERANCE: Duration = Duration::from_millis(10);
 
+/// Amount of kevents that can be processed
+/// by a single `kevent`
 pub(crate) const KEVENT_COUNT: usize = 16;
