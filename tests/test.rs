@@ -1,12 +1,11 @@
-use whenever::{Runtime};
+use std::time::Duration;
+use whenever::{Runtime, sleep::Sleep};
 
 #[test]
 fn main() {
-    let runtime = Runtime::new();
+    Runtime::init();
 
-    let future = runtime.block_on(
-        async {
-            return 0;
-        }
+    let _ = Runtime::block_on(
+        Sleep::sleep(Duration::from_nanos(249))
     );
 }

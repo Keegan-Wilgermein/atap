@@ -3,58 +3,88 @@
 //! `Runtime` manages every event called into it and returns
 //! their results as they finish
 
-use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use crate::{RuntimeError, futures::task::Task, modules::{counter::Counter}};
 
-use libc::kqueue;
-use crate::{Task, executor::Executor, reactor::Reactor, pending::Pending, modules::{int_check::IntCheck}};
+/// Whether the runtime has been initialised yet
+/// 
+/// Use `SeqCst` operations only as
+/// it is important that a `Runtime` only gets
+/// initialised once
+static INIT: AtomicBool = AtomicBool::new(false);
 
-pub struct Runtime {
-    executor: Executor,
-    reactor: Reactor,
-    /// Clone this into each `Waker`
-    /// so it can wake the exectutor thread
-    waker_sender: Sender<i32>,
-}
+/// How many tasks are running at the moment
+static RUNNING_TASKS: Counter = Counter::new();
+
+pub struct Runtime;
 
 impl Runtime {
-    /// Creates a new thread local runtime
+    /// Inits a new runtime
     /// 
-    /// Call this at the start of `main()`
-    /// and at the beginning of every thread that you want to use with async
-    pub fn new() -> Self {
-        let kqueue = unsafe { kqueue() }.check();
-        let (tx, rx) = mpsc::channel();
-
-        Self {
-            executor: Executor::new(kqueue, rx),
-            reactor: Reactor::new(kqueue),
-            waker_sender: tx,
+    /// If a runtime is already initialised, this is a no-op
+    /// 
+    /// Runtimes aren't returned as objects to call methods on
+    /// and instead handle all their operations and state internally
+    /// 
+    /// For this reason, Runtimes are threadsafe
+    pub fn init() {
+        // No-op if already initialised
+        if INIT.load(Ordering::SeqCst) {
+            return;
         }
+
+        // Store the initilised value first so another thread can't
+        // start at the same time
+        INIT.store(true, Ordering::SeqCst);
+        init_runtime();
     }
 
-    /// Normal blocking async call using `async` / `await` calls
-    pub fn block_on<F>(&self, future: F)
-    -> F::Output
-    where
-        F: Future,
-    {
-        let mut future = Box::pin(future);
-        todo!()
-    }
-
-    /// Defers the execution of the passed function to the executor,
-    /// returning a `Future` that can be manually checked
-    /// whenever you feel like to see if the task has finished
+    /// Blocking call
     /// 
-    /// Will never block the current thread
-    pub fn whenever<T, F>(
-        &self,
-        function: F,
-    ) -> Pending<T>
+    /// Used when you need the data
+    /// the instant it arrives and
+    /// don't mind waiting for it
+    pub fn block_on<F>(task: F) -> F::Output
     where
-        F: Fn() -> T,
-    { 
-        let task = Task::new(function);
-        Pending::new()
+        F: Task,
+    {
+        RUNNING_TASKS.try_increment(1);
+        let out = task.execute();
+        RUNNING_TASKS.try_decrement(1);
+
+        out
     }
+
+    // /// Defers the execution of the passed function to the executor,
+    // /// returning a `Future` that can be manually checked
+    // /// whenever you feel like to see if the task has finished
+    // /// 
+    // /// Will never block the current thread
+    // pub fn whenever<T, F>(
+    //     function: F,
+    // ) -> Pending<T>
+    // where
+    //     F: Fn() -> T,
+    // {
+    //     Pending::new()
+    // }
+
+    /// Gets the count of currently active tasks
+    /// across all threads
+    /// 
+    /// This method does not guarantee an identical reading
+    /// across threads or that it's reading is definite
+    /// 
+    /// This method also only reports tasks that are
+    /// owned by the current process
+    pub fn get_task_count() -> Result<u32, RuntimeError> {
+        return RUNNING_TASKS.query();
+    }
+}
+
+/// The real non user facing init function
+/// 
+/// Called by the `Runtime` method only
+fn init_runtime() {
+    println!("Runtime initialised");
 }
