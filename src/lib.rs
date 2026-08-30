@@ -4,7 +4,6 @@ pub mod errors;
 
 mod modules {
     pub(crate) mod int_check;
-    pub(crate) mod counter;
     pub(crate) mod kevent;
     pub(crate) mod reactor;
     pub(crate) mod event_type;

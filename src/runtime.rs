@@ -3,8 +3,8 @@
 //! `Runtime` manages every event called into it and returns
 //! their results as they finish
 
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use crate::{RuntimeError, futures::task::Task, modules::{counter::Counter, int_check::IntCheck, reactor::Reactor}};
+use std::{sync::atomic::{AtomicBool, AtomicI32, Ordering}};
+use crate::{futures::task::Task, modules::{int_check::IntCheck, reactor::Reactor}};
 
 /// Whether the runtime has been initialised yet
 /// 
@@ -13,15 +13,12 @@ use crate::{RuntimeError, futures::task::Task, modules::{counter::Counter, int_c
 /// initialised once
 static INIT: AtomicBool = AtomicBool::new(false);
 
-/// The kqueue id associated with the process
+/// The kqueue id that the `Reactor` watches
 /// 
 /// Only use `Relaxed` reads for speed
 /// and a single `SeqCst` write at initialisation
 /// to ensure everything reads it correctly
-static KQUEUE_ID: AtomicI32 = AtomicI32::new(0);
-
-/// How many tasks are running at the moment
-static RUNNING_TASKS: Counter = Counter::new();
+static REACTOR_KQUEUE_ID: AtomicI32 = AtomicI32::new(0);
 
 pub struct Runtime;
 
@@ -34,6 +31,10 @@ impl Runtime {
     /// and instead handle all their operations and state internally
     /// 
     /// For this reason, Runtimes are threadsafe
+    /// 
+    /// ## Panics
+    /// Runtime initialisation can panic if registering an event to `libc::kqueue`
+    /// returns a negative value
     pub fn init() {
         // No-op if already initialised
         if INIT.load(Ordering::SeqCst) {
@@ -41,11 +42,13 @@ impl Runtime {
         }
 
         // Store the initilised value first so another thread can't
-        // start at the same time
+        // start another initialisation at the same time
         INIT.store(true, Ordering::SeqCst);
-        let id = unsafe { libc::kqueue() }.check();
-        KQUEUE_ID.store(id, Ordering::SeqCst);
-        init_runtime(id);
+
+        let reactor_id = unsafe { libc::kqueue() }.check();
+        REACTOR_KQUEUE_ID.store(reactor_id, Ordering::SeqCst);
+
+        init_runtime(reactor_id);
     }
 
     /// Blocking call
@@ -53,28 +56,15 @@ impl Runtime {
     /// Used when you need the data
     /// the instant it arrives and
     /// don't mind waiting for it
+    #[inline(always)]
     pub fn block_on<F>(task: F) -> F::Output
     where
         F: Task,
     {
-        RUNNING_TASKS.try_increment(1);
-        let id = KQUEUE_ID.load(Ordering::Relaxed);
-        let out = task.execute(id);
-        RUNNING_TASKS.try_decrement(1);
+        let reactor_id = REACTOR_KQUEUE_ID.load(Ordering::Relaxed);
+        let out = task.execute(reactor_id);
 
         out
-    }
-
-    /// Gets the count of currently active tasks
-    /// across all threads
-    /// 
-    /// This method does not guarantee an identical reading
-    /// across threads or that it's reading is accurate
-    /// 
-    /// This method also only reports tasks that are
-    /// owned by the current process
-    pub fn get_task_count() -> Result<u32, RuntimeError> {
-        return RUNNING_TASKS.query();
     }
 }
 

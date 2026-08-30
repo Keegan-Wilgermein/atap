@@ -5,11 +5,15 @@ use whenever::{Runtime, Sleep};
 fn main() {
     Runtime::init();
 
+    let start = Instant::now();
+
     let _ = Runtime::block_on(
         Sleep::sleep(Duration::from_secs(5)),
     );
-    let now = Instant::now();
-    println!("Registered at: {:?}", now);
 
-    sleep(Duration::from_secs(6));
+    println!("Custom sleep total time: {:?}", start.elapsed());
+
+    let start = Instant::now();
+    sleep(Duration::from_secs(5));
+    println!("Built in sleep total time: {:?}", start.elapsed());
 }

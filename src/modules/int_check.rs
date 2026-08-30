@@ -4,9 +4,10 @@
 
 use std::fmt::Display;
 
+#[allow(unused)]
 pub(crate) trait IntCheck
 where
-    Self: Sized + PartialEq<i32> + PartialOrd<i32> + Display,
+    Self: Sized + PartialOrd<i32> + Display,
 {
     /// Check an status code integer to be equal to 0,
     /// panicking if it's not

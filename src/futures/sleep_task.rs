@@ -4,7 +4,7 @@
 //! Performs sleep functions defined by the `Sleep`
 //! struct
 
-use std::time::{Duration};
+use std::{hint, time::{Duration, Instant}};
 
 /// The struct that implements `Task`
 /// 
@@ -25,6 +25,13 @@ impl SleepTask {
     pub(crate) fn new(time: Duration) -> Self {
         Self {
             sleep_for: time,
+        }
+    }
+
+    /// Spins the cpu until hitting the given time parameter
+    pub(crate) fn spinlock(&self, until: Instant) {
+        while Instant::now() < until {
+            hint::spin_loop();
         }
     }
 }

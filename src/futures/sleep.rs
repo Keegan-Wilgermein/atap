@@ -18,19 +18,23 @@ impl Sleep {
     /// Creates a new task that will be
     /// executed when passed into a runtime
     /// 
-    /// ### Behaviour
+    /// ## Behaviour
     /// Checks the length of the `Duration`
     /// and if it's too short to warrant
     /// the overhead of a syscall, just pauses
     /// the current thread until finished
     /// 
     /// The crossover for this is
-    /// approximately 250ns
+    /// approximately 6 milliseconds
     /// 
     /// #### Note
     /// If called inside `block_on()` this
     /// will block the thread for it's entire
     /// duration regardless
+    /// 
+    /// ## Accuracy
+    /// This function has an error margin of
+    /// around 500 nanoseconds
     pub fn sleep(time: Duration) -> SleepTask {
         SleepTask::new(time)
     }
