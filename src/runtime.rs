@@ -3,8 +3,8 @@
 //! `Runtime` manages every event called into it and returns
 //! their results as they finish
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::{RuntimeError, futures::task::Task, modules::{counter::Counter}};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use crate::{RuntimeError, futures::task::Task, modules::{counter::Counter, int_check::IntCheck, reactor::Reactor}};
 
 /// Whether the runtime has been initialised yet
 /// 
@@ -12,6 +12,13 @@ use crate::{RuntimeError, futures::task::Task, modules::{counter::Counter}};
 /// it is important that a `Runtime` only gets
 /// initialised once
 static INIT: AtomicBool = AtomicBool::new(false);
+
+/// The kqueue id associated with the process
+/// 
+/// Only use `Relaxed` reads for speed
+/// and a single `SeqCst` write at initialisation
+/// to ensure everything reads it correctly
+static KQUEUE_ID: AtomicI32 = AtomicI32::new(0);
 
 /// How many tasks are running at the moment
 static RUNNING_TASKS: Counter = Counter::new();
@@ -36,7 +43,9 @@ impl Runtime {
         // Store the initilised value first so another thread can't
         // start at the same time
         INIT.store(true, Ordering::SeqCst);
-        init_runtime();
+        let id = unsafe { libc::kqueue() }.check();
+        KQUEUE_ID.store(id, Ordering::SeqCst);
+        init_runtime(id);
     }
 
     /// Blocking call
@@ -49,31 +58,18 @@ impl Runtime {
         F: Task,
     {
         RUNNING_TASKS.try_increment(1);
-        let out = task.execute();
+        let id = KQUEUE_ID.load(Ordering::Relaxed);
+        let out = task.execute(id);
         RUNNING_TASKS.try_decrement(1);
 
         out
     }
 
-    // /// Defers the execution of the passed function to the executor,
-    // /// returning a `Future` that can be manually checked
-    // /// whenever you feel like to see if the task has finished
-    // /// 
-    // /// Will never block the current thread
-    // pub fn whenever<T, F>(
-    //     function: F,
-    // ) -> Pending<T>
-    // where
-    //     F: Fn() -> T,
-    // {
-    //     Pending::new()
-    // }
-
     /// Gets the count of currently active tasks
     /// across all threads
     /// 
     /// This method does not guarantee an identical reading
-    /// across threads or that it's reading is definite
+    /// across threads or that it's reading is accurate
     /// 
     /// This method also only reports tasks that are
     /// owned by the current process
@@ -84,7 +80,7 @@ impl Runtime {
 
 /// The real non user facing init function
 /// 
-/// Called by the `Runtime` method only
-fn init_runtime() {
-    println!("Runtime initialised");
+/// Called by the `Runtime::init()` method only
+fn init_runtime(id: i32) {
+    Reactor::init(id);
 }

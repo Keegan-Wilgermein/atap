@@ -3,9 +3,11 @@
 
 use std::sync::{TryLockError};
 
+/// A collection of all the errors
+/// that can occur, that the user can see
 pub enum RuntimeError {
-    ReadError,
-    WriteError,
+    /// Lock errors occur when
+    /// a lock fails on some data
     LockError,
 }
 
