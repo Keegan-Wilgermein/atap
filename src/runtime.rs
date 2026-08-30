@@ -3,8 +3,8 @@
 //! `Runtime` manages every event called into it and returns
 //! their results as they finish
 
-use std::{sync::atomic::{AtomicBool, AtomicI32, Ordering}};
-use crate::{futures::task::Task, modules::{int_check::IntCheck, reactor::Reactor}};
+use std::{sync::atomic::{AtomicBool, AtomicI32, Ordering}, time::Instant};
+use crate::{futures::task::Task, modules::{event_type::EventType, int_check::IntCheck, reactor::Reactor}};
 
 /// Whether the runtime has been initialised yet
 /// 
@@ -61,8 +61,14 @@ impl Runtime {
     where
         F: Task,
     {
-        let reactor_id = REACTOR_KQUEUE_ID.load(Ordering::Relaxed);
-        let out = task.execute(reactor_id);
+        let called_at = Instant::now();
+        let reactor_id = if task.as_event() == EventType::Sleep {
+            0
+        } else {
+            REACTOR_KQUEUE_ID.load(Ordering::Relaxed)
+        };
+
+        let out = task.execute(reactor_id, called_at);
 
         out
     }

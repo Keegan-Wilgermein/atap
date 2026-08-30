@@ -19,10 +19,11 @@ impl KEvent {
         udata: *mut c_void,
     ) -> i32 {
         let event_c = event.create(data, udata);
+        
         unsafe  {
             libc::kevent(
                 id,                             // kqueue id
-                event_c,                // Events to register
+                &event_c,               // Events to register
                 1,                        // Number of events to register
                 ptr::null_mut(),
                 0,

@@ -7,6 +7,8 @@ mod modules {
     pub(crate) mod kevent;
     pub(crate) mod reactor;
     pub(crate) mod event_type;
+    pub(crate) mod queue;
+    pub(crate) mod thread_policy;
 }
 
 mod futures {

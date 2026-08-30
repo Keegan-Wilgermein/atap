@@ -19,8 +19,9 @@ impl Reactor {
 #[inline(always)]
 fn reactor_loop(id: i32) {
     thread::spawn(move || {
+        let mut events = eventlist();
+        
         loop {
-            let mut events = eventlist();
             let count = unsafe { KEvent::listen(id, &mut events) }.check();
 
             if count < 0 {

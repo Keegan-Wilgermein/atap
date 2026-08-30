@@ -4,6 +4,7 @@
 use libc::c_void;
 
 /// All the supported events the runtime supports
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EventType {
     /// Sleep for x time events
     Sleep,
@@ -23,8 +24,11 @@ impl From<i16> for EventType {
 
 impl EventType {
     /// Creates a new `libc::kevent` struct
+    ///
+    /// Returned by value so the caller can hold it
+    /// on the stack for the duration of the syscall
     #[inline(always)]
-    pub(crate) fn create(&self, data: libc::intptr_t, udata: *mut c_void) -> *const libc::kevent {
+    pub(crate) fn create(&self, data: libc::intptr_t, udata: *mut c_void) -> libc::kevent {
         match self {
             Self::Sleep => sleep_event(data, udata),
             Self::Unknown => unreachable!("A task that creates an unknown filter can't exist"),
@@ -36,15 +40,13 @@ impl EventType {
 /// 
 /// `data` is the sleep duration
 #[inline(always)]
-fn sleep_event(data: libc::intptr_t, udata: *mut c_void) -> *const libc::kevent {
-    Box::leak(Box::new(
-        libc::kevent {
-            ident: 1,                                               // Timer id, needs to be unique to prevent overwrites
-            filter: libc::EVFILT_TIMER,
-            flags: libc::EV_ADD | libc::EV_ONESHOT,
-            fflags: libc::NOTE_NSECONDS,
-            data,                                                   // The sleep duration in ns
-            udata,                                                  // Thread handle as *mut c_void
-        }
-    ))
+fn sleep_event(data: libc::intptr_t, udata: *mut c_void) -> libc::kevent {
+    libc::kevent {
+        ident: 1,                                               // Timer id, needs to be unique to prevent overwrites
+        filter: libc::EVFILT_TIMER,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_NSECONDS | libc::NOTE_CRITICAL,
+        data,                                                   // The sleep duration in ns
+        udata,                                                  // Thread handle as *mut c_void
+    }
 }

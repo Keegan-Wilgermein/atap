@@ -2,9 +2,9 @@
 //! A trait that defines a task that can be
 //! initialised and run asynchronously
 
-use std::{thread, time::{Instant}};
+use std::{ptr, thread::self, time::{Duration, Instant}};
 use libc::c_void;
-use crate::{constants::{SLEEP_TOLERANCE}, futures::sleep_task::SleepTask, modules::{event_type::EventType, int_check::IntCheck, kevent::KEvent}};
+use crate::{constants::SLEEP_TOLERANCE, futures::sleep_task::SleepTask, modules::{event_type::EventType, int_check::IntCheck, kevent::{KEvent, eventlist}, queue, thread_policy}};
 
 /// Definition of a task that all things
 /// passed into a runtime function must implement
@@ -17,13 +17,14 @@ pub trait Task {
     fn execute(
         &self,
         reactor_id: i32,
+        called_at: Instant,
     ) -> Self::Output;
 
     /// Gets the type of event
     fn as_event(&self) -> EventType;
 
     /// Gets the type specific data to be passed into the event
-    fn get_intptr_t_data(&self) -> libc::intptr_t;
+    fn get_intptr_t_data(&self, called_at: Instant) -> libc::intptr_t;
 
     /// Gets the user data to send through `kevent`
     fn get_udata(&self) -> *mut c_void;
@@ -36,12 +37,13 @@ pub trait Task {
     fn syscalls(
         &self,
         reactor_id: i32,
+        called_at: Instant,
     ) {
         let _ = unsafe {
             KEvent::register(
                 reactor_id,
                 self.as_event(),
-                self.get_intptr_t_data(),
+                self.get_intptr_t_data(called_at),
                 self.get_udata(),
             )
         }.check();
@@ -53,23 +55,31 @@ pub trait Task {
     fn offload(
         &self,
         reactor_id: i32,
+        called_at: Instant,
     ) -> Self::Output;
 }
 
 impl Task for SleepTask {
-    type Output = ();
+    type Output = Duration;
 
     #[inline(always)]
     fn execute(
         &self,
-        reactor_id: i32,
+        _reactor_id: i32,
+        called_at: Instant,
     ) -> Self::Output {
-        if self.sleep_for > SLEEP_TOLERANCE {
-            self.offload(reactor_id);
-        } else {
-            let until = Instant::now() + self.sleep_for;
-            self.spinlock(until);
+        if self.p_mode {
+            thread_policy::promote();
         }
+
+        if !self.p_mode || self.sleep_for > SLEEP_TOLERANCE {
+            return self.offload(queue::id(), called_at);
+        }
+
+        let until = called_at + self.sleep_for;
+        self.spinlock(until);
+
+        return called_at.elapsed();
     }
 
     #[inline(always)]
@@ -78,26 +88,48 @@ impl Task for SleepTask {
     }
 
     #[inline(always)]
-    fn get_intptr_t_data(&self) -> libc::intptr_t {
-        (self.sleep_for - SLEEP_TOLERANCE).as_nanos() as libc::intptr_t
+    fn get_intptr_t_data(&self, called_at: Instant) -> libc::intptr_t {
+        let target = if self.p_mode {
+            self.sleep_for.saturating_sub(SLEEP_TOLERANCE)
+        } else {
+            self.sleep_for
+        };
+
+        return target.saturating_sub(called_at.elapsed()).as_nanos() as libc::intptr_t;
     }
 
     #[inline(always)]
     fn get_udata(&self) -> *mut c_void {
-        Box::into_raw(Box::new(thread::current())) as *mut c_void
+        ptr::null_mut()
     }
 
     #[inline(always)]
     fn offload(
         &self,
-        reactor_id: i32,
+        sleep_id: i32,
+        called_at: Instant,
     ) -> Self::Output
     {
-        let start = Instant::now();
+        // Sleep functions wait on their own thread's
+        // queue rather than going through the reactor,
+        // which avoids the overhead of the unpark
+        let _ = unsafe {
+            KEvent::register(
+                sleep_id,
+                self.as_event(),
+                self.get_intptr_t_data(called_at),
+                self.get_udata(),
+            )
+        }.check();
 
-        self.syscalls(reactor_id);
+        let mut events = eventlist();
+        let _ = unsafe { KEvent::listen(sleep_id, &mut events) }.check();
 
-        let until = Instant::now() + (self.sleep_for - start.elapsed());
-        self.spinlock(until);
+        if self.p_mode {
+            let until = called_at + self.sleep_for;
+            self.spinlock(until);
+        }
+
+        return called_at.elapsed();
     }
 }
