@@ -4,7 +4,7 @@
 
 use std::{ptr, thread::self, time::{Duration, Instant}};
 use libc::c_void;
-use crate::{constants::SLEEP_TOLERANCE, futures::sleep_task::SleepTask, modules::{event_type::EventType, int_check::IntCheck, kevent::{KEvent, eventlist}, queue, thread_policy}};
+use crate::{constants::SLEEP_TOLERANCE, futures::sleep_task::SleepTask, modules::{event_type::EventType, int_check::IntCheck, kevent::{KEvent, eventlist}, kqueue, thread_policy}};
 
 /// Definition of a task that all things
 /// passed into a runtime function must implement
@@ -73,7 +73,7 @@ impl Task for SleepTask {
         }
 
         if !self.p_mode || self.sleep_for > SLEEP_TOLERANCE {
-            return self.offload(queue::id(), called_at);
+            return self.offload(kqueue::id(), called_at);
         }
 
         let until = called_at + self.sleep_for;

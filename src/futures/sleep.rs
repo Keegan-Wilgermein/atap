@@ -21,18 +21,17 @@ impl Sleep {
     /// ## Behaviour
     /// Checks the length of the `Duration`
     /// and if it's too short to warrant
-    /// the overhead of a syscall, just pauses
-    /// the current thread until finished
+    /// the overhead of a syscall, starts
+    /// a spinlock until the duration is over
+    /// 
+    /// When `p_mode` is `false` it will always
+    /// create a nerw `kevent` even if this means
+    /// waiting longer than the duration specifies
     /// 
     /// The crossover for this is
-    /// approximately 1 millisecond
+    /// approximately 500 microseconds
     /// 
-    /// #### Note
-    /// If called inside `block_on()` this
-    /// will block the thread for it's entire
-    /// duration regardless
-    /// 
-    /// ## p_mode
+    /// ## `p_mode`
     /// Trades cpu time for precision
     /// 
     /// On, the calling thread is promoted into
@@ -50,6 +49,26 @@ impl Sleep {
     /// The realtime promotion lasts for the life
     /// of the thread. Passing `false` on a later
     /// call from the same thread doesn't undo it
+    /// 
+    /// ## Accuracy
+    /// Measured on apple silicon across
+    /// targets from 400 nanoseconds up to
+    /// 30 seconds
+    /// 
+    /// #### With p_mode
+    /// Around 200 nanoseconds over, at every
+    /// duration in that range
+    /// 
+    /// Measured around 5200x more accurate
+    /// that `thread::sleep()`
+    /// 
+    /// #### Without p_mode
+    /// Around 4 microseconds over on short
+    /// waits, and around 60 once the wait is
+    /// a few milliseconds or more
+    /// 
+    /// Measured around 37x more accurate
+    /// that `thread::sleep()`
     /// 
     /// ## Returns
     /// The total time the function ran for

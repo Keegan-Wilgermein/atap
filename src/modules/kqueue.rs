@@ -14,9 +14,9 @@ use crate::modules::int_check::IntCheck;
 /// Wrapped rather than held as a bare `Cell` so the descriptor
 /// is closed when the thread ends instead of leaking for the
 /// lifetime of the process
-struct Queue(Cell<i32>);
+struct KQueue(Cell<i32>);
 
-impl Drop for Queue {
+impl Drop for KQueue {
     fn drop(&mut self) {
         let id = self.0.get();
 
@@ -32,7 +32,7 @@ thread_local! {
     /// Thread local because a kqueue is only safe to wait on
     /// from one thread at a time. Giving every thread its own
     /// means no sharing and no synchronisation
-    static QUEUE: Queue = Queue(Cell::new(-1));
+    static QUEUE: KQueue = KQueue(Cell::new(-1));
 }
 
 /// This thread's kqueue, creating it on first use
