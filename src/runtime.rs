@@ -4,7 +4,7 @@
 //! their results as they finish
 
 use std::{sync::{atomic::{AtomicBool, AtomicI32, Ordering}, mpsc}, thread, time::Instant};
-use crate::{RuntimeError, constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW}, futures::task::Task, modules::{int_check::IntCheck, reactor::Reactor}};
+use crate::{RuntimeError, constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW}, futures::task::Task, modules::{int_check::IntCheck, pending::Pending, reactor::Reactor}};
 
 /// Whether the runtime has been initialised yet
 /// 
@@ -63,6 +63,15 @@ impl Runtime {
         let out = task.execute(reactor_id, called_at);
 
         out
+    }
+
+    #[inline(always)]
+    pub fn spawn<F>(task: F) -> Pending<F::Output>
+    where
+        F: Task,
+        F::Output: Clone,
+    {
+        Pending::new()
     }
 }
 

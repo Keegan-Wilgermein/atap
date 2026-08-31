@@ -6,9 +6,11 @@ mod modules {
     pub(crate) mod int_check;
     pub(crate) mod kevent;
     pub(crate) mod reactor;
+    pub(crate) mod executor;
     pub(crate) mod event_type;
     pub(crate) mod kqueue;
     pub(crate) mod thread_policy;
+    pub(crate) mod pending;
 }
 
 mod futures {

@@ -24,9 +24,11 @@ use whenever::{Runtime, Sleep};
 fn main() {
     if let Some(_) = Runtime::init() { panic!("kqueue failed to register") };
 
+    let duration = Duration::from_secs(1);
+
     let result = Runtime::block_on(
         Sleep::sleep(
-            Duration::from_micros(10),
+            duration,
             true,
         ),
     );
@@ -35,12 +37,20 @@ fn main() {
 
     let result = Runtime::block_on(
         Sleep::sleep(
-            Duration::from_micros(10),
+            duration,
             true,
         ),
     );
 
     println!("Result: {:?}", result);
+
+    let start = Instant::now();
+    thread::sleep(duration);
+    println!("std slept for: {:?}", start.elapsed());
+
+    let start = Instant::now();
+    thread::sleep(duration);
+    println!("std slept for: {:?}", start.elapsed());
 }
 
 /// How long to sleep for and how many samples to take

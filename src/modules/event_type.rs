@@ -10,6 +10,10 @@ pub enum EventType {
     Sleep,
 
     /// Unknown event
+    /// 
+    /// These will panic if
+    /// anything tries to create an
+    /// event with them
     Unknown,
 }
 
