@@ -39,9 +39,6 @@ thread_local! {
 ///
 /// After the first call this is a thread local read and a
 /// branch, so it stays out of the way on the hot path
-///
-/// ## Panics
-/// If `kqueue` can't be created
 #[inline(always)]
 pub(crate) fn id() -> Result<i32, RuntimeError> {
     return QUEUE.with(|queue| {

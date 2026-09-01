@@ -57,6 +57,7 @@ impl Runtime {
     {
         // Only used for sleep functions, but must be called
         // anyway because an if statement will add latency
+        // that can't be tracked with this call
         let called_at = Instant::now();
 
         let reactor_id = REACTOR_KQUEUE_ID.load(Ordering::Relaxed);

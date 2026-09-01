@@ -11,7 +11,7 @@
 //! eight tiers puts the whole run somewhere around four and a
 //! half minutes, almost all of it in the 5 and 30 second rows
 
-use std::{thread, time::{Duration, Instant}};
+use std::{process, thread, time::{Duration, Instant}};
 use whenever::{Runtime, Sleep};
 
 /// The main test function,
@@ -24,8 +24,21 @@ use whenever::{Runtime, Sleep};
 fn main() {
     if let Some(_) = Runtime::init() { panic!("kqueue failed to register") };
 
-    let duration = Duration::from_secs(1);
+    let duration = Duration::from_hours(2);
+    let pid = process::id();
+    println!("pid: {}", pid);
 
+    let handle = thread::spawn(move || {
+        println!("Running std ...");
+        let start = Instant::now();
+        thread::sleep(duration);
+        let elapsed = start.elapsed();
+        println!("std slept for: {:?}", elapsed);
+
+        elapsed
+    });
+
+    println!("Running whenever ...");
     let result = Runtime::block_on(
         Sleep::sleep(
             duration,
@@ -35,22 +48,9 @@ fn main() {
 
     println!("Result: {:?}", result);
 
-    let result = Runtime::block_on(
-        Sleep::sleep(
-            duration,
-            true,
-        ),
-    );
+    let std = handle.join().unwrap();
 
-    println!("Result: {:?}", result);
-
-    let start = Instant::now();
-    thread::sleep(duration);
-    println!("std slept for: {:?}", start.elapsed());
-
-    let start = Instant::now();
-    thread::sleep(duration);
-    println!("std slept for: {:?}", start.elapsed());
+    println!("Diff: {:?}\n", std - result);
 }
 
 /// How long to sleep for and how many samples to take
