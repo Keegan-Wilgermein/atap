@@ -1,8 +1,8 @@
 //! # KEvent
 //! Generates kevent syscalls from a tasks functionality
 
-use std::{mem, ptr};
 use libc::c_void;
+use std::{mem, ptr};
 
 use crate::{constants::KEVENT_COUNT, modules::event_type::EventType};
 
@@ -14,13 +14,14 @@ impl KEvent {
     #[inline(always)]
     pub(crate) unsafe fn register(
         id: i32,
+        kevent_id: usize,
         event: EventType,
         data: libc::intptr_t,
         udata: *mut c_void,
     ) -> i32 {
-        let event_c = event.create(data, udata);
-        
-        unsafe  {
+        let event_c = event.create(kevent_id, data, udata);
+
+        unsafe {
             libc::kevent(
                 id,                             // kqueue id
                 &event_c,               // Events to register
@@ -32,12 +33,8 @@ impl KEvent {
         }
     }
 
-
     #[inline(always)]
-    pub(crate) unsafe fn listen(
-        id: i32,
-        event_list: &mut [libc::kevent; KEVENT_COUNT],
-    ) -> i32 {
+    pub(crate) unsafe fn listen(id: i32, event_list: &mut [libc::kevent; KEVENT_COUNT]) -> i32 {
         unsafe {
             libc::kevent(
                 id,

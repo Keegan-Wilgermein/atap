@@ -8,8 +8,8 @@
 //! Every thread that sleeps in p_mode promotes itself once, on
 //! its first call, and the flag lives in thread local storage
 
-use std::cell::Cell;
 use crate::constants::SLEEP_TOLERANCE;
+use std::cell::Cell;
 
 thread_local! {
     /// Whether this thread has already been promoted
@@ -58,10 +58,10 @@ fn apply() {
     let computation = (SLEEP_TOLERANCE.as_nanos() as f64 * ticks) as u32;
 
     let mut policy = libc::thread_time_constraint_policy {
-        period: 0,                  // Non periodic, sleeps arrive whenever they arrive
-        computation,                // CPU time needed once scheduled
-        constraint: computation,    // Deadline to finish it by, tightest possible
-        preemptible: 0,             // The spin is worthless if it can be preempted
+        period: 0,               // Non periodic, sleeps arrive whenever they arrive
+        computation,             // CPU time needed once scheduled
+        constraint: computation, // Deadline to finish it by, tightest possible
+        preemptible: 0,          // The spin is worthless if it can be preempted
     };
 
     let _ = unsafe {

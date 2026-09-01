@@ -1,9 +1,19 @@
-//! Reactor
+//! # Reactor
 //! Reacts to kevents from the kernal
 //! and propogates them back to the caller
 
-use std::{sync::mpsc::Sender, thread::{self, Thread}};
-use crate::{RuntimeError, modules::{event_type::EventType, int_check::IntCheck, kevent::{KEvent, eventlist}}};
+use crate::{
+    RuntimeError,
+    modules::{
+        event_type::EventType,
+        int_check::IntCheck,
+        kevent::{KEvent, eventlist},
+    },
+};
+use std::{
+    sync::mpsc::Sender,
+    thread::{self, Thread},
+};
 
 /// Reacts to kevents from the kernel
 pub(crate) struct Reactor;
@@ -45,7 +55,7 @@ fn reactor_loop(id: i32, tx: Sender<i32>) {
                         }
 
                         unsafe { Box::from_raw(raw).unpark() };
-                    },
+                    }
                     EventType::Unknown => (),
                 }
             }

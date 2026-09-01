@@ -2,8 +2,8 @@
 //! The entire purpose of this trait is to
 //! check functions that return integer status codes
 
-use std::{fmt::Display, io::Error};
 use crate::RuntimeError;
+use std::{fmt::Display, io::Error};
 
 pub(crate) trait IntCheck
 where

@@ -5,9 +5,13 @@
 //! syscalls, and the close lands after the spin has already
 //! hit its deadline so the caller pays for it in full. One
 //! queue per thread costs those syscalls once instead
+//!
+//! Only use this for `Sleep` calls, the microseconds
+//! don't matter for other tasks so they use the global
+//! kqueue
 
-use std::cell::Cell;
 use crate::{RuntimeError, modules::int_check::IntCheck};
+use std::cell::Cell;
 
 /// Owns a thread's kqueue descriptor
 ///

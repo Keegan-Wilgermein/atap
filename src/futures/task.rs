@@ -2,29 +2,43 @@
 //! A trait that defines a task that can be
 //! initialised and run asynchronously
 
-use std::{ptr, thread::self, time::{Duration, Instant}};
+use crate::{
+    constants::SLEEP_TOLERANCE,
+    futures::sleep_task::SleepTask,
+    modules::{
+        event_type::EventType,
+        int_check::IntCheck,
+        kevent::{KEvent, eventlist},
+        kqueue, thread_policy,
+    },
+};
 use libc::c_void;
-use crate::{constants::SLEEP_TOLERANCE, futures::sleep_task::SleepTask, modules::{event_type::EventType, int_check::IntCheck, kevent::{KEvent, eventlist}, kqueue, thread_policy}};
+use std::{ptr, thread, time::{Duration, Instant}};
 
 /// Definition of a task that all things
 /// passed into a runtime function must implement
 /// to function correctly
 pub trait Task {
+    /// The final output type
     type Output;
 
     /// Executes the task, offloading
     /// to the kernal if required
-    fn execute(
-        &self,
-        reactor_id: i32,
-        called_at: Instant,
-    ) -> Self::Output;
+    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output;
 
     /// Gets the type of event
     fn as_event(&self) -> EventType;
 
+    /// Any preperation the `Task`
+    /// must do before execution
+    /// 
+    /// Delegated to a seperate function
+    /// in case it determines whether a
+    /// function runs `.execute()` at all
+    fn prepare(&mut self);
+
     /// Gets the type specific data to be passed into the event
-    fn get_intptr_t_data(&self, called_at: Instant) -> libc::intptr_t;
+    fn get_intptr_t_data(&self) -> libc::intptr_t;
 
     /// Gets the user data to send through `kevent`
     fn get_udata(&self) -> *mut c_void;
@@ -34,53 +48,41 @@ pub trait Task {
     /// kqueue syscall
     /// and waits for a response
     #[inline(always)]
-    fn syscalls(
-        &self,
-        reactor_id: i32,
-        called_at: Instant,
-    ) {
+    fn register_event(&self, reactor_id: i32, task_id: usize) {
         let _ = unsafe {
             KEvent::register(
                 reactor_id,
+                task_id,
                 self.as_event(),
-                self.get_intptr_t_data(called_at),
+                self.get_intptr_t_data(),
                 self.get_udata(),
             )
-        }.check();
+        }
+        .check();
 
+        // Put this in a loop to prevent
+        // unwanted unparks
         thread::park();
     }
 
     /// Handling of data from the kernel
-    fn offload(
-        &self,
-        reactor_id: i32,
-        called_at: Instant,
-    ) -> Self::Output;
+    fn offload(&self, reactor_id: i32, task_id: usize) -> Self::Output;
 }
 
 impl Task for SleepTask {
     type Output = Duration;
 
     #[inline(always)]
-    fn execute(
-        &self,
-        reactor_id: i32,
-        called_at: Instant,
-    ) -> Self::Output {
-        if self.p_mode {
-            thread_policy::promote();
-        }
-
+    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
         if !self.p_mode || self.sleep_for > SLEEP_TOLERANCE {
-            let id = kqueue::id().unwrap_or(-reactor_id);
-            return self.offload(id, called_at);
+            let id = kqueue::id().unwrap_or(-reactor_id); // Negate so the failure can be detected later
+            return self.offload(id, task_id);
         }
 
-        let until = called_at + self.sleep_for;
+        let until = self.created + self.sleep_for;
         self.spinlock(until);
 
-        return called_at.elapsed();
+        return self.created.elapsed();
     }
 
     #[inline(always)]
@@ -89,14 +91,23 @@ impl Task for SleepTask {
     }
 
     #[inline(always)]
-    fn get_intptr_t_data(&self, called_at: Instant) -> libc::intptr_t {
+    fn prepare(&mut self) {
+        self.created = Instant::now();
+
+        if self.p_mode {
+            thread_policy::promote();
+        }
+    }
+
+    #[inline(always)]
+    fn get_intptr_t_data(&self) -> libc::intptr_t {
         let target = if self.p_mode {
             self.sleep_for.saturating_sub(SLEEP_TOLERANCE)
         } else {
             self.sleep_for
         };
 
-        return target.saturating_sub(called_at.elapsed()).as_nanos() as libc::intptr_t;
+        return target.saturating_sub(self.created.elapsed()).as_nanos() as libc::intptr_t;
     }
 
     #[inline(always)]
@@ -105,17 +116,12 @@ impl Task for SleepTask {
     }
 
     #[inline(always)]
-    fn offload(
-        &self,
-        sleep_id: i32,
-        called_at: Instant,
-    ) -> Self::Output
-    {
+    fn offload(&self, sleep_id: i32, task_id: usize) -> Self::Output {
         // Sleep functions wait on their own thread's
         // queue rather than going through the reactor,
         // which avoids the overhead of the unpark
         //
-        // Unless the individual reactor id could not be resolved
+        // Unless the unique reactor id could not be resolved
         // in which case it falls back to the usual path
         let _ = unsafe {
             let udata = if sleep_id < 0 {
@@ -126,20 +132,22 @@ impl Task for SleepTask {
 
             KEvent::register(
                 sleep_id.abs(),
+                task_id,
                 self.as_event(),
-                self.get_intptr_t_data(called_at),
+                self.get_intptr_t_data(),
                 udata,
             )
-        }.check();
+        }
+        .check();
 
         let mut events = eventlist();
         let _ = unsafe { KEvent::listen(sleep_id.abs(), &mut events) }.check();
 
         if self.p_mode {
-            let until = called_at + self.sleep_for;
+            let until = self.created + self.sleep_for;
             self.spinlock(until);
         }
 
-        return called_at.elapsed();
+        return self.created.elapsed();
     }
 }

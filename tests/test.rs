@@ -11,25 +11,28 @@
 //! eight tiers puts the whole run somewhere around four and a
 //! half minutes, almost all of it in the 5 and 30 second rows
 
-use std::{process, thread, time::{Duration, Instant}};
+use std::{
+    process, thread,
+    time::{Duration, Instant},
+};
 use whenever::{Runtime, Sleep};
 
 /// The main test function,
 /// where I run my tests for
 /// api shape and ensuring things
 /// run properly
-/// 
+///
 /// AI are not to touch this function
 #[test]
 fn main() {
-    if let Some(_) = Runtime::init() { panic!("kqueue failed to register") };
+    if let Some(_) = Runtime::init() {
+        panic!("kqueue failed to register")
+    };
 
-    let duration = Duration::from_hours(2);
-    let pid = process::id();
-    println!("pid: {}", pid);
+    let duration = Duration::from_secs(1);
 
     let handle = thread::spawn(move || {
-        println!("Running std ...");
+        println!("Running std ...\n");
         let start = Instant::now();
         thread::sleep(duration);
         let elapsed = start.elapsed();
@@ -39,18 +42,14 @@ fn main() {
     });
 
     println!("Running whenever ...");
-    let result = Runtime::block_on(
-        Sleep::sleep(
-            duration,
-            true,
-        ),
-    );
+    let result = Runtime::block(Sleep::sleep(duration, true));
 
     println!("Result: {:?}", result);
 
     let std = handle.join().unwrap();
 
-    println!("Diff: {:?}\n", std - result);
+    println!("\nDiff: {:?}", std - result);
+    println!("std error:{:?}\nwhenever error:{:?}\n", std - duration, result - duration)
 }
 
 /// How long to sleep for and how many samples to take
@@ -159,7 +158,7 @@ fn accuracy() {
 #[allow(unused)]
 fn sleep_p_on(target: Duration) -> u64 {
     let start = Instant::now();
-    let _ = Runtime::block_on(Sleep::sleep(target, true));
+    let _ = Runtime::block(Sleep::sleep(target, true));
 
     return start.elapsed().as_nanos() as u64;
 }
@@ -168,7 +167,7 @@ fn sleep_p_on(target: Duration) -> u64 {
 #[allow(unused)]
 fn sleep_p_off(target: Duration) -> u64 {
     let start = Instant::now();
-    let _ = Runtime::block_on(Sleep::sleep(target, false));
+    let _ = Runtime::block(Sleep::sleep(target, false));
 
     return start.elapsed().as_nanos() as u64;
 }
@@ -191,7 +190,8 @@ fn sleep_std(target: Duration) -> u64 {
 #[allow(unused)]
 fn measure_all(sample: fn(Duration) -> u64) -> Vec<Stats> {
     return thread::spawn(move || {
-        TIERS.iter()
+        TIERS
+            .iter()
             .map(|&(target, count)| measure(sample, target, count))
             .collect()
     })
@@ -315,7 +315,8 @@ fn summary(p_on: &[Stats], p_off: &[Stats], built_in: &[Stats]) {
     let off_error = mean_error(p_off);
     let std_error = mean_error(built_in);
 
-    println!("\n{:>10}  {:>14}  {:>14}  {:>14}  {:>10}  {:>10}",
+    println!(
+        "\n{:>10}  {:>14}  {:>14}  {:>14}  {:>10}  {:>10}",
         "average",
         signed(on_error),
         signed(off_error),
@@ -324,14 +325,16 @@ fn summary(p_on: &[Stats], p_off: &[Stats], built_in: &[Stats]) {
         ratio(off_error, std_error),
     );
 
-    println!("{:>10}  {:>14}  {:>14}  {:>14}",
+    println!(
+        "{:>10}  {:>14}  {:>14}  {:>14}",
         "worst",
         nanos(worst_spread(p_on) as f64),
         nanos(worst_spread(p_off) as f64),
         nanos(worst_spread(built_in) as f64),
     );
 
-    println!("{:>10}  {:>14}  {:>14}  {:>14}",
+    println!(
+        "{:>10}  {:>14}  {:>14}  {:>14}",
         "worst tail",
         nanos(worst_tail(p_on)),
         nanos(worst_tail(p_off)),
@@ -366,9 +369,7 @@ fn worst_spread(stats: &[Stats]) -> u64 {
 /// way through. If it's much smaller the spread is outliers
 #[allow(unused)]
 fn worst_tail(stats: &[Stats]) -> f64 {
-    return stats.iter()
-        .map(|stat| stat.tail())
-        .fold(0.0, f64::max);
+    return stats.iter().map(|stat| stat.tail()).fold(0.0, f64::max);
 }
 
 /// How many times smaller `mine` is than `theirs`

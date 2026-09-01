@@ -10,4 +10,7 @@ pub enum RuntimeError {
     /// fails on a `libc`
     /// status code
     CheckError(Option<i32>),
+
+    /// Runtime has already been previously initialised
+    AlreadyInit,
 }

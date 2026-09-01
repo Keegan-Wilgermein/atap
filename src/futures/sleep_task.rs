@@ -1,23 +1,25 @@
 //! Sleep task
 //! The tasks associated with sleeping
-//! 
+//!
 //! Performs sleep functions defined by the `Sleep`
 //! struct
 
-use std::{time::{Duration, Instant}};
+use std::time::{Duration, Instant};
 
-/// The struct that implements `Task`
-/// 
+/// The version of `Sleep` that implements `Task`
+///
 /// It can be passed into async functions
 /// and contains info on its functionality
-/// 
-/// All it's runtime functions output `()`
-/// as it only needs to notify when it's done
-/// 
-/// Any other functions are for convenience
+///
+/// All it's runtime functions output `Duration`
+/// describing the time it took for the function
+/// to run in it's entirety
 pub struct SleepTask {
     /// How long to sleep for
     pub(crate) sleep_for: Duration,
+
+    /// When the task started execution
+    pub(crate) created: Instant,
 
     /// Whether to trade cpu for precision
     ///
@@ -33,6 +35,7 @@ impl SleepTask {
     pub(crate) fn new(time: Duration, p_mode: bool) -> Self {
         Self {
             sleep_for: time,
+            created: Instant::now(),
             p_mode,
         }
     }
