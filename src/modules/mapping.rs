@@ -91,3 +91,34 @@ pub(crate) fn free(base: *mut u8, len: usize) {
 
     unsafe { libc::munmap(base.cast::<libc::c_void>(), round_up(len)) };
 }
+
+/// Gives the pages behind a mapping back without unmapping it
+///
+/// ## Returns
+/// Whether the kernel took them
+///
+/// ## Behaviour
+/// The address stays valid and stays mapped, so anything still
+/// holding a pointer into it reads zeros rather than falling
+/// over. That is the whole reason this is used instead of
+/// `free`: a task slot's address is what listeners block on,
+/// and an address that can be taken away isn't one they could
+/// block on safely
+///
+/// ## Safety
+/// Every byte in the range has to be genuinely unused. The
+/// kernel may zero the pages at any point after this, so a live
+/// value anywhere inside is a value that quietly disappears
+///
+/// #### Note
+/// `MADV_FREE` is lazy. A write to the range before the kernel
+/// gets round to it cancels the reclaim for that page, which is
+/// what makes a slot being allocated again safe rather than a
+/// race
+pub(crate) unsafe fn release(base: *mut u8, len: usize) -> bool {
+    if base.is_null() || len == 0 {
+        return false;
+    }
+
+    unsafe { libc::madvise(base.cast::<libc::c_void>(), len, libc::MADV_FREE) == 0 }
+}

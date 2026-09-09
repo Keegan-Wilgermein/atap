@@ -384,6 +384,18 @@ pub(crate) fn slots() -> usize {
     DATA.high_water()
 }
 
+/// Tasks holding a slot right now
+#[inline(always)]
+pub(crate) fn live() -> usize {
+    DATA.live()
+}
+
+/// Gives back the pages behind the unused top of the table
+#[inline(always)]
+pub(crate) fn trim() -> Result<usize, RuntimeError> {
+    DATA.trim()
+}
+
 /// How many tasks have been spawned so far
 ///
 /// A task's age is the difference between this and the stamp

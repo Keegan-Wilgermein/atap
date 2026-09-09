@@ -17,7 +17,7 @@
 use crate::{
     constants::{
         IDLE_REAP, MANAGER_TICK, MAX_WORKERS, NO_TASK, SLEEP_MULTIPLIER, STARVE_AGE,
-        WORKER_MULTIPLIER,
+        TRIM_INTERVAL, WORKER_MULTIPLIER,
     },
     executor,
     modules::{
@@ -94,6 +94,9 @@ pub(crate) struct WorkerPool {
     /// to somebody else
     stopped: AtomicBool,
 
+    /// Manager ticks since the table was last trimmed
+    trim_ticks: AtomicU32,
+
     /// Where the next search for somebody to wake starts
     ///
     /// Rotated so a wake doesn't always land on the same
@@ -129,6 +132,7 @@ impl WorkerPool {
             highest: AtomicUsize::new(0),
             parked: AtomicU32::new(0),
             stopped: AtomicBool::new(false),
+            trim_ticks: AtomicU32::new(0),
             wake: AtomicUsize::new(0),
             sweep: AtomicUsize::new(0),
         }
@@ -500,6 +504,66 @@ impl WorkerPool {
         self.grow();
         self.reap();
         self.reap_sleeps();
+        self.trim();
+    }
+
+    /// Hands the unused top of the task table back now and then
+    ///
+    /// ## Behaviour
+    /// Far rarer than everything else on the tick, because a
+    /// trim walks the whole free list and a table with a lot of
+    /// free list to walk is one nothing is in a hurry about
+    ///
+    /// A refusal is the normal answer and is ignored. It means
+    /// the table is close enough to what is live in it to be
+    /// worth keeping, which is a decision rather than a problem
+    fn trim(&'static self) {
+        let due = self.trim_ticks.fetch_add(1, Ordering::Relaxed) + 1;
+
+        if due < TRIM_INTERVAL {
+            return;
+        }
+
+        // A trim takes the whole free list out of circulation
+        // while it walks it, and every spawn that lands in that
+        // window finds nothing to reuse and grows the table
+        // instead. So it waits for quiet rather than making the
+        // pool pay for a tidy up, which costs nothing: a table
+        // worth trimming is one nothing is in a hurry about
+        //
+        // The counter is left where it is, so the moment things
+        // go quiet this happens on the very next tick rather
+        // than after another full interval
+        if !self.idle() {
+            return;
+        }
+
+        self.trim_ticks.store(0, Ordering::Relaxed);
+
+        let _ = executor::trim();
+    }
+
+    /// Whether the pool has nothing whatever to do
+    fn idle(&'static self) -> bool {
+        if !self.injector.is_empty() || !self.blocking.is_empty() {
+            return false;
+        }
+
+        let highest = self.highest.load(Ordering::Acquire);
+
+        for index in 0..highest {
+            let worker = &self.workers[index];
+
+            if !worker.state().alive() {
+                continue;
+            }
+
+            if worker.busy() || worker.backlog() > 0 {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Stops sleep threads that have had nothing to do
@@ -816,6 +880,7 @@ impl WorkerPool {
         }
 
         PoolStats {
+            live: executor::live(),
             queued: self.injector.len(),
             blocking_queued: self.blocking.len(),
             workers,

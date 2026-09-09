@@ -23,8 +23,10 @@
 //! looks again
 
 use crate::{
+    RuntimeError,
     constants::{
         FIRST_BLOCK, FIRST_BLOCK_LOG2, INDEX_MASK, MAX_TASK_ID, SLOT_SIZE, TABLE_BLOCKS, TAG_SHIFT,
+        TRIM_KEEP_PERCENT, TRIM_MINIMUM, TRIM_THRESHOLD,
     },
     modules::{mapping, task_data::TaskData},
 };
@@ -48,6 +50,14 @@ pub(crate) struct TaskTable {
     /// nothing left to reuse
     next_id: AtomicUsize,
 
+    /// Slots handed out and not yet given back
+    ///
+    /// Counted rather than worked out, because trimming needs
+    /// to know how much of the table is genuinely in use and
+    /// walking every slot to find out would cost more than the
+    /// counting does
+    live: AtomicUsize,
+
     /// The head of the free list
     ///
     /// Packed as `tag << TAG_SHIFT | index + 1`, with a
@@ -65,6 +75,7 @@ impl TaskTable {
         Self {
             blocks: [const { AtomicPtr::new(ptr::null_mut()) }; TABLE_BLOCKS],
             next_id: AtomicUsize::new(0),
+            live: AtomicUsize::new(0),
             free: AtomicUsize::new(0),
         }
     }
@@ -134,6 +145,7 @@ impl TaskTable {
                 .compare_exchange_weak(head, new, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
+                self.live.fetch_add(1, Ordering::Relaxed);
                 return Some(id);
             }
         }
@@ -141,6 +153,11 @@ impl TaskTable {
         // Nothing to reuse, so the table grows by one
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.block_for(id)?;
+
+        // Counted here as well as on the reuse path above. Both
+        // hand out an id and both are given back through `free`,
+        // so a count kept on only one of them runs away
+        self.live.fetch_add(1, Ordering::Relaxed);
 
         Some(id)
     }
@@ -161,6 +178,16 @@ impl TaskTable {
             return;
         };
 
+        self.live.fetch_sub(1, Ordering::Relaxed);
+        self.push_free(id, slot);
+    }
+
+    /// Puts an id on the free list without touching the count
+    ///
+    /// Kept apart from `free` so a trim can put back what it
+    /// took without the ids being counted as having become free
+    /// twice over
+    fn push_free(&self, id: usize, slot: &TaskData) {
         let index = id + 1;
 
         loop {
@@ -180,6 +207,12 @@ impl TaskTable {
         }
     }
 
+    /// Slots handed out and not yet given back
+    #[inline(always)]
+    pub(crate) fn live(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
     /// The highest id the table has ever handed out
     ///
     /// The `Executor` walks this far when it is recovering,
@@ -188,6 +221,215 @@ impl TaskTable {
     #[inline(always)]
     pub(crate) fn high_water(&self) -> usize {
         self.next_id.load(Ordering::Acquire)
+    }
+
+    /// Gives back the pages behind the top of the table
+    ///
+    /// ## Returns
+    /// Bytes handed back to the kernel, or `StillInUse` when
+    /// the table is too close to what is live in it for any of
+    /// it to be worth taking
+    ///
+    /// ## Behaviour
+    /// Pages are released with `madvise` rather than unmapped.
+    /// A slot's address is what its listeners block on, so an
+    /// address that could be taken away isn't one anything
+    /// could safely hold. The mapping stays, the physical pages
+    /// go, and a reclaimed slot reads as zeros, which is
+    /// already what an empty slot reads as
+    ///
+    /// Only whole pages, and only ones where every slot in them
+    /// was on the free list. A page holds many slots and one
+    /// live task in it is enough to keep the lot
+    ///
+    /// #### Note
+    /// The order here is the part that has to be right. The
+    /// free list is emptied first, so nothing can be allocated
+    /// out of the range while it is being worked on. The pages
+    /// are released *before* the high water mark comes down,
+    /// because lowering it first would let a fresh task be
+    /// allocated into the range and written, and then have its
+    /// page released out from under it. Doing it the other way
+    /// round means any task allocated afterwards writes to the
+    /// page and cancels the reclaim, which is exactly what
+    /// `MADV_FREE` promises
+    pub(crate) fn trim(&self) -> Result<usize, RuntimeError> {
+        let current = self.next_id.load(Ordering::Acquire);
+        let live = self.live.load(Ordering::Acquire);
+
+        let floor = (live + TRIM_THRESHOLD)
+            .max(current / 100 * TRIM_KEEP_PERCENT)
+            .max(TRIM_MINIMUM);
+
+        if floor >= current {
+            return Err(RuntimeError::StillInUse);
+        }
+
+        let taken = self.drain_free();
+
+        if taken.is_empty() {
+            return Err(RuntimeError::StillInUse);
+        }
+
+        // A slot is only safe to give back if it was on the
+        // free list, which is now entirely in hand. Anything
+        // handed out and not yet given back isn't in here, so
+        // its page is never picked
+        let mut held = vec![0u64; current.div_ceil(u64::BITS as usize)];
+
+        for id in taken.iter() {
+            if *id < current {
+                held[id / u64::BITS as usize] |= 1 << (id % u64::BITS as usize);
+            }
+        }
+
+        let mut keep = current;
+
+        while keep > floor {
+            let id = keep - 1;
+
+            if held[id / u64::BITS as usize] & (1 << (id % u64::BITS as usize)) == 0 {
+                break;
+            }
+
+            keep -= 1;
+        }
+
+        if keep >= current {
+            self.restore(&taken, current);
+            return Err(RuntimeError::StillInUse);
+        }
+
+        let released = self.release_pages(keep, current);
+
+        // Nothing has been handed out since the snapshot, so
+        // nothing is living in the range that was just given
+        // back. A failure here means somebody grew the table
+        // while this was working, and everything goes back
+        if self
+            .next_id
+            .compare_exchange(current, keep, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.restore(&taken, current);
+            return Err(RuntimeError::StillInUse);
+        }
+
+        // Everything below the new mark goes back on the list.
+        // Everything above it is reached by the high water mark
+        // climbing again, which costs no write and so leaves the
+        // pages given back
+        self.restore(&taken, keep);
+
+        Ok(released)
+    }
+
+    /// Puts back every id below `limit`
+    fn restore(&self, taken: &[usize], limit: usize) {
+        for id in taken.iter() {
+            if *id >= limit {
+                continue;
+            }
+
+            let Some(slot) = self.slot(*id) else {
+                continue;
+            };
+
+            self.push_free(*id, slot);
+        }
+    }
+
+    /// Takes the whole free list in one go
+    ///
+    /// The tag is bumped rather than thrown away, so a thread
+    /// part way through a pop still fails its exchange against
+    /// the head this leaves behind
+    fn drain_free(&self) -> Vec<usize> {
+        let mut cursor = loop {
+            let head = self.free.load(Ordering::Acquire);
+            let index = head & INDEX_MASK;
+
+            if index == 0 {
+                return Vec::new();
+            }
+
+            let tag = (head >> TAG_SHIFT).wrapping_add(1);
+
+            if self
+                .free
+                .compare_exchange_weak(
+                    head,
+                    tag << TAG_SHIFT,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                break index;
+            }
+        };
+
+        let mut taken = Vec::new();
+
+        while cursor != 0 {
+            let id = cursor - 1;
+
+            let Some(slot) = self.slot(id) else {
+                break;
+            };
+
+            cursor = slot.next();
+            taken.push(id);
+        }
+
+        taken
+    }
+
+    /// Hands back every whole page between two ids
+    fn release_pages(&self, from: usize, to: usize) -> usize {
+        let page = mapping::page_size();
+        let per_page = page / SLOT_SIZE;
+
+        if per_page == 0 {
+            return 0;
+        }
+
+        let mut released = 0;
+
+        for block in 0..TABLE_BLOCKS {
+            let base = self.blocks[block].load(Ordering::Acquire);
+
+            if base.is_null() {
+                continue;
+            }
+
+            let slots = FIRST_BLOCK << block;
+            let first = slots - FIRST_BLOCK;
+
+            let start = from.max(first);
+            let end = to.min(first + slots);
+
+            if start >= end {
+                continue;
+            }
+
+            // Rounded inward, so a page only goes back when the
+            // whole of it is inside the range
+            let head = (start - first).div_ceil(per_page) * per_page;
+            let tail = (end - first) / per_page * per_page;
+
+            if head >= tail {
+                continue;
+            }
+
+            let len = (tail - head) * SLOT_SIZE;
+
+            if unsafe { mapping::release(base.add(head * SLOT_SIZE), len) } {
+                released += len;
+            }
+        }
+
+        released
     }
 
     /// The block holding an id, mapping it on first use

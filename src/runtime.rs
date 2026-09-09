@@ -6,7 +6,7 @@
 use crate::{
     RuntimeError,
     constants::{DEAD_KQUEUE_ID, DEFAULT_PRIORITY, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
-    executor::Executor,
+    executor::{self, Executor},
     futures::task::Task,
     modules::{
         int_check::IntCheck, pool_stats::PoolStats, task_handle::TaskHandle, worker_pool::POOL,
@@ -152,6 +152,34 @@ impl Runtime {
         F: Task,
     {
         Executor::new_task(task, priority)
+    }
+
+    /// Gives back the memory behind the unused part of the
+    /// task table
+    ///
+    /// ## Returns
+    /// Bytes handed back to the kernel, or `StillInUse` when
+    /// the table is too close to the number of tasks alive in
+    /// it for any of it to be worth or safe taking
+    ///
+    /// ## Behaviour
+    /// The table never shrinks on its own as tasks come and go,
+    /// because a slot that has been used once is the cheapest
+    /// slot there is to use again. A burst of a million tasks
+    /// therefore leaves a million slots' worth of pages behind
+    /// it, and this is how they go back
+    ///
+    /// Gives back at most a fifth of the table at a time, keeps
+    /// headroom above what is live, and never goes below a
+    /// hundred slots. Calling it repeatedly is how it converges
+    ///
+    /// #### Note
+    /// The runtime already does this by itself, every few
+    /// seconds, whenever the table is worth trimming. This is
+    /// for forcing a pass at a moment of your choosing, such as
+    /// straight after a burst you know isn't coming back
+    pub fn trim() -> Result<usize, RuntimeError> {
+        executor::trim()
     }
 
     /// What the worker pool looks like right now

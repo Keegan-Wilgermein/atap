@@ -174,6 +174,30 @@ pub(crate) const PRIORITY_SEQUENCE_MASK: u64 = (1 << PRIORITY_CLASS_SHIFT) - 1;
 /// drop a task below the default as to lift one above it
 pub(crate) const DEFAULT_PRIORITY: u8 = 128;
 
+/// Slots kept spare above the live count when trimming
+///
+/// Headroom, so a table trimmed the moment a burst ends isn't
+/// immediately grown again by the next one
+pub(crate) const TRIM_THRESHOLD: usize = 4096;
+
+/// The most of itself a table may keep when trimming, as a
+/// percentage
+///
+/// A fifth off at a time rather than everything at once, so
+/// repeated passes converge on the floor gently instead of one
+/// pass giving back everything a program was about to reuse
+pub(crate) const TRIM_KEEP_PERCENT: usize = 80;
+
+/// Slots a table keeps whatever else happens
+pub(crate) const TRIM_MINIMUM: usize = 100;
+
+/// Manager ticks between attempts to trim the table
+///
+/// Far rarer than anything else the manager does, because a
+/// trim walks the free list and a table worth trimming is one
+/// nothing is in a hurry about
+pub(crate) const TRIM_INTERVAL: u32 = 500;
+
 /// Stored in a slot's waiting field when its task isn't
 /// sitting in a kernel wait
 pub(crate) const NOT_WAITING: i32 = -1;

@@ -13,6 +13,10 @@ use crate::modules::worker_stats::WorkerStats;
 /// a statement about it
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolStats {
+    /// Tasks holding a slot in the table right now, whether
+    /// queued, running or waiting to be read
+    pub live: usize,
+
     /// Tasks waiting in the shared queue, behind every
     /// worker's own
     pub queued: usize,

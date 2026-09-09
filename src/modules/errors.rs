@@ -27,13 +27,12 @@ pub enum RuntimeError {
     /// one of its listeners
     Cancelled,
 
-    /// The `Executor` gave up before it
-    /// could finish the task, so no result
-    /// is ever going to arrive
+    /// The `Executor` crashed for some reason
     ///
     /// The `Executor` restarts itself
-    /// so you can start a new task
-    /// whenever
+    /// and you can start a new task
+    /// without it, it'll just sacrifice
+    /// worker adaptation until it recovers
     ///
     /// Tasks aren't
     /// bound to the `Executor` so they
@@ -52,4 +51,16 @@ pub enum RuntimeError {
     /// and comes back normally. This is the
     /// only one that can't
     TaskFailed,
+
+    /// The task hasn't settled yet
+    ///
+    /// Not a failure, just an answer that
+    /// isn't there yet. The handle is still
+    /// good and the task is still coming
+    NotReady,
+
+    /// The table is too close to the number
+    /// of tasks alive in it to give any of
+    /// it back
+    StillInUse,
 }

@@ -2,8 +2,8 @@
 //! A handle that allows operations
 //! on unfinished tasks across threads
 
-use crate::{RuntimeError, executor::Executor};
-use std::marker::PhantomData;
+use crate::{Runtime, RuntimeError, Sleep, executor::Executor};
+use std::{marker::PhantomData, time::Duration};
 
 /// A task handle
 ///
@@ -47,24 +47,60 @@ where
         Executor::state(self.id).terminal()
     }
 
-    /// Returns the data wrapped
-    /// inside `Option<T>`
+    /// Reads the output if it is there, without waiting
+    ///
+    /// ## Returns
+    /// The output, or `NotReady` if the task hasn't settled.
+    /// A task that settled without an output to give says so
+    /// with the reason, rather than being folded in with one
+    /// that simply isn't finished
     ///
     /// #### Note
-    /// The only method here that borrows rather than
-    /// consuming. A poll that comes back with nothing has to
-    /// leave the handle behind for the caller to poll again,
-    /// and dropping the handle on the way past would end the
-    /// task instead
-    pub fn maybe_join(&self) -> Option<T>
+    /// Borrows rather than consuming. A poll that comes back
+    /// with nothing has to leave the handle behind for the
+    /// caller to poll again, and dropping the handle on the
+    /// way past would end the task instead
+    pub fn maybe_join(&self) -> Result<T, RuntimeError>
     where
         T: Clone,
     {
         if !self.ready() {
-            return None;
+            return Err(RuntimeError::NotReady);
         }
 
-        Executor::clone_result(self.id).ok()
+        Executor::clone_result(self.id)
+    }
+
+    /// Waits a while for the output, and gives up if it
+    /// doesn't arrive
+    ///
+    /// ## Returns
+    /// The output, or `NotReady` if the task still hasn't
+    /// settled when the wait is up. Any other error is the
+    /// task's own, and waiting longer wouldn't have helped
+    ///
+    /// ## Behaviour
+    /// The wait is an ordinary blocking sleep on the calling
+    /// thread, so it is as accurate as `Sleep` is and costs
+    /// the thread nothing while it waits
+    ///
+    /// A task that has already settled is read straight away
+    /// rather than waited for
+    ///
+    /// #### Note
+    /// Borrows, like `maybe_join` and for the same reason.
+    /// Running out of patience isn't an answer, and a handle
+    /// that was thrown away because the caller got bored
+    /// couldn't be waited on again
+    pub fn join_with_timeout(&self, timeout: Duration) -> Result<T, RuntimeError>
+    where
+        T: Clone,
+    {
+        if !self.ready() {
+            Runtime::block(Sleep::sleep(timeout, false));
+        }
+
+        self.maybe_join()
     }
 
     /// Waits until the data is ready

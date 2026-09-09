@@ -229,6 +229,60 @@ fn cancelled_task_is_unreadable() {
 }
 
 #[test]
+fn maybe_join_says_why_rather_than_just_nothing() {
+    Runtime::init();
+
+    let handle = Runtime::spawn(Sleep::sleep(Duration::from_secs(1), false));
+    let watcher = handle.clone();
+
+    assert_eq!(
+        watcher.maybe_join(),
+        Err(RuntimeError::NotReady),
+        "a task still running hasn't failed, it just isn't finished",
+    );
+
+    handle.cancel();
+
+    // The whole reason this returns a result: a task that will
+    // never have an answer is a different thing from one that
+    // doesn't have an answer yet
+    assert_eq!(
+        watcher.maybe_join(),
+        Err(RuntimeError::Cancelled),
+        "a cancelled task says so rather than looking unfinished",
+    );
+}
+
+#[test]
+fn join_with_timeout_gives_up_without_giving_up_the_handle() {
+    Runtime::init();
+
+    let duration = Duration::from_secs(1);
+    let handle = Runtime::spawn(Sleep::sleep(duration, false));
+
+    assert_eq!(
+        handle.join_with_timeout(Duration::from_millis(50)),
+        Err(RuntimeError::NotReady),
+        "nowhere near long enough, and it says so",
+    );
+
+    // Borrowed rather than consumed, so running out of patience
+    // didn't cost the task
+    let slept = handle
+        .join_with_timeout(Duration::from_secs(5))
+        .expect("the second wait is long enough");
+
+    println!("gave up once, then waited and got {:?}", slept);
+
+    assert!(
+        slept >= duration,
+        "the task came back with {:?} for a {:?} sleep",
+        slept,
+        duration,
+    );
+}
+
+#[test]
 fn cancelling_a_spawned_task_settles_every_listener() {
     Runtime::init();
 
@@ -753,8 +807,93 @@ fn monolithic() {
     println!("\n== a peak of live tasks ==");
     holds_a_peak_of_live_tasks();
 
+    println!("\n== the table gives its pages back ==");
+    gives_the_table_back();
+
     println!();
     report("finished");
+}
+
+/// The table hands its pages back once it has stopped using
+/// them
+///
+/// Run straight after the peak, where the table is at its
+/// largest and every slot in it has been given back, which is
+/// the case the whole thing exists for
+///
+/// The last part is the one that matters. Giving pages back is
+/// only safe if the table still works afterwards, so this
+/// spawns into the range that was just handed over and checks
+/// every one of them comes back with an answer
+fn gives_the_table_back() {
+    let passes = 8;
+
+    let before = Runtime::workers();
+
+    // Impossible on its face, so it catches the count running
+    // away rather than letting it quietly refuse to trim for
+    // the rest of the process
+    assert!(
+        before.live <= before.slots,
+        "{} live tasks in a table that has only ever handed out {} slots",
+        before.live,
+        before.slots,
+    );
+
+    let mut released = 0;
+    let mut done = 0;
+
+    // A pass gives back at most a fifth, so it takes repeating.
+    // Capped rather than run to the floor, because each pass
+    // walks the whole free list and forty of them would take
+    // longer than the rest of this test put together
+    for _ in 0..passes {
+        match Runtime::trim() {
+            Ok(bytes) => {
+                released += bytes;
+                done += 1;
+            }
+
+            Err(_) => break,
+        }
+    }
+
+    let after = Runtime::workers();
+
+    println!(
+        "{} passes gave back {} bytes, table {} -> {} slots, {} live",
+        done, released, before.slots, after.slots, after.live,
+    );
+
+    report("trimmed");
+
+    assert!(done > 0, "the table refused to give anything back");
+
+    assert!(
+        after.slots < before.slots,
+        "the table stayed at {} slots",
+        after.slots,
+    );
+
+    // Never below the hundred slots it always keeps
+    assert!(
+        after.slots >= 100,
+        "the table trimmed itself down to {} slots",
+        after.slots,
+    );
+
+    // Straight back into the range that was just handed over
+    let handles: Vec<_> = (0..200_000)
+        .map(|_| Runtime::spawn(Sleep::sleep(Duration::from_nanos(1), true)))
+        .collect();
+
+    for handle in handles {
+        handle
+            .join()
+            .expect("the table still works after giving pages back");
+    }
+
+    println!("200000 tasks ran through the trimmed table");
 }
 
 /// A line of what the pool is doing at this moment
@@ -763,7 +902,7 @@ fn report(at: &str) {
 
     println!(
         "  [{}] {} workers ({} busy), {} sleep threads ({} busy), \
-         {} queued, {} blocking, {} backlog, {} slots",
+         {} queued, {} blocking, {} backlog, {} live, {} slots",
         at,
         stats.len(),
         stats.busy(),
@@ -772,6 +911,7 @@ fn report(at: &str) {
         stats.queued,
         stats.blocking_queued,
         stats.backlog(),
+        stats.live,
         stats.slots,
     );
 }
