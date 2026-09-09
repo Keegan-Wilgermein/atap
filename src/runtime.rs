@@ -4,15 +4,13 @@
 //! their results as they finish
 
 use crate::{
-    RuntimeError, constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW}, futures::task::Task, modules::{int_check::IntCheck, task_handle::TaskHandle}, reactor::Reactor,
+    RuntimeError, constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW}, executor::Executor, futures::task::Task, modules::{int_check::IntCheck, task_handle::TaskHandle}, reactor::Reactor,
 };
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
         mpsc,
-    },
-    thread,
-    time::Instant,
+    }, thread, time::Instant,
 };
 
 /// Whether the runtime has been initialised yet
@@ -71,21 +69,19 @@ impl Runtime {
         let reactor_id = REACTOR_KQUEUE_ID.load(Ordering::Relaxed);
 
         // Always use task ID of 0 in blocking calls
-        // because IDs are per thread
-        // 
-        // Because of this, never use 0 as an ID in
-        // async calls so they don't overlap
+        // because IDs are per thread so this
+        // can't overlap
         let out = task.execute(reactor_id, 0);
 
         out
     }
 
     #[inline(always)]
-    pub fn spawn<F>(_task: F) -> TaskHandle
+    pub fn spawn<F>(task: F) -> TaskHandle<F::Output>
     where
         F: Task,
     {
-        TaskHandle::new()
+        Executor::new_task(task)
     }
 }
 
@@ -133,6 +129,10 @@ fn init_runtime() -> Option<RuntimeError> {
             let _ = unsafe { libc::close(dead_id) };
             started = Instant::now();
         }
+    });
+
+    thread::spawn(|| {
+        Executor::init();
     });
 
     None

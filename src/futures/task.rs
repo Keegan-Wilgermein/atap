@@ -1,12 +1,9 @@
-//! Task
+//! # Task
 //! A trait that defines a task that can be
 //! initialised and run asynchronously
 
 use crate::{
-    constants::SLEEP_TOLERANCE,
-    futures::sleep_task::SleepTask,
-    modules::{
-        event_type::EventType,
+    EventDesc, constants::SLEEP_TOLERANCE, futures::sleep_task::SleepTask, modules::{
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
         kqueue, thread_policy,
@@ -26,9 +23,6 @@ pub trait Task {
     /// to the kernal if required
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output;
 
-    /// Gets the type of event
-    fn as_event(&self) -> EventType;
-
     /// Any preperation the `Task`
     /// must do before execution
     /// 
@@ -43,29 +37,34 @@ pub trait Task {
     /// Gets the user data to send through `kevent`
     fn get_udata(&self) -> *mut c_void;
 
-    /// Offloads the work to
-    /// the kernal via a
-    /// kqueue syscall
-    /// and waits for a response
+    /// Registers the event with the
+    /// kernel and waits for a response
+    /// from the `Reactor`
     #[inline(always)]
-    fn register_event(&self, reactor_id: i32, task_id: usize) {
+    fn register_event(
+        &self,
+        reactor_id: i32,
+        task_id: usize,
+        desc: EventDesc
+    ) {
         let _ = unsafe {
             KEvent::register(
                 reactor_id,
                 task_id,
-                self.as_event(),
                 self.get_intptr_t_data(),
                 self.get_udata(),
+                desc,
             )
         }
         .check();
 
-        // Put this in a loop to prevent
-        // unwanted unparks
         thread::park();
     }
 
-    /// Handling of data from the kernel
+    /// Prepares data and handles what comes back
+    /// from the kernel
+    /// 
+    /// Not required to make any syscalls
     fn offload(&self, reactor_id: i32, task_id: usize) -> Self::Output;
 }
 
@@ -83,11 +82,6 @@ impl Task for SleepTask {
         self.spinlock(until);
 
         return self.created.elapsed();
-    }
-
-    #[inline(always)]
-    fn as_event(&self) -> EventType {
-        EventType::Sleep
     }
 
     #[inline(always)]
@@ -133,9 +127,9 @@ impl Task for SleepTask {
             KEvent::register(
                 sleep_id.abs(),
                 task_id,
-                self.as_event(),
                 self.get_intptr_t_data(),
                 udata,
+                EventDesc::new_timer(),
             )
         }
         .check();

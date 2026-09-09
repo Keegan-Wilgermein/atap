@@ -1,8 +1,9 @@
-//! Event Descriptor
+//! # Event Descriptor
 //! Describes events for creating `kevent` calls
 
 /// A `kevent` description
-pub(crate) struct EventDesc {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EventDesc {
     pub(crate) filter: i16,
     pub(crate) flags: u16,
     pub(crate) fflags: u32,
@@ -10,7 +11,7 @@ pub(crate) struct EventDesc {
 
 impl EventDesc {
     /// Creates a new custom `EventDesc`
-    pub(crate) fn new(filter: i16, flags: u16, fflags: u32) -> Self {
+    pub fn new(filter: i16, flags: u16, fflags: u32) -> Self {
         Self {
             filter,
             flags,

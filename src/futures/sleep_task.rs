@@ -1,4 +1,4 @@
-//! Sleep task
+//! # Sleep task
 //! The tasks associated with sleeping
 //!
 //! Performs sleep functions defined by the `Sleep`

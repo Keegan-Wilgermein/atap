@@ -1,4 +1,4 @@
-//! Constants
+//! # Constants
 //! Constants used throughout the crate
 
 use std::time::Duration;

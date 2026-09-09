@@ -5,7 +5,6 @@
 use crate::{
     RuntimeError,
     modules::{
-        event_type::EventType,
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
     },
@@ -20,9 +19,6 @@ pub(crate) struct Reactor;
 
 impl Reactor {
     /// Initialises the `Reactor`
-    ///
-    /// The id it was given is sent back down `tx` when the loop
-    /// gives up on it, still open, for the caller to replace and close
     pub(crate) fn init(id: i32, tx: Sender<i32>) {
         reactor_loop(id, tx);
     }
@@ -46,18 +42,13 @@ fn reactor_loop(id: i32, tx: Sender<i32>) {
                     continue;
                 }
 
-                match event.filter.into() {
-                    EventType::Sleep => {
-                        let raw = event.udata as *mut Thread;
+                let raw = event.udata as *mut Thread;
 
-                        if raw.is_null() {
-                            continue;
-                        }
-
-                        unsafe { Box::from_raw(raw).unpark() };
-                    }
-                    EventType::Unknown => (),
+                if raw.is_null() {
+                    continue;
                 }
+
+                unsafe { Box::from_raw(raw).unpark() };
             }
         }
 

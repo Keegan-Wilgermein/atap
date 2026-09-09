@@ -1,4 +1,4 @@
-//! Queue
+//! # KQueue
 //! The per thread kqueue that sleeps register their timers on
 //!
 //! Creating and closing a kqueue for every sleep costs two
