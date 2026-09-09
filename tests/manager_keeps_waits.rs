@@ -38,7 +38,7 @@ fn a_manager_dying_on_a_batch_loses_no_waits() {
     let interval = Duration::from_millis(5);
 
     let handles: Vec<_> = (0..waits)
-        .map(|_| Runtime::repeat_every(interval, Sleep::sleep(Duration::from_nanos(1), true)))
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).repeat().every(interval).spawn())
         .collect();
 
     // Every one of them going before anything is done to the

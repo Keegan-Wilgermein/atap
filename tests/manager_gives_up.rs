@@ -42,9 +42,9 @@ fn a_manager_that_gives_up_strands_nothing() {
 
     let before = Runtime::workers();
 
-    let schedule = Runtime::every(interval, quick());
-    let timed = Runtime::repeat_every(interval, quick());
-    let looping = Runtime::repeating(quick());
+    let schedule = Runtime::task(quick()).at_rate(interval).spawn();
+    let timed = Runtime::task(quick()).repeat().every(interval).spawn();
+    let looping = Runtime::task(quick()).repeat().spawn();
 
     // Running properly before any of this, so a settled handle
     // below is the teardown doing it rather than a schedule
@@ -101,7 +101,7 @@ fn a_manager_that_gives_up_strands_nothing() {
     // The pool outlives its manager, which is the whole reason
     // the manager is allowed to die. It stops adapting, it does
     // not stop working
-    let slept = Runtime::spawn(Sleep::sleep(Duration::from_millis(10), false))
+    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn()
         .join()
         .expect("the pool still runs tasks with no manager at all");
 

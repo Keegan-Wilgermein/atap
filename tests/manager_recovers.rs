@@ -35,7 +35,7 @@ fn manager_comes_back_from_going_down() {
     Runtime::init();
 
     let interval = Duration::from_millis(20);
-    let before = Runtime::repeat_every(interval, Sleep::sleep(Duration::from_nanos(1), true));
+    let before = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).repeat().every(interval).spawn();
 
     // Working beforehand, so a failure below is the manager
     // failing to come back rather than never having worked
@@ -57,7 +57,7 @@ fn manager_comes_back_from_going_down() {
     // its own work, reversing its own queue and clearing up
     // after its own dead with nothing supervising any of it
     let during: Vec<_> = (0..256)
-        .map(|_| Runtime::spawn(Sleep::sleep(Duration::from_micros(50), true)))
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50), true)).spawn())
         .collect();
 
     for handle in during {
@@ -69,7 +69,7 @@ fn manager_comes_back_from_going_down() {
     // Three deaths and their backoffs, with room to spare
     std::thread::sleep(Duration::from_millis(400));
 
-    let after = Runtime::repeat_every(interval, Sleep::sleep(Duration::from_nanos(1), true));
+    let after = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).repeat().every(interval).spawn();
 
     for _ in 0..5 {
         take_a_run(&after, "after the manager went down three times");
@@ -79,7 +79,7 @@ fn manager_comes_back_from_going_down() {
 
     // The pool never depended on the manager and shouldn't have
     // noticed any of this
-    let slept = Runtime::spawn(Sleep::sleep(Duration::from_millis(10), false))
+    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn()
         .join()
         .expect("a task spawned after the manager came back still runs");
 

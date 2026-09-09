@@ -49,7 +49,7 @@ fn idle_cpu_usage() {
     // Given a moment to get everything parked, so the threads
     // starting up aren't charged to the idling
     let handles: Vec<_> = (0..tasks)
-        .map(|_| Runtime::spawn(Sleep::sleep(waiting, true)))
+        .map(|_| Runtime::task(Sleep::sleep(waiting, true)).spawn())
         .collect();
 
     thread::sleep(Duration::from_millis(200));

@@ -53,7 +53,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 /// Every task in the process, addressed by id
@@ -298,27 +298,7 @@ impl Executor {
     where
         F: Task,
     {
-        create(task, setup, false).0
-    }
-
-    /// Adds a task that starts once a delay is up
-    ///
-    /// ## Behaviour
-    /// An ordinary one shot in every respect but how it starts.
-    /// The slot is armed instead of queued, so a timer on the
-    /// manager's queue puts it on the worker queue when the
-    /// delay is up — which is the same machinery a
-    /// `RepeatEvery` uses between runs, pointed at the front of
-    /// a task's life rather than the middle of it
-    ///
-    /// The wait costs nothing. No worker and no sleep thread is
-    /// held for it, so a thousand tasks waiting out an hour
-    /// cost a thousand slots and no threads
-    pub(crate) fn new_delayed<F>(task: F, setup: TaskSetup) -> TaskHandle<F::Output>
-    where
-        F: Task,
-    {
-        create(task, setup, true).0
+        create(task, setup).0
     }
 
     /// Adds a schedule that starts a fresh copy of a task on
@@ -377,7 +357,16 @@ impl Executor {
 
         let handle = TaskHandle::new(id);
 
-        if launch(id, entry) && schedule(id, setup.interval.as_nanos() as u64) {
+        // A schedule with a delay on it doesn't start now. The
+        // first run and the repeating timer both wait on the
+        // one shot armed here, and the first tick puts the
+        // period on the queue once the delay has been served
+        let started = match setup.start_delay.as_nanos() as u64 {
+            0 => launch(id, entry) && schedule(id, setup.interval.as_nanos() as u64),
+            delay => wait_for(entry, id, delay),
+        };
+
+        if started {
             return handle;
         }
 
@@ -429,6 +418,40 @@ impl Executor {
         // Only once it is empty, since the id and the memory
         // behind it are both live again the moment this lands
         DATA.free(id);
+    }
+
+    /// Whether a task has settled and will not run again
+    ///
+    /// ## Behaviour
+    /// The two halves matter separately. A repeat between runs
+    /// has settled and *will* run again; a bounded one that has
+    /// reached its ending has settled and won't. Both read
+    /// `Ready`, so the state alone can't tell them apart — the
+    /// kind is what does, because a series that ran out has had
+    /// its kind flipped to `Once`
+    ///
+    /// #### Note
+    /// An id with no slot behind it answers `true`. Whatever it
+    /// was, it is certainly not going to run again
+    pub(crate) fn finished(id: usize) -> bool {
+        let Some(data) = slot(id) else {
+            return true;
+        };
+
+        let state = data.state();
+
+        match state {
+            // Ends for everything, whatever kind it was. A
+            // cancelled series is over even though its kind
+            // still says it repeats
+            TaskState::Cancelled | TaskState::Failed => true,
+
+            // Ends only for something that wasn't going round
+            // again. This is the pair a repeat sits in between
+            // runs, and the pair a bounded one is left in when
+            // it runs out
+            _ => state.terminal() && !data.kind().repeats(),
+        }
     }
 
     /// The state a task is currently in
@@ -543,7 +566,7 @@ impl Executor {
         };
 
         loop {
-            settled(Self::wait_until(id, deadline)?)?;
+            settled(data, Self::wait_until(id, deadline)?)?;
 
             // Held for as long as the clone takes, so that a
             // `take` on another thread waits rather than moving
@@ -558,7 +581,7 @@ impl Executor {
             // settled isn't the same as being over. `lost`
             // knows the difference: everything it calls
             // `NotReady` is a race worth going back round for
-            let error = lost(data.state());
+            let error = lost(data, data.state());
 
             if error != RuntimeError::NotReady {
                 return Err(error);
@@ -595,7 +618,7 @@ impl Executor {
         };
 
         if !data.enter_read() {
-            return Err(lost(data.state()));
+            return Err(lost(data, data.state()));
         }
 
         debug_assert_eq!(data.size(), mem::size_of::<T>());
@@ -623,7 +646,7 @@ impl Executor {
         };
 
         if !data.claim_result() {
-            return Err(lost(data.state()));
+            return Err(lost(data, data.state()));
         }
 
         debug_assert_eq!(data.size(), mem::size_of::<T>());
@@ -663,14 +686,14 @@ impl Executor {
         };
 
         loop {
-            settled(Self::wait_until(id, deadline)?)?;
+            settled(data, Self::wait_until(id, deadline)?)?;
 
             if data.claim_result() {
                 break;
             }
 
             // Same race as `clone_result`, and the same answer
-            let error = lost(data.state());
+            let error = lost(data, data.state());
 
             if error != RuntimeError::NotReady {
                 return Err(error);
@@ -757,7 +780,7 @@ impl Executor {
 /// a series has to know whether its run actually got away. The
 /// handle alone can't say: a run that finished and failed on
 /// its own reads exactly like one that was never queued
-fn create<F>(task: F, setup: TaskSetup, delayed: bool) -> (TaskHandle<F::Output>, bool)
+fn create<F>(task: F, setup: TaskSetup) -> (TaskHandle<F::Output>, bool)
 where
     F: Task,
 {
@@ -800,9 +823,14 @@ where
     // now. Either way somebody is coming for it, which is every
     // case but a pool that is gone and won't restart, or a
     // kernel that wouldn't take the timer
-    let started = match delayed {
-        true => wait_out(entry, id),
-        false => queue(id, setup.blocking),
+    //
+    // Read from the setup rather than passed in, because a
+    // delay is no longer only a one shot's business — a repeat
+    // can be given one too, and then it waits this out before
+    // the first run and `interval` between the ones after it
+    let started = match setup.start_delay.as_nanos() as u64 {
+        0 => queue(id, setup.blocking),
+        delay => wait_for(entry, id, delay),
     };
 
     if started {
@@ -838,7 +866,7 @@ pub(crate) fn spawn_run<F>(task: F, priority: u8) -> bool
 where
     F: Task,
 {
-    create(task, TaskSetup::once(priority), false).1
+    create(task, TaskSetup::once(priority)).1
 }
 
 /// Leaves an output in a series slot for its listeners
@@ -978,6 +1006,14 @@ pub(crate) fn run(id: usize) {
         return;
     }
 
+    // A run has started, so no delay is owed before one any
+    // more. Written on every run rather than only the first,
+    // because storing zero over zero is cheaper than the branch
+    // that would avoid it — and it is what tells a restarted
+    // manager that the wait it is putting back is a gap rather
+    // than a start delay
+    data.clear_start_delay();
+
     let reactor = Runtime::reactor_id();
     let payload = data.payload();
 
@@ -1035,6 +1071,26 @@ pub(crate) fn run(id: usize) {
 
     if !data.kind().repeats() {
         drop(task);
+        release(id);
+
+        return;
+    }
+
+    // The bound is asked here, before the task goes back in
+    // its slot, so a run that isn't wanted is never queued and
+    // no timer is ever armed for it
+    //
+    // The count first, because it is two loads against a clock
+    // read — and a series ended by its count doesn't need to
+    // know what time it is
+    let gap = match data.kind().waits() {
+        true => Duration::from_nanos(data.interval()),
+        false => Duration::ZERO,
+    };
+
+    if data.count_run() || data.past_deadline(gap) {
+        drop(task);
+        data.finish_series();
         release(id);
 
         return;
@@ -1099,9 +1155,25 @@ fn queue(id: usize, blocking: bool) -> bool {
 /// would leave a window where the timer is out there and
 /// nothing in the table says so
 fn wait_out(data: &TaskData, id: usize) -> bool {
+    wait_for(data, id, data.interval())
+}
+
+/// Puts a task down for a given number of nanoseconds
+///
+/// Split out from `wait_out` because the two waits a task can
+/// be put down for are different durations. A gap between runs
+/// is `interval`; a delay before the first run is
+/// `start_delay`, and the slot has to hold both at once for a
+/// repeat that was given a delay
+///
+/// ## Returns
+/// Whether the kernel took the timer. A refusal ends the
+/// series, because a task waiting on a timer that was never
+/// armed waits for good
+fn wait_for(data: &TaskData, id: usize, nanos: u64) -> bool {
     data.arm();
 
-    if arm_timer(id, data.interval()) {
+    if arm_timer(id, nanos) {
         return true;
     }
 
@@ -1164,6 +1236,14 @@ fn fire(ident: usize) {
     };
 
     if data.kind().schedules() {
+        // A delayed schedule's first wake is an armed one shot,
+        // so it is claimed the same way every other wait is. A
+        // manager that put the wake back after losing it would
+        // otherwise start the schedule twice
+        if data.armed() && !data.claim_armed() {
+            return;
+        }
+
         tick(id, data);
 
         return;
@@ -1218,7 +1298,39 @@ fn fire(ident: usize) {
 /// anything, and a schedule that can't produce runs is a slot
 /// waking the manager forever to do nothing
 fn tick(id: usize, data: &TaskData) {
+    // The wake that brought a delayed schedule here was its
+    // start delay, not its period. The repeating timer that
+    // keeps it going has never been armed, so it is armed now —
+    // and the delay is marked spent so this only happens once
+    if data.start_delay() != 0 {
+        data.clear_start_delay();
+
+        if !schedule(id, data.interval()) {
+            end_schedule(id, data);
+
+            return;
+        }
+    }
+
+    // Both bounds, before the launch rather than after it. A
+    // run that would begin past the deadline is never begun,
+    // and a schedule that has used every run it was allowed has
+    // nothing left to start
+    if data.past_deadline(Duration::from_nanos(data.interval())) || !data.runs_remain() {
+        end_schedule(id, data);
+
+        return;
+    }
+
     if !over(data.state()) && launch(id, data) {
+        // That launch spent one of them. A schedule counts what
+        // it *starts* rather than what finishes, because its
+        // runs overlap and the last to start is not the last to
+        // end
+        if data.count_run() {
+            end_schedule(id, data);
+        }
+
         return;
     }
 
@@ -1233,6 +1345,20 @@ fn tick(id: usize, data: &TaskData) {
         wake(data);
     }
 
+    release(id);
+}
+
+/// Takes a schedule off the clock because it is finished
+///
+/// ## Behaviour
+/// Distinct from the failure path in `tick`, and the difference
+/// matters. This is a schedule that did exactly what it was
+/// asked and stopped, so its state is left alone and its last
+/// output stays readable — only the kind is flipped, which is
+/// what stops anything treating it as a schedule again
+fn end_schedule(id: usize, data: &TaskData) {
+    unschedule(id);
+    data.finish_series();
     release(id);
 }
 
@@ -1444,19 +1570,31 @@ pub(crate) fn fail(id: usize) {
 
 /// Turns a settled state into the error it stands for
 #[inline(always)]
-fn settled(state: TaskState) -> Result<(), RuntimeError> {
+fn settled(data: &TaskData, state: TaskState) -> Result<(), RuntimeError> {
     if state == TaskState::Ready {
         return Ok(());
     }
 
-    Err(lost(state))
+    Err(lost(data, state))
 }
 
 /// Why a task that isn't `Ready` has nothing to hand out
 #[inline(always)]
-fn lost(state: TaskState) -> RuntimeError {
+fn lost(data: &TaskData, state: TaskState) -> RuntimeError {
     match state {
-        TaskState::Taken => RuntimeError::AlreadyTaken,
+        // Two very different endings wearing one state. A
+        // repeat between runs has another output coming and a
+        // reader should try again; a bounded one that reached
+        // its ending has none, and telling a caller to try
+        // again would be telling it to loop forever
+        //
+        // A one shot is neither and says `AlreadyTaken`, since
+        // "somebody beat you to it" is the useful thing there
+        // and there was never a second run for this to rule out
+        TaskState::Taken => match !data.kind().repeats() && data.spent() {
+            true => RuntimeError::Finished,
+            false => RuntimeError::AlreadyTaken,
+        },
         TaskState::Cancelled => RuntimeError::Cancelled,
         TaskState::Failed => RuntimeError::TaskFailed,
 
@@ -1781,7 +1919,16 @@ fn recover_waits() {
             continue;
         }
 
-        arm_timer(task, data.interval());
+        // Whichever wait it is actually sitting in. A task that
+        // hasn't run yet is owed its start delay, and re-arming
+        // it with the gap between runs would start it at the
+        // wrong moment entirely
+        let owed = match data.start_delay() {
+            0 => data.interval(),
+            delay => delay,
+        };
+
+        arm_timer(task, owed);
     }
 }
 
@@ -1951,7 +2098,7 @@ mod tests {
             .unwrap_or(1);
 
         let handles: Vec<_> = (0..cores * 2)
-            .map(|_| crate::Runtime::spawn(Liar))
+            .map(|_| crate::Runtime::task(Liar).spawn())
             .collect();
 
         // Long enough for the manager to have seen several
@@ -1993,9 +2140,9 @@ mod tests {
 
         let quick = || Sleep::sleep(Duration::from_micros(50), true);
 
-        let before: Vec<_> = (0..256).map(|_| crate::Runtime::spawn(quick())).collect();
-        let doomed = crate::Runtime::spawn(Panics);
-        let after: Vec<_> = (0..256).map(|_| crate::Runtime::spawn(quick())).collect();
+        let before: Vec<_> = (0..256).map(|_| crate::Runtime::task(quick()).spawn()).collect();
+        let doomed = crate::Runtime::task(Panics).spawn();
+        let after: Vec<_> = (0..256).map(|_| crate::Runtime::task(quick()).spawn()).collect();
 
         assert_eq!(
             doomed.join(),

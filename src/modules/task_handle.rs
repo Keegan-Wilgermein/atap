@@ -105,6 +105,27 @@ where
         self.state() == TaskState::Failed
     }
 
+    /// Whether the task has settled and will not run again
+    ///
+    /// ## Behaviour
+    /// The question `settled` can't answer for a repeat. A
+    /// repeat between runs has settled and *will* run again; a
+    /// bounded one that has reached its ending has settled and
+    /// won't. Both read `Ready`, so this is the only way to
+    /// tell them apart — and the whole reason to ask is that a
+    /// `count` or a `for_duration` was given in the first place
+    ///
+    /// A one shot that has settled reads `true` here too.
+    /// It ran, and there is nothing else coming
+    ///
+    /// #### Note
+    /// A series that ran out keeps its last output. `join` and
+    /// `take` still hand it over after this goes true, because
+    /// running out of runs is how a bounded series *succeeds*
+    pub fn is_finished(&self) -> bool {
+        Executor::finished(self.id)
+    }
+
     /// Waits until the task settles, without reading it
     ///
     /// ## Returns

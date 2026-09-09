@@ -23,7 +23,7 @@ fn shutdown_drains_the_backlog_then_refuses_new_work() {
     // has to account for both halves of the pool rather than
     // just the one
     let handles: Vec<_> = (0..tasks)
-        .map(|task| Runtime::spawn(Sleep::sleep(Duration::from_micros(200), task % 2 == 0)))
+        .map(|task| Runtime::task(Sleep::sleep(Duration::from_micros(200), task % 2 == 0)).spawn())
         .collect();
 
     let started = Instant::now();
@@ -42,7 +42,7 @@ fn shutdown_drains_the_backlog_then_refuses_new_work() {
 
     // Closed to new work, and it says so rather than leaving a
     // listener blocked on a pool that isn't there
-    let late = Runtime::spawn(Sleep::sleep(Duration::from_millis(10), false));
+    let late = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn();
 
     assert_eq!(
         late.join(),

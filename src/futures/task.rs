@@ -19,10 +19,10 @@ use std::{
 /// Marker that closes `Task` to the outside world
 ///
 /// `Task` itself can't be crate private. `Runtime::block` and
-/// `Runtime::spawn` are public and both name `Task::Output`
-/// in their signatures, and naming a crate private associated
-/// type from a public one is an error rather than something
-/// that can be allowed away
+/// every `TaskBuilder::spawn` are public and all of them name
+/// `Task::Output` in their signatures, and naming a crate
+/// private associated type from a public one is an error
+/// rather than something that can be allowed away
 ///
 /// Sealing gets to the same place from the other side. The
 /// trait can be named from outside the crate, which is all

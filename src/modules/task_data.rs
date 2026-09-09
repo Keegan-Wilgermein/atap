@@ -34,6 +34,7 @@ use std::{
     mem, ptr,
     sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering},
     thread,
+    time::{Duration, Instant},
 };
 
 /// Everything one spawned task owns
@@ -155,6 +156,35 @@ pub(crate) struct TaskData {
     /// the header nothing
     armed: AtomicBool,
 
+    /// Runs still allowed, or `u32::MAX` for no limit
+    ///
+    /// Counted down as runs finish, so it must be atomic — it
+    /// is the one bound field that changes after the slot is
+    /// published
+    runs_left: AtomicU32,
+
+    /// The moment this stops repeating, if it does
+    ///
+    /// Plain rather than atomic, and safe to be: written in
+    /// `init` before the `Release` store that publishes the
+    /// slot, and never written again — which is exactly what
+    /// `size` and `drop_glue` above already rely on
+    ///
+    /// An `Instant` rather than packed nanoseconds because
+    /// `until` is handed one by the caller and an `Instant` is
+    /// opaque, with no sound conversion to a raw clock value
+    until: Option<Instant>,
+
+    /// Nanoseconds to wait before the first run, or zero
+    ///
+    /// **Cleared the moment the first run begins**, which is
+    /// what makes it answerable later. A manager coming back
+    /// from a restart has to know whether the wait it is
+    /// re-arming is a delay before the start or a gap between
+    /// runs, and the two are different durations — this being
+    /// zero is how it tells them apart
+    start_delay: AtomicU64,
+
     /// Nanoseconds a `RepeatEvery` task waits between runs
     ///
     /// Zero for everything else, which never reads it. Kept in
@@ -268,6 +298,9 @@ impl TaskData {
                 blocking: AtomicBool::new(setup.blocking),
                 held: AtomicBool::new(true),
                 armed: AtomicBool::new(false),
+                runs_left: AtomicU32::new(setup.runs),
+                until: setup.until(),
+                start_delay: AtomicU64::new(setup.start_delay.as_nanos() as u64),
                 interval: AtomicU64::new(setup.interval.as_nanos() as u64),
                 waiting: AtomicI32::new(NOT_WAITING),
                 priority: AtomicU64::new(0),
@@ -549,6 +582,126 @@ impl TaskData {
     #[inline(always)]
     pub(crate) fn interval(&self) -> u64 {
         self.interval.load(Ordering::Acquire)
+    }
+
+    /// Takes one off the run count and says whether that was
+    /// the last one allowed
+    ///
+    /// ## Behaviour
+    /// The question and the bookkeeping in one, because every
+    /// caller that asks is a run that has just happened. Asking
+    /// twice for one run would count it twice
+    ///
+    /// `u32::MAX` means unbounded and is left alone rather than
+    /// counted down — a series that was never given a limit
+    /// should not acquire one after four billion runs
+    pub(crate) fn count_run(&self) -> bool {
+        loop {
+            let left = self.runs_left.load(Ordering::Acquire);
+
+            if left == u32::MAX {
+                return false;
+            }
+
+            let next = left.saturating_sub(1);
+
+            if self
+                .runs_left
+                .compare_exchange(left, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return next == 0;
+            }
+        }
+    }
+
+    /// Whether any runs are still allowed
+    ///
+    /// Asked without counting, for a schedule that has to know
+    /// before it starts a run rather than after
+    #[inline(always)]
+    pub(crate) fn runs_remain(&self) -> bool {
+        self.runs_left.load(Ordering::Acquire) != 0
+    }
+
+    /// Whether the next run would begin past the deadline
+    ///
+    /// ## Behaviour
+    /// Compares the moment the next run would *start* rather
+    /// than the moment this is asked, so a run that would begin
+    /// after the deadline is never begun. A repeat on a 750ms
+    /// gap bounded to a second therefore runs at 0ms and at
+    /// 750ms and then stops, because a third would land near
+    /// 1500ms
+    ///
+    /// `gap` is however long the wait before the next run is —
+    /// the interval for anything that waits, and zero for a
+    /// repeat that goes straight back on the queue
+    pub(crate) fn past_deadline(&self, gap: Duration) -> bool {
+        let Some(until) = self.until else {
+            return false;
+        };
+
+        match Instant::now().checked_add(gap) {
+            Some(next) => next >= until,
+            None => true,
+        }
+    }
+
+    /// Whether this was a bounded series that reached its end
+    ///
+    /// ## Behaviour
+    /// Read from the bound fields rather than from a flag of
+    /// its own, because they already say it. A one shot can
+    /// never have been given a bound — the setters ask for a
+    /// repeating kind — so it keeps `u32::MAX` runs and no
+    /// deadline, and nothing else can look like both
+    ///
+    /// #### Note
+    /// Only meaningful once the kind says the task is over.
+    /// Half way through, a bounded series has a spent looking
+    /// count and is very much still going, which is why the
+    /// caller asks about the kind first
+    #[inline(always)]
+    pub(crate) fn spent(&self) -> bool {
+        self.runs_left.load(Ordering::Acquire) != u32::MAX || self.until.is_some()
+    }
+
+    /// Says this task will not run again
+    ///
+    /// ## Behaviour
+    /// Flipping the kind is the whole of how a bounded series
+    /// ends, and it is deliberately all that changes. The state
+    /// is left alone because a series that ran out *succeeded* —
+    /// its last output is still there to be read, and turning
+    /// it into a failure after the fact would throw away the
+    /// one thing it produced
+    ///
+    /// Nothing re-arms a `Once`, so this single store closes
+    /// every path that would have carried the series on: `run`
+    /// won't queue it again, a cancel treats it as a finished
+    /// one shot, the teardown sweeps skip it, and a late run of
+    /// a schedule finds `begin` refusing and drops its output
+    #[inline(always)]
+    pub(crate) fn finish_series(&self) {
+        self.kind.store(TaskKind::Once as u8, Ordering::Release);
+    }
+
+    /// Nanoseconds still owed before the first run, or zero
+    #[inline(always)]
+    pub(crate) fn start_delay(&self) -> u64 {
+        self.start_delay.load(Ordering::Acquire)
+    }
+
+    /// Says the first run has begun, so no delay is owed
+    ///
+    /// Stored rather than exchanged because every run of a
+    /// repeat comes through here and only the first can find
+    /// anything to clear. Writing zero over zero costs nothing
+    /// and needs no branch
+    #[inline(always)]
+    pub(crate) fn clear_start_delay(&self) {
+        self.start_delay.store(0, Ordering::Release);
     }
 
     /// The task a series clones its runs from, or null

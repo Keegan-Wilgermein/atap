@@ -30,7 +30,27 @@ pub enum RuntimeError {
 
     /// The output was already moved out
     /// by a call to `take()`
+    ///
+    /// Another run may still publish one. On a repeat this is
+    /// a race lost rather than an ending — the series is
+    /// between runs and reading again finds the next output.
+    /// `Finished` is the one that means no more are coming
     AlreadyTaken,
+
+    /// A bounded series ran out, and its output has been taken
+    ///
+    /// The ending `AlreadyTaken` can't express. A series given
+    /// a `count`, a `for_duration` or an `until` reached it,
+    /// which is how a bounded series *succeeds* — so this is
+    /// the end of a loop rather than a failure, and reading
+    /// again will never find anything
+    ///
+    /// #### Note
+    /// Only ever a repeat. A task that was only going to run
+    /// once says `AlreadyTaken`, because "somebody beat you to
+    /// it" is the useful thing to know there and there was
+    /// never another run for this to rule out
+    Finished,
 
     /// The task was cancelled by
     /// one of its listeners
@@ -98,6 +118,7 @@ impl fmt::Display for RuntimeError {
             Self::AlreadyInit => write!(formatter, "the runtime is already initialised"),
             Self::ShutDown => write!(formatter, "the runtime has been shut down"),
             Self::AlreadyTaken => write!(formatter, "the output was already taken"),
+            Self::Finished => write!(formatter, "the series ran out and its output was taken"),
             Self::Cancelled => write!(formatter, "the task was cancelled"),
             Self::NoSuchTask => write!(formatter, "there is no task behind this handle"),
             Self::TaskFailed => write!(formatter, "the task will never produce an output"),

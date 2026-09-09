@@ -61,7 +61,7 @@ impl Sleep {
     /// duration in that range
     ///
     /// Measured around 5200x more accurate
-    /// that `thread::sleep()`
+    /// than `thread::sleep()`
     ///
     /// #### Without p_mode
     /// Around 4 microseconds over on short
@@ -69,7 +69,7 @@ impl Sleep {
     /// a few milliseconds or more
     ///
     /// Measured around 37x more accurate
-    /// that `thread::sleep()`
+    /// than `thread::sleep()`
     ///
     /// ## Returns
     /// The total time the function ran for

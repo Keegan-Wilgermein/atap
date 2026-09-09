@@ -7,6 +7,7 @@ pub mod runtime;
 
 mod modules {
     pub(crate) mod address_lock;
+    pub mod builder;
     pub(crate) mod erased_task;
     pub mod errors;
     pub(crate) mod event_desc;
@@ -19,7 +20,6 @@ mod modules {
     pub mod runtime_status;
     pub(crate) mod series;
     pub(crate) mod sleep_thread;
-    pub mod spawn;
     pub(crate) mod task_data;
     pub(crate) mod task_kind;
     pub(crate) mod task_setup;
@@ -48,7 +48,7 @@ pub use modules::errors::RuntimeError;
 pub use modules::event_desc::EventDesc;
 pub use modules::pool_stats::PoolStats;
 pub use modules::runtime_status::RuntimeStatus;
-pub use modules::spawn::{Schedule, Spawn};
+pub use modules::builder::{Once, Open, Rate, Repeat, Repeatable, Set, TaskBuilder};
 pub use modules::task_handle::TaskHandle;
 pub use modules::task_state::TaskState;
 pub use modules::worker_stats::WorkerStats;
