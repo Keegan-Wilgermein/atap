@@ -1074,6 +1074,9 @@ fn monolithic() {
     println!("\n== cancelling hands the thread back ==");
     cancelling_hands_the_thread_back();
 
+    println!("\n== losing the manager ==");
+    survives_losing_its_manager();
+
     println!("\n== a peak of live tasks ==");
     holds_a_peak_of_live_tasks();
 
@@ -1186,6 +1189,7 @@ fn gives_the_table_back() {
 /// slot so the run after it can be counted the same way
 fn take_a_run(handle: &TaskHandle<Duration>) -> Duration {
     let mut polls = 0u64;
+    let waited = Instant::now();
 
     loop {
         match handle.clone().take() {
@@ -1205,6 +1209,17 @@ fn take_a_run(handle: &TaskHandle<Duration>) -> Duration {
 
         polls += 1;
 
+        // A series that quietly stopped producing should say so
+        // rather than wait for the harness to give up on the
+        // whole suite. Far longer than any interval in here, so
+        // it only ever fires for something genuinely stuck
+        assert!(
+            waited.elapsed() < Duration::from_secs(30),
+            "a repeating task stopped producing runs after {} polls, pool {:?}",
+            polls,
+            Runtime::workers(),
+        );
+
         // Paused rather than spun. A bare loop turns the gap
         // between runs into millions of clones of the same
         // handle, which says nothing about repeating and a
@@ -1212,6 +1227,76 @@ fn take_a_run(handle: &TaskHandle<Duration>) -> Duration {
         // hammered
         thread::sleep(Duration::from_micros(100));
     }
+}
+
+/// The pool works through a backlog with nobody supervising it
+///
+/// ## What is being separated
+/// The manager is not in the way of a task reaching a thread,
+/// and this is where that stops being a claim in a comment. A
+/// deep queue is put down, the manager is made to come apart
+/// three times, and more work is spawned into the gap — into a
+/// pool that is finding its own work, reversing its own queue
+/// and clearing up after its own dead with nothing supervising
+/// any of it
+///
+/// Then the manager coming back, which needs something only it
+/// can do. A timed repeat is that something: it is driven
+/// entirely by a timer on the manager's own queue and read by
+/// nothing else in the process
+///
+/// ## Why this is here and its sibling isn't
+/// Three deaths is well under the restart limit, so the
+/// supervisor is expected to win. The other half of that story
+/// — a manager that gives up for good — closes its queue and
+/// would strand every phase after this one, so it lives in a
+/// file of its own where it is the only thing in the process
+///
+/// Everything below this point therefore runs on a manager that
+/// has already been killed and rebuilt, which is worth more
+/// than the phase itself
+fn survives_losing_its_manager() {
+    let tasks = 200_000;
+    let quick = || Sleep::sleep(Duration::from_nanos(1), true);
+
+    let started = Instant::now();
+
+    // Deep enough that the pool is still working through it
+    // long after the manager has gone
+    let before: Vec<_> = (0..tasks).map(|_| Runtime::spawn(quick())).collect();
+
+    Runtime::inject_manager_faults(3);
+
+    let during: Vec<_> = (0..tasks).map(|_| Runtime::spawn(quick())).collect();
+
+    let mut finished = 0u64;
+
+    for handle in before.into_iter().chain(during) {
+        handle
+            .join()
+            .expect("every task finishes with no manager to help it");
+
+        finished += 1;
+    }
+
+    report("manager back");
+
+    // Back for real. Nothing else in the process reads that
+    // queue, so a timed repeat that keeps producing runs is a
+    // manager loop that is genuinely reading it again
+    let timed = Runtime::repeat_every(Duration::from_millis(20), quick());
+
+    for _ in 0..3 {
+        take_a_run(&timed);
+    }
+
+    timed.cancel();
+
+    println!(
+        "{} tasks through a pool that lost its manager three times in {:?}, and timers after",
+        finished,
+        started.elapsed(),
+    );
 }
 
 /// A repeating task lives in one slot however long it runs
@@ -1524,24 +1609,13 @@ fn report(at: &str) {
     );
 }
 
-/// Every worker's own ring and count, one to a line
-fn report_workers(at: &str) {
-    let stats = Runtime::workers();
-
-    println!("  [{}] {} workers:", at, stats.len());
-
-    for (index, worker) in stats.workers.iter().enumerate() {
-        println!(
-            "    worker {}: {}, {} queued, {} done",
-            index,
-            match worker.busy {
-                true => "busy",
-                false => "idle",
-            },
-            worker.backlog,
-            worker.completed,
-        );
-    }
+/// Everything the pool is doing, workers and all
+///
+/// The crate's own `Display` rather than anything written out
+/// here. `report` above is the terse version, for the places
+/// that want a line rather than a page
+fn report_full(at: &str) {
+    println!("  [{}]\n{}", at, Runtime::workers());
 }
 
 /// Ids come back and get used again, however many go through
@@ -1953,8 +2027,7 @@ fn holds_a_peak_of_live_tasks() {
     let peak = max_rss();
     let stats = Runtime::workers();
 
-    report("all live, none read");
-    report_workers("all live, none read");
+    report_full("all live, none read");
 
     for handle in handles {
         handle.join().expect("every task finishes");

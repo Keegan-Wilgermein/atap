@@ -90,6 +90,11 @@ impl Runtime {
     ///
     /// Blocking calls can't be cancelled
     /// by any means
+    ///
+    /// ## If the manager goes
+    /// Nothing, and less than nothing. This runs on the calling
+    /// thread and never goes near the `Executor`, so there is
+    /// no part of it the manager could have been involved in
     #[inline(always)]
     pub fn block<F>(mut task: F) -> F::Output
     where
@@ -118,6 +123,18 @@ impl Runtime {
     /// Never blocks the calling thread. A task arriving faster
     /// than the pool can get through goes on a queue with no
     /// ceiling rather than pushing back on whoever spawned it
+    ///
+    /// ## If the manager goes
+    /// Nothing. A spawned task reaches a worker without passing
+    /// through the manager at all, and the pool finds its own
+    /// work, reverses its own queue and clears up after its own
+    /// dead whether anything is supervising it or not
+    ///
+    /// What stops while the manager is away is the pool
+    /// *adapting* — no growing, no reaping, no rebalancing and
+    /// no lifting an overtaken task out of the way. Under load
+    /// that shows up as tasks taking longer, never as tasks not
+    /// running
     pub fn spawn<F>(task: F) -> TaskHandle<F::Output>
     where
         F: Task,
@@ -185,6 +202,13 @@ impl Runtime {
     /// A task that panics ends the series. It came apart part
     /// way through, and running it again isn't a way of finding
     /// out whether it would do the same twice
+    ///
+    /// ## If the manager goes
+    /// Nothing, and nothing is skipped either. There is no
+    /// clock here and no timer: a run puts itself straight back
+    /// on the pool as its last act, so this is the one repeat
+    /// that never involved the manager and the only one that
+    /// survives it giving up for good
     #[inline(always)]
     pub fn repeating<F>(task: F) -> TaskHandle<F::Output>
     where
@@ -228,6 +252,35 @@ impl Runtime {
     /// waiting out is up. The timer is left to fire and clear
     /// up on its way through rather than being chased down,
     /// which is worth knowing if the interval is long
+    ///
+    /// ## If the manager goes
+    /// The wait is a timer on the manager's queue, so this is
+    /// one of the two that notices.
+    ///
+    /// **Away and coming back:** runs are *late*, not lost. The
+    /// queue stays open across a restart and the timer stays
+    /// armed on it, so the wake sits there until the loop is
+    /// reading again and the next run starts then. An interval
+    /// can therefore come out longer than it was asked for —
+    /// never shorter
+    ///
+    /// **Gone for good:** the series ends. It is written off
+    /// rather than left waiting on a queue that has closed, so
+    /// the handle settles and every reader gets an answer
+    /// instead of blocking for the life of the process. One
+    /// created after that point settles `Failed` straight away,
+    /// since the timer it needs can't be armed at all
+    ///
+    /// #### Note
+    /// A manager that dies *holding* a batch of wakes has
+    /// genuinely lost them — the kernel handed them over and
+    /// keeps no copy of them. What is recovered is the wait
+    /// rather than the wake: the slot says one is owed until
+    /// something acts on it, so a manager coming back arms a
+    /// fresh timer for every wait still outstanding
+    ///
+    /// So an interval that spans a restart runs long, by however
+    /// long the manager was away, and the series carries on
     #[inline(always)]
     pub fn repeat_every<F>(interval: Duration, task: F) -> TaskHandle<F::Output>
     where
@@ -293,6 +346,34 @@ impl Runtime {
     /// on, because the copy that came apart was not the task
     /// itself and the next copy is made from a prototype that
     /// never ran
+    ///
+    /// ## If the manager goes
+    /// The clock is a timer on the manager's queue, so this is
+    /// the one that notices most.
+    ///
+    /// **Away and coming back: periods are skipped.** A
+    /// repeating timer that goes off while nobody is reading
+    /// the queue is folded into one wake carrying a count, and
+    /// one wake starts one run. So a schedule on a 20ms period
+    /// through a 400ms absence starts a single run when the
+    /// manager returns, not the twenty it missed — and then
+    /// carries on to the original cadence, because the kernel
+    /// kept the clock throughout
+    ///
+    /// That is the deliberate half of it. Firing the whole
+    /// backlog at once would answer an outage with a burst,
+    /// which is the opposite of what a fixed rate is for
+    ///
+    /// **Gone for good:** the schedule ends. It is written off
+    /// rather than left holding a slot nothing will ever look
+    /// at again, so the handle settles. A last output stays
+    /// readable if it had one — the run that produced it was
+    /// real — and no run starts after that. One created after
+    /// the manager has gone settles `Failed` straight away,
+    /// since the timer it needs can't be armed at all
+    ///
+    /// Runs already in flight when it goes are not interrupted.
+    /// They finish, and find nowhere to publish
     #[inline(always)]
     pub fn every<F>(interval: Duration, task: F) -> TaskHandle<F::Output>
     where
@@ -327,6 +408,30 @@ impl Runtime {
     /// straight after a burst you know isn't coming back
     pub fn trim() -> Result<usize, RuntimeError> {
         executor::trim()
+    }
+
+    /// Makes the manager come apart the next `count` times it
+    /// goes round its loop
+    ///
+    /// ## Behaviour
+    /// Fewer than the restart limit and the supervisor brings it
+    /// back every time, timers and all. More and it gives up,
+    /// closes its queue, and everything that was waiting on that
+    /// queue is written off rather than left waiting for good
+    ///
+    /// #### Note
+    /// Hidden, and here for the crate's own tests. The restart
+    /// path has no other way to be reached — a manager only dies
+    /// of a kernel refusing it a syscall or of a bug in here,
+    /// and a test can ask for neither — so without this the one
+    /// piece of machinery built entirely around surviving a
+    /// failure is the one piece nothing ever exercises
+    ///
+    /// It is not a way to stop the runtime. Use it on a process
+    /// you were finished with
+    #[doc(hidden)]
+    pub fn inject_manager_faults(count: u32) {
+        executor::inject_manager_faults(count);
     }
 
     /// What the worker pool looks like right now

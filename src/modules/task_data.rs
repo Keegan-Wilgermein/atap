@@ -140,6 +140,21 @@ pub(crate) struct TaskData {
     /// it costs the header nothing
     held: AtomicBool,
 
+    /// Whether a wake for this task is out on the manager's
+    /// queue, waiting to put it back on the pool
+    ///
+    /// Set when the timer is armed and taken by whoever acts on
+    /// it, so however many wakes arrive for one wait — the
+    /// original, or one a restarted manager put back after
+    /// losing it — exactly one of them queues the task. Queuing
+    /// twice would put one task in a linked queue in two places
+    /// at once, which is a far worse thing than the lost wake
+    /// this exists to recover
+    ///
+    /// Sits in the padding in front of `interval`, so it costs
+    /// the header nothing
+    armed: AtomicBool,
+
     /// Nanoseconds a `RepeatEvery` task waits between runs
     ///
     /// Zero for everything else, which never reads it. Kept in
@@ -252,6 +267,7 @@ impl TaskData {
                 kind: AtomicU8::new(setup.kind as u8),
                 blocking: AtomicBool::new(setup.blocking),
                 held: AtomicBool::new(true),
+                armed: AtomicBool::new(false),
                 interval: AtomicU64::new(setup.interval.as_nanos() as u64),
                 waiting: AtomicI32::new(NOT_WAITING),
                 priority: AtomicU64::new(0),
@@ -565,6 +581,41 @@ impl TaskData {
     #[inline(always)]
     pub(crate) fn claim_release(&self) -> bool {
         self.held.swap(false, Ordering::AcqRel)
+    }
+
+    /// Says a wake for this task is on its way
+    ///
+    /// Set before the timer is registered rather than after. A
+    /// manager that comes back to find this set re-arms a timer
+    /// that may never have been registered at all, which costs
+    /// one duplicate registration — and the other order costs a
+    /// wake that nothing knows to put back
+    #[inline(always)]
+    pub(crate) fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
+    }
+
+    /// Says the wake never happened
+    #[inline(always)]
+    pub(crate) fn disarm(&self) {
+        self.armed.store(false, Ordering::Release);
+    }
+
+    /// Whether a wake for this task is still owed
+    #[inline(always)]
+    pub(crate) fn armed(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+
+    /// Takes the wake, and with it the job of queuing the task
+    ///
+    /// ## Returns
+    /// Whether the caller is the one that should put the task
+    /// back. Exactly one caller ever gets `true` per wait,
+    /// however many wakes turn up for it
+    #[inline(always)]
+    pub(crate) fn claim_armed(&self) -> bool {
+        self.armed.swap(false, Ordering::AcqRel)
     }
 
     /// Takes the slot for a run

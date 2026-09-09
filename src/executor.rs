@@ -51,7 +51,7 @@ use std::{
     mem,
     panic::{self, AssertUnwindSafe},
     ptr,
-    sync::atomic::{AtomicI32, AtomicU64, Ordering},
+    sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
     thread,
     time::Instant,
 };
@@ -95,6 +95,41 @@ thread_local! {
     /// machinery applies to it, which is the promise blocking
     /// calls make
     static CURRENT: Cell<usize> = const { Cell::new(NO_TASK) };
+}
+
+/// Manager deaths still owed
+///
+/// The restart path has no other way to be reached. A manager
+/// only ever dies of a kernel refusing it a syscall or of a bug
+/// in this crate, and a test can ask for neither — so the one
+/// piece of machinery whose whole job is surviving a failure
+/// would otherwise be the one piece nothing ever exercises
+///
+/// Zero in every run that hasn't asked for otherwise, so what
+/// it costs a healthy manager is a single relaxed read on a
+/// loop that goes round ten times a second
+static INJECTED_FAULTS: AtomicU32 = AtomicU32::new(0);
+
+/// Makes the manager come apart the next `count` times it goes
+/// round its loop
+///
+/// Fewer than `RESTART_LIMIT` and the supervisor brings it back
+/// every time. More and it gives up, closes its queue, and
+/// everything that was depending on that queue has to be
+/// written off — which is the half worth testing, because it is
+/// the half that strands tasks if it is wrong
+pub(crate) fn inject_manager_faults(count: u32) {
+    INJECTED_FAULTS.store(count, Ordering::SeqCst);
+}
+
+/// Takes one of the owed deaths, if any are owed
+fn injected_fault() -> bool {
+    INJECTED_FAULTS
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| match left {
+            0 => None,
+            _ => Some(left - 1),
+        })
+        .is_ok()
 }
 
 /// Async task executor and handler
@@ -723,7 +758,7 @@ pub(crate) fn run(id: usize) {
     // A timed one waits on the kernel rather than on a thread,
     // so nothing of the pool's is tied up for the interval
     let armed = match data.kind().waits() {
-        true => wait_out(id, data.interval()),
+        true => wait_out(data, id),
         false => queue(id, data.blocking()),
     };
 
@@ -766,11 +801,36 @@ fn queue(id: usize, blocking: bool) -> bool {
 /// because a worker that stops finishing tasks is exactly what
 /// the pool reads as stuck and grows itself to make up for
 ///
+/// The slot is marked before the timer exists, so that a
+/// manager which dies between here and the wake arriving can
+/// find the wait again and put it back. Marking afterwards
+/// would leave a window where the timer is out there and
+/// nothing in the table says so
+fn wait_out(data: &TaskData, id: usize) -> bool {
+    data.arm();
+
+    if arm_timer(id, data.interval()) {
+        return true;
+    }
+
+    data.disarm();
+
+    false
+}
+
+/// Puts a one shot timer on the manager's queue for a task
+///
+/// ## Behaviour
 /// The ident is shifted clear of the ones this crate keeps for
 /// itself, since a kqueue keys an event on its ident and filter
 /// together and the manager's own tick is a timer on this very
 /// queue
-fn wait_out(id: usize, interval: u64) -> bool {
+///
+/// #### Note
+/// `EV_ADD` replaces whatever was on the ident rather than
+/// adding beside it, which is what makes re-arming a wait that
+/// may still be armed safe to do
+fn arm_timer(id: usize, interval: u64) -> bool {
     let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
 
     if manager == DEAD_KQUEUE_ID {
@@ -814,6 +874,14 @@ fn fire(ident: usize) {
     if data.kind().schedules() {
         tick(id, data);
 
+        return;
+    }
+
+    // Only the caller that takes the wake puts the task back. A
+    // manager that went down holding this one may have left a
+    // replacement timer behind it, and one task can only be in
+    // one queue once
+    if !data.claim_armed() {
         return;
     }
 
@@ -1230,6 +1298,8 @@ fn executor_loop(id: i32) {
         return;
     }
 
+    recover_waits();
+
     loop {
         POOL.tick();
 
@@ -1238,6 +1308,15 @@ fn executor_loop(id: i32) {
             Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
             Err(_) => break,
         };
+
+        // Nothing at all unless a test has asked for it, and
+        // deliberately here rather than at the top of the loop.
+        // This is the one place a manager can die and take
+        // something with it: the kernel has handed these wakes
+        // over and no copy of them exists anywhere else
+        if injected_fault() {
+            panic!("injected manager fault");
+        }
 
         // The tick carries nothing — being woken is the whole
         // of its message. Everything else on this queue is a
@@ -1249,6 +1328,122 @@ fn executor_loop(id: i32) {
 
             fire(event.ident);
         }
+    }
+}
+
+/// Writes off every schedule in the process
+///
+/// ## Behaviour
+/// A schedule is the one thing that cannot carry on without a
+/// manager. A `Repeating` task puts itself back on a pool that
+/// is still running and never needed the queue at all, and a
+/// `RepeatEvery` finds the queue closed when it goes to wait
+/// and ends its own series on the spot — but a `Series` is
+/// driven entirely by a timer on the queue that has just gone,
+/// and its slot is held for the life of the series rather than
+/// the life of a run. Left alone it would hold that slot for as
+/// long as the process lives, with nothing anywhere that would
+/// ever look at it again
+///
+/// #### Note
+/// Done before the pool is asked whether it can carry on,
+/// because it makes no difference to the answer. A pool that
+/// recovers still has no manager to tick these, and one that
+/// doesn't was going to write them off anyway
+///
+/// #### Note
+/// Safe against a run publishing into a series at this moment.
+/// A run holds a claim of its own for as long as it intends to
+/// publish, so giving the `Executor`'s back here can't take the
+/// count to zero underneath one
+fn orphaned() {
+    for task in 0..DATA.high_water() {
+        let Some(data) = slot(task) else {
+            continue;
+        };
+
+        let kind = data.kind();
+
+        // Only what the queue was driving. A `Repeating` task
+        // never touched it and carries on regardless
+        if !kind.waits() && !kind.schedules() {
+            continue;
+        }
+
+        let state = data.state();
+
+        // A thread is inside this one and will find the queue
+        // closed the moment it goes to wait, and end its own
+        // series there. A schedule has no such thread — the one
+        // inside a schedule is a run publishing into it, which
+        // knows nothing about any of this
+        if state == TaskState::Running && !kind.schedules() {
+            continue;
+        }
+
+        // Left alone if it has already settled, so a last output
+        // stays readable rather than being turned into a failure
+        // after the fact. Only the reference has to go
+        if !state.terminal() {
+            data.set_state(TaskState::Failed);
+            wake(data);
+        }
+
+        release(task);
+    }
+}
+
+/// Puts back the wakes a dead manager took down with it
+///
+/// ## Why this is needed at all
+/// A wake is gone from the kernel the moment `kevent` hands it
+/// over. A manager that comes apart while holding a batch of
+/// them — after the syscall returned and before the task was
+/// queued — takes those wakes with it, and a `RepeatEvery`
+/// whose wake was in that batch is never put back on the pool.
+/// It stops where it stands, holding a slot, with a handle that
+/// settles for nobody
+///
+/// Every wait the table still says is owed is therefore armed
+/// again here, before the loop starts reading. Most restarts
+/// find nothing, since the common case is a manager that died
+/// between batches with every wake still sitting in the kernel
+///
+/// ## Behaviour
+/// Re-arming a wait that was never actually lost is harmless.
+/// `EV_ADD` replaces rather than adds, so the ident carries one
+/// timer either way, and the wake it eventually delivers is
+/// claimed by exactly one caller — so a task is queued once
+/// however many times its wait was armed
+///
+/// A cancelled task gets its wake back too, and should. The run
+/// it wakes finds the series cancelled, drops the task and
+/// gives the slot up, which is the same route every other
+/// cancelled repeat takes and the only one that ends in the
+/// slot coming back
+///
+/// #### Note
+/// A schedule needs none of this. Its timer repeats, so a lost
+/// tick costs it one run and the next period wakes it again —
+/// which is the skipping already written down on
+/// `Runtime::every` rather than anything to be recovered
+///
+/// #### Note
+/// A walk of the whole table on every manager start, which on a
+/// table that has held millions of tasks is not free. It is
+/// bought deliberately: a manager restart is rare and a lost
+/// task is forever
+fn recover_waits() {
+    for task in 0..DATA.high_water() {
+        let Some(data) = slot(task) else {
+            continue;
+        };
+
+        if !data.kind().waits() || !data.armed() {
+            continue;
+        }
+
+        arm_timer(task, data.interval());
     }
 }
 
@@ -1268,6 +1463,10 @@ fn executor_loop(id: i32) {
 fn shutdown(id: i32) {
     EXECUTOR_KQUEUE_ID.store(DEAD_KQUEUE_ID, Ordering::SeqCst);
     let _ = unsafe { libc::close(id) };
+
+    // Before the pool is even asked, because this is true
+    // whether or not it survives
+    orphaned();
 
     // Every chance to carry on before anything is written off
     POOL.ensure_floor();
