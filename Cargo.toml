@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 libc = "0.2.186"
+
+# The same crate as above, declared again so the tests can
+# read the process's own memory use. Integration tests are a
+# separate crate and don't inherit the library's dependencies
+[dev-dependencies]
+libc = "0.2.186"

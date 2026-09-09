@@ -18,4 +18,17 @@ pub enum RuntimeError {
 
     /// Runtime has already been previously initialised
     AlreadyInit,
+
+    /// The output was already moved out
+    /// by a call to `take()`
+    AlreadyTaken,
+
+    /// The task was cancelled by
+    /// one of its listeners
+    Cancelled,
+
+    /// The `Executor` gave up before it
+    /// could finish the task, so no result
+    /// is ever going to arrive
+    ExecutorDead,
 }

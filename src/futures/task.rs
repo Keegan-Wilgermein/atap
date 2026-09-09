@@ -12,12 +12,38 @@ use crate::{
 use libc::c_void;
 use std::{ptr, thread, time::{Duration, Instant}};
 
+/// Marker that closes `Task` to the outside world
+///
+/// `Task` itself can't be crate private. `Runtime::block` and
+/// `Runtime::spawn` are public and both name `Task::Output`
+/// in their signatures, and naming a crate private associated
+/// type from a public one is an error rather than something
+/// that can be allowed away
+///
+/// Sealing gets to the same place from the other side. The
+/// trait can be named from outside the crate, which is all
+/// the public signatures need, but it can't be implemented,
+/// because implementing it means implementing this first and
+/// this can't be named out there at all
+mod sealed {
+    /// Implemented for every type this crate allows as a task
+    pub trait Sealed {}
+}
+
 /// Definition of a task that all things
 /// passed into a runtime function must implement
 /// to function correctly
-pub trait Task {
+///
+/// #### Note
+/// `Send` and `'static` are on the trait rather than on
+/// `spawn`, because a spawned task is moved onto the
+/// `Executor`'s thread and its output is read from a third
+/// thread again. Blocking calls don't need either, but
+/// splitting the trait in two to say so isn't worth it
+#[allow(private_bounds)]
+pub trait Task: sealed::Sealed + Send + 'static {
     /// The final output type
-    type Output;
+    type Output: Send + 'static;
 
     /// Executes the task, offloading
     /// to the kernal if required
@@ -67,6 +93,8 @@ pub trait Task {
     /// Not required to make any syscalls
     fn offload(&self, reactor_id: i32, task_id: usize) -> Self::Output;
 }
+
+impl sealed::Sealed for SleepTask {}
 
 impl Task for SleepTask {
     type Output = Duration;

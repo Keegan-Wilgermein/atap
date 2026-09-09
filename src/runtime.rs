@@ -20,6 +20,13 @@ use std::{
 /// initialised once
 static INIT: AtomicBool = AtomicBool::new(false);
 
+/// Whether initialisation has finished, successfully or not
+///
+/// `INIT` says somebody has started, this says they are done.
+/// Without the pair, a thread that lost the race to `init`
+/// could spawn a task before there was anything to run it
+static READY: AtomicBool = AtomicBool::new(false);
+
 /// The kqueue id that the `Reactor` watches
 ///
 /// Only use `Relaxed` reads for speed
@@ -39,17 +46,29 @@ impl Runtime {
     ///
     /// For this reason, Runtimes are threadsafe
     pub fn init() -> Option<RuntimeError> {
-        // No-op if already initialised
-        if INIT.load(Ordering::SeqCst) {
+        // Claimed and checked in one operation so that two
+        // threads arriving together can't both get past it
+        if INIT.swap(true, Ordering::SeqCst) {
+            // Somebody else got here first, and might still be
+            // part way through. A task spawned before the
+            // `Executor` exists has nowhere to be delivered, so
+            // this waits the initialisation out rather than
+            // racing it
+            while !READY.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+
             return Some(RuntimeError::AlreadyInit);
         }
 
-        // Store the initilised value first so another thread can't
-        // start another initialisation at the same time
-        INIT.store(true, Ordering::SeqCst);
+        let error = init_runtime();
 
-        init_runtime()?;
-        None
+        // Set whether or not it worked. A failed initialisation
+        // is still a finished one, and everything downstream
+        // already copes with a runtime that isn't there
+        READY.store(true, Ordering::Release);
+
+        error
     }
 
     /// Blocking call
@@ -82,6 +101,15 @@ impl Runtime {
         F: Task,
     {
         Executor::new_task(task)
+    }
+
+    /// The kqueue the `Reactor` is watching
+    ///
+    /// The `Executor` hands this to every task it runs, the
+    /// same way `block` hands it to every task it runs
+    #[inline(always)]
+    pub(crate) fn reactor_id() -> i32 {
+        REACTOR_KQUEUE_ID.load(Ordering::Relaxed)
     }
 }
 
@@ -131,9 +159,14 @@ fn init_runtime() -> Option<RuntimeError> {
         }
     });
 
-    thread::spawn(|| {
-        Executor::init();
-    });
+    // Not spawned onto a thread of its own, because the
+    // `Executor` puts its supervisor on one and the kqueue
+    // has to exist before this function returns. A task
+    // spawned the instant `init` comes back would otherwise
+    // have nowhere to be delivered
+    if let Some(error) = Executor::init() {
+        return Some(error);
+    }
 
     None
 }

@@ -28,4 +28,23 @@ impl EventDesc {
             fflags: libc::NOTE_NSECONDS | libc::NOTE_CRITICAL,
         }
     }
+
+    /// Returns the `kevent` flags required to
+    /// raise a user triggered event
+    ///
+    /// `EVFILT_USER` is the filter that exists purely so
+    /// userspace can wake a kqueue on demand, rather than
+    /// waiting on a timer or a descriptor
+    ///
+    /// #### Note
+    /// Carrying `NOTE_TRIGGER` on the `EV_ADD` registers the
+    /// event and fires it in the same syscall, so waking the
+    /// `Executor` costs one call rather than two
+    pub(crate) fn new_user_trigger() -> Self {
+        Self {
+            filter: libc::EVFILT_USER,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_TRIGGER,
+        }
+    }
 }
