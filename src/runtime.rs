@@ -98,7 +98,11 @@ impl Runtime {
     #[inline(always)]
     /// Spawns a task to run asynchronously
     /// 
-    /// This can mess with the time a sleep task sleeps for
+    /// This method doesn't promise consistent
+    /// timimg for running tasks, so `SleepTask`s
+    /// can exit late but never early
+    /// 
+    /// Use `block()` if this is a problem
     pub fn spawn<F>(task: F) -> TaskHandle<F::Output>
     where
         F: Task,

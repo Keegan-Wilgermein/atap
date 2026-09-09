@@ -3,16 +3,15 @@
 //! and propogates them back to the caller
 
 use crate::{
-    RuntimeError,
+    EventDesc, RuntimeError,
+    constants::WAKE_IDENT,
     modules::{
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
+        wake_target::WakeTarget,
     },
 };
-use std::{
-    sync::mpsc::Sender,
-    thread::{self, Thread},
-};
+use std::{ptr, sync::mpsc::Sender, thread};
 
 /// Reacts to kevents from the kernel
 pub(crate) struct Reactor;
@@ -42,13 +41,37 @@ fn reactor_loop(id: i32, tx: Sender<i32>) {
                     continue;
                 }
 
-                let raw = event.udata as *mut Thread;
+                match WakeTarget::decode(event.udata) {
+                    // Nobody registered a way back, so there
+                    // is nobody to tell about it
+                    WakeTarget::None => continue,
 
-                if raw.is_null() {
-                    continue;
+                    // The waiter is sitting in a `kevent` call
+                    // on a queue of its own, and one trigger
+                    // both registers and fires
+                    WakeTarget::Queue(queue) => {
+                        let _ = unsafe {
+                            KEvent::register(
+                                queue,
+                                WAKE_IDENT,
+                                0,
+                                ptr::null_mut(),
+                                EventDesc::new_user_trigger(),
+                            )
+                        }
+                        .check();
+                    }
+
+                    // The waiter is parked. Its flag goes up
+                    // before the unpark, so it finds the event
+                    // however it came out of `park`
+                    //
+                    // The pointer is borrowed from the waiting
+                    // thread's own stack, which is live for as
+                    // long as it is waiting, so nothing here
+                    // owns it or frees it
+                    WakeTarget::Parked(waiter) => unsafe { (*waiter).wake() },
                 }
-
-                unsafe { Box::from_raw(raw).unpark() };
             }
         }
 

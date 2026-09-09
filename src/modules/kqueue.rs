@@ -10,7 +10,13 @@
 //! don't matter for other tasks so they use the global
 //! kqueue
 
-use crate::{RuntimeError, modules::int_check::IntCheck};
+use crate::{
+    RuntimeError,
+    modules::{
+        int_check::IntCheck,
+        kevent::{KEvent, eventlist},
+    },
+};
 use std::cell::Cell;
 
 /// Owns a thread's kqueue descriptor
@@ -57,4 +63,37 @@ pub(crate) fn id() -> Result<i32, RuntimeError> {
 
         return Ok(created);
     });
+}
+
+/// Blocks on a queue until a particular event lands on it
+///
+/// ## Behaviour
+/// A `kevent` call comes back for whatever arrives on the
+/// queue, not only for the thing being waited on, so anything
+/// else sends the caller round again rather than being taken
+/// for an answer it isn't
+///
+/// Returns early if the queue itself fails, since a queue that
+/// can't be listened on is never going to deliver anything and
+/// waiting on it forever helps nobody
+pub(crate) fn wait_for(queue: i32, ident: usize, filter: i16) {
+    let mut events = eventlist();
+
+    loop {
+        let count = match unsafe { KEvent::listen(queue, &mut events) }.check() {
+            Ok(count) => count as usize,
+            Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
+            Err(_) => return,
+        };
+
+        for event in events.iter().take(count) {
+            if event.flags & libc::EV_ERROR != 0 {
+                continue;
+            }
+
+            if event.ident == ident && event.filter == filter {
+                return;
+            }
+        }
+    }
 }

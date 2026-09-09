@@ -15,6 +15,8 @@ mod modules {
     pub(crate) mod mapping;
     pub(crate) mod task_state;
     pub(crate) mod task_table;
+    pub(crate) mod waiter;
+    pub(crate) mod wake_target;
     pub mod errors;
 }
 

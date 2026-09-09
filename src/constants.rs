@@ -76,3 +76,16 @@ pub(crate) const FREE_INDEX_MASK: usize = (1 << FREE_TAG_SHIFT) - 1;
 /// it is the id a handle gets when there was nowhere to put
 /// its task
 pub(crate) const MAX_TASK_ID: usize = (FIRST_BLOCK << TABLE_BLOCKS) - FIRST_BLOCK;
+
+/// The `kevent` ident the `Reactor` wakes a waiting thread on
+///
+/// One ident covers every wake, because a thread can only be
+/// waiting on one thing at a time. Waiting is what it is doing
+/// instead of running, so a second wait can't overlap the first
+///
+/// #### Note
+/// Doesn't collide with the sleep timers a thread registers on
+/// the same queue, even at the same value. A kqueue keys an
+/// event on its ident and its filter together, and these are
+/// `EVFILT_USER` against their `EVFILT_TIMER`
+pub(crate) const WAKE_IDENT: usize = 0;

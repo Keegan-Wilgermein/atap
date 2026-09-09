@@ -218,7 +218,7 @@ fn many_one_by_one_tasks() {
     let mut avg = 0.0;
 
     for _ in 0..tasks {
-        let handle = Runtime::spawn(Sleep::sleep(Duration::from_nanos(500), false));
+        let handle = Runtime::spawn(Sleep::sleep(Duration::from_nanos(500), true));
 
         if let Ok(time) = handle.join() {
             avg += time.as_nanos() as f32;
