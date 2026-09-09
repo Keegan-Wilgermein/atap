@@ -32,6 +32,14 @@ where
 {
     task: F,
     setup: TaskSetup,
+
+    /// Whether the first run waits out `setup.interval`
+    ///
+    /// Not part of `TaskSetup`, because it isn't something the
+    /// slot has to remember. It decides which door the task
+    /// goes through once, at spawn, and after that a delayed
+    /// one shot is a one shot like any other
+    delayed: bool,
 }
 
 impl<F> Spawn<F>
@@ -45,6 +53,7 @@ where
         Self {
             task,
             setup: TaskSetup::once(DEFAULT_PRIORITY),
+            delayed: false,
         }
     }
 
@@ -73,6 +82,7 @@ where
     /// with one set and not the other
     pub fn repeating(mut self) -> Self {
         self.setup = TaskSetup::repeating(self.setup.priority);
+        self.delayed = false;
         self
     }
 
@@ -83,6 +93,24 @@ where
     /// period of them. See `Runtime::repeat_every`
     pub fn repeat_every(mut self, interval: Duration) -> Self {
         self.setup = TaskSetup::every(self.setup.priority, interval);
+        self.delayed = false;
+        self
+    }
+
+    /// Runs once, when a delay is up
+    ///
+    /// See `Runtime::after`. Still a one shot — the delay
+    /// changes when the first run happens, not what happens
+    /// after it
+    ///
+    /// #### Note
+    /// Last one wins here too, so `.after(d).repeating()` is a
+    /// repeating task with no delay on it, and
+    /// `.repeating().after(d)` is a delayed one shot. There is
+    /// no combination of the two
+    pub fn after(mut self, delay: Duration) -> Self {
+        self.setup = TaskSetup::after(self.setup.priority, delay);
+        self.delayed = true;
         self
     }
 
@@ -103,6 +131,9 @@ where
     /// here, so a task that can't be cloned is turned away by
     /// the call that actually needed to clone it
     pub fn every(self, interval: Duration) -> Schedule<F> {
+        // The delay goes with the kind it belonged to. A
+        // schedule starts its first run now, the same way every
+        // other spawn starts as soon as it can
         Schedule {
             setup: TaskSetup::series(self.setup.priority, interval),
             task: self.task,
@@ -114,7 +145,10 @@ where
     /// A `Spawn` that has had nothing set on it is exactly
     /// `Runtime::spawn`
     pub fn spawn(self) -> TaskHandle<F::Output> {
-        Executor::new_task(self.task, self.setup)
+        match self.delayed {
+            true => Executor::new_delayed(self.task, self.setup),
+            false => Executor::new_task(self.task, self.setup),
+        }
     }
 }
 

@@ -298,7 +298,27 @@ impl Executor {
     where
         F: Task,
     {
-        create(task, setup).0
+        create(task, setup, false).0
+    }
+
+    /// Adds a task that starts once a delay is up
+    ///
+    /// ## Behaviour
+    /// An ordinary one shot in every respect but how it starts.
+    /// The slot is armed instead of queued, so a timer on the
+    /// manager's queue puts it on the worker queue when the
+    /// delay is up — which is the same machinery a
+    /// `RepeatEvery` uses between runs, pointed at the front of
+    /// a task's life rather than the middle of it
+    ///
+    /// The wait costs nothing. No worker and no sleep thread is
+    /// held for it, so a thousand tasks waiting out an hour
+    /// cost a thousand slots and no threads
+    pub(crate) fn new_delayed<F>(task: F, setup: TaskSetup) -> TaskHandle<F::Output>
+    where
+        F: Task,
+    {
+        create(task, setup, true).0
     }
 
     /// Adds a schedule that starts a fresh copy of a task on
@@ -737,7 +757,7 @@ impl Executor {
 /// a series has to know whether its run actually got away. The
 /// handle alone can't say: a run that finished and failed on
 /// its own reads exactly like one that was never queued
-fn create<F>(task: F, setup: TaskSetup) -> (TaskHandle<F::Output>, bool)
+fn create<F>(task: F, setup: TaskSetup, delayed: bool) -> (TaskHandle<F::Output>, bool)
 where
     F: Task,
 {
@@ -775,9 +795,17 @@ where
 
     let handle = TaskHandle::new(id);
 
-    // Queued and somebody will come for it, which is every
-    // case but a pool that is gone and won't restart
-    if queue(id, setup.blocking) {
+    // Armed rather than queued when there is a delay on it, so
+    // the first run happens when the delay is up instead of
+    // now. Either way somebody is coming for it, which is every
+    // case but a pool that is gone and won't restart, or a
+    // kernel that wouldn't take the timer
+    let started = match delayed {
+        true => wait_out(entry, id),
+        false => queue(id, setup.blocking),
+    };
+
+    if started {
         return (handle, true);
     }
 
@@ -810,7 +838,7 @@ pub(crate) fn spawn_run<F>(task: F, priority: u8) -> bool
 where
     F: Task,
 {
-    create(task, TaskSetup::once(priority)).1
+    create(task, TaskSetup::once(priority), false).1
 }
 
 /// Leaves an output in a series slot for its listeners
@@ -1153,9 +1181,18 @@ fn fire(ident: usize) {
         return;
     }
 
-    // Nothing is left to run it, so the series ends the way it
-    // would have if the timer itself had been refused
-    if data.try_state(TaskState::Ready, TaskState::Failed) {
+    // Nothing is left to run it, so this ends the way it would
+    // have if the timer itself had been refused
+    //
+    // Two states can be sitting here. A repeat between runs is
+    // `Ready` or `Taken`, having published at least once. A
+    // delayed one shot is still `Pending`, because the wake it
+    // was waiting on was to be its first run — and a `Pending`
+    // task left alone is a listener blocked on something
+    // nothing is going to pick up
+    if data.try_state(TaskState::Ready, TaskState::Failed)
+        || data.try_state(TaskState::Pending, TaskState::Failed)
+    {
         wake(data);
     }
 
@@ -1656,7 +1693,12 @@ fn orphaned() {
 
         // Only what the queue was driving. A `Repeating` task
         // never touched it and carries on regardless
-        if !kind.waits() && !kind.schedules() {
+        //
+        // An armed slot is on that list whatever its kind says.
+        // A delayed one shot is a `Once` waiting on a timer,
+        // and a timer on a queue that has closed is a task that
+        // will never start
+        if !kind.waits() && !kind.schedules() && !data.armed() {
             continue;
         }
 
@@ -1729,7 +1771,13 @@ fn recover_waits() {
             continue;
         };
 
-        if !data.kind().waits() || !data.armed() {
+        // The armed flag is the whole question. It is set only
+        // by `wait_out` and cleared by whoever takes the wake,
+        // so it means "a timer is owed on the manager's queue"
+        // whatever kind of task is underneath it — a repeat
+        // between runs, or a delayed one shot that hasn't had
+        // its first
+        if !data.armed() {
             continue;
         }
 

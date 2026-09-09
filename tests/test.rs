@@ -2297,7 +2297,11 @@ fn builder_with_nothing_set_matches_spawn() {
 fn builder_priority_reaches_the_band() {
     Runtime::init();
 
-    let tasks = 50_000;
+    // Smaller than `high_priority_runs_first`, which measures
+    // the same property. Two 50,000 task batches running beside
+    // each other saturate the pool and slow the whole suite for
+    // no extra confidence
+    let tasks = 10_000;
     let started = Instant::now();
 
     let queued: Vec<_> = (0..tasks)
@@ -2351,15 +2355,34 @@ fn builder_repeats_at_a_priority() {
     // A repeat settles between runs rather than at the end, so
     // reading it twice is how you know it went round
     let first = handle.take_with_timeout(Duration::from_secs(5));
-    assert!(first.is_ok(), "the first run publishes: {first:?}");
 
-    let second = handle.take_with_timeout(Duration::from_secs(5));
+    // Retried rather than read straight off. A repeat sits in
+    // `Taken` for the window between a read and its next run
+    // starting, and a read landing in that window comes back
+    // `AlreadyTaken` rather than waiting — so reading once and
+    // asserting on it is a coin toss
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut second = Err(RuntimeError::AlreadyTaken);
+
+    while Instant::now() < deadline {
+        second = handle.take_with_timeout(Duration::from_millis(100));
+
+        if second.is_ok() {
+            break;
+        }
+    }
+
+    // Before the assertions, always. A repeating task is held
+    // by the `Executor` for the life of the series, so dropping
+    // the handle on a panic doesn't stop it — it would just run
+    // for the rest of the process
+    handle.cancel();
+
+    assert!(first.is_ok(), "the first run publishes: {first:?}");
     assert!(
         second.is_ok(),
         "a later read succeeds where a one shot would stay AlreadyTaken: {second:?}",
     );
-
-    handle.cancel();
 }
 
 /// A handle can be a map key, which is what hashing one is for
@@ -2431,4 +2454,153 @@ fn status_reports_a_live_runtime() {
     assert!(status.reactor_alive, "the reactor is up");
     assert!(status.manager_alive, "the manager is up");
     assert!(status.healthy());
+}
+
+/// A delayed task waits, then runs
+#[test]
+fn after_waits_before_it_runs() {
+    Runtime::init();
+
+    let delay = Duration::from_millis(200);
+    let started = Instant::now();
+
+    let handle = Runtime::after(delay, Sleep::sleep(Duration::from_millis(10), false));
+
+    // Not started, and not finished either — it is sitting on
+    // a timer rather than anywhere in the pool
+    assert!(!handle.settled(), "nowhere near the delay being up");
+    assert_eq!(
+        handle.maybe_join(),
+        Err(RuntimeError::NotReady),
+        "a task waiting out a delay hasn't failed, it just hasn't started",
+    );
+
+    let state = handle.wait().expect("it runs once the delay is up");
+    let waited = started.elapsed();
+
+    println!("ran after {waited:?} of a {delay:?} delay");
+
+    assert_eq!(state, TaskState::Ready, "it ran and published");
+    assert!(
+        waited >= delay,
+        "started after only {waited:?}, which is early",
+    );
+}
+
+/// A delay that is cancelled never runs at all
+#[test]
+fn after_can_be_cancelled_before_it_starts() {
+    Runtime::init();
+
+    let handle = Runtime::after(
+        Duration::from_millis(300),
+        Sleep::sleep(Duration::from_millis(10), false),
+    );
+
+    let watcher = handle.clone();
+    handle.cancel();
+
+    let started = Instant::now();
+    let result = watcher.join();
+    let waited = started.elapsed();
+
+    assert_eq!(
+        result,
+        Err(RuntimeError::Cancelled),
+        "a task cancelled before its delay was up never ran",
+    );
+
+    // The cancel lands for readers straight away, even though
+    // the slot itself isn't given back until the timer would
+    // have fired anyway
+    assert!(
+        waited < Duration::from_millis(200),
+        "the reader waited {waited:?}, so the cancel didn't land until the delay did",
+    );
+}
+
+/// A delay costs a slot and no thread
+///
+/// Far more delayed tasks than the pool could ever hold threads
+/// for. If a delay tied one up, these would not all get through
+#[test]
+fn many_delayed_tasks_cost_no_threads() {
+    Runtime::init();
+
+    let delay = Duration::from_millis(300);
+    let started = Instant::now();
+
+    let handles: Vec<_> = (0..2_000)
+        .map(|_| Runtime::after(delay, Sleep::sleep(Duration::from_micros(50), false)))
+        .collect();
+
+    for (task, handle) in handles.into_iter().enumerate() {
+        handle
+            .join()
+            .unwrap_or_else(|error| panic!("delayed task {task} never ran: {error}"));
+    }
+
+    let total = started.elapsed();
+
+    println!("2000 delayed tasks all ran, {total:?} against a {delay:?} delay");
+
+    // Asserted against the delay rather than against a worker
+    // count, because the pool is process wide and whatever else
+    // is running shares it
+    assert!(
+        total >= delay,
+        "they can't all have waited their delay in {total:?}",
+    );
+}
+
+/// The builder reaches the same delay the method does
+#[test]
+fn builder_after_delays_too() {
+    Runtime::init();
+
+    let delay = Duration::from_millis(150);
+    let started = Instant::now();
+
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10), false))
+        .priority(200)
+        .after(delay)
+        .spawn();
+
+    handle.wait().expect("it runs once the delay is up");
+    let waited = started.elapsed();
+
+    println!("the built one ran after {waited:?} of a {delay:?} delay");
+
+    assert!(waited >= delay, "started after only {waited:?}");
+
+    // Still a one shot, whatever else was set on it
+    handle.take().expect("the output is there");
+}
+
+/// Last one wins, delay included
+#[test]
+fn builder_after_and_repeating_do_not_combine() {
+    Runtime::init();
+
+    let started = Instant::now();
+
+    // The delay belonged to the kind that was replaced, so this
+    // is a repeating task with no delay on it
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10), false))
+        .after(Duration::from_secs(30))
+        .repeating()
+        .spawn();
+
+    handle.wait().expect("the first run happens now, not in 30s");
+
+    let waited = started.elapsed();
+    println!("the repeat started after {waited:?}, not the 30s that was set first");
+
+    // Before the assertion, for the same reason as above
+    handle.cancel();
+
+    assert!(
+        waited < Duration::from_secs(5),
+        "waited {waited:?}, so the delay survived the kind being changed",
+    );
 }

@@ -55,6 +55,22 @@ impl TaskSetup {
         }
     }
 
+    /// A task that runs once, once a delay is up
+    ///
+    /// `Once` like any other one shot, because that is what it
+    /// is — the delay changes when the first run happens, not
+    /// what happens after it. What tells the two apart is the
+    /// slot being armed rather than queued, and the interval is
+    /// read to arm the timer
+    pub(crate) fn after(priority: u8, delay: Duration) -> Self {
+        Self {
+            kind: TaskKind::Once,
+            interval: delay,
+            priority,
+            blocking: false,
+        }
+    }
+
     /// A task that waits out an interval between runs
     pub(crate) fn every(priority: u8, interval: Duration) -> Self {
         Self {

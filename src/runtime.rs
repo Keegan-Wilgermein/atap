@@ -425,6 +425,79 @@ impl Runtime {
         Executor::new_series(task, TaskSetup::series(DEFAULT_PRIORITY, interval))
     }
 
+    /// Spawns a task that runs once, when a delay is up
+    ///
+    /// ## Behaviour
+    /// An ordinary one shot in every respect but when it
+    /// starts. `spawn` puts a task on the queue now; this puts
+    /// it there in `delay`, and everything after that point is
+    /// the same task taking the same path through the same
+    /// pool
+    ///
+    /// The wait costs nothing. No worker and no sleep thread is
+    /// held for it: the task sits in its slot and a timer on
+    /// the manager's queue puts it on the worker queue when the
+    /// delay is up, so a thousand tasks waiting out an hour
+    /// cost a thousand slots and no threads
+    ///
+    /// ## Accuracy
+    /// The kernel timer is asked for the delay exactly and
+    /// marked critical, so it fires as tightly as one can be
+    /// asked to. What the timer can't cover is the moment
+    /// between firing and a worker picking the task up, which
+    /// is however busy the pool is
+    ///
+    /// Use `block` with a `Sleep` if you need the delay itself
+    /// to be accurate rather than the start of the work
+    ///
+    /// ## The handle
+    /// The same handle as any other one shot. `join` and `take`
+    /// wait for the run rather than for the delay, so a handle
+    /// read straight away blocks for the delay and the run
+    /// together
+    ///
+    /// #### Note
+    /// A cancel lands immediately for every reader, and a task
+    /// cancelled before its delay is up never runs at all. The
+    /// slot itself isn't given back until the delay would have
+    /// been up anyway — the timer is left to fire and clear up
+    /// on its way through rather than being chased down, which
+    /// is worth knowing if the delay is long
+    ///
+    /// ## If the manager goes
+    /// The delay is a timer on the manager's queue, so this
+    /// notices in exactly the way `repeat_every` does.
+    ///
+    /// **Away and coming back:** the run is *late*, not lost.
+    /// The queue stays open across a restart and the slot says
+    /// a wake is owed until something acts on it, so a manager
+    /// coming back arms a fresh timer for every delay still
+    /// outstanding. A delay that spans a restart therefore runs
+    /// long, by however long the manager was away — never
+    /// short
+    ///
+    /// **Gone for good:** the task is written off rather than
+    /// left waiting on a queue that has closed, so the handle
+    /// settles and every reader gets an answer instead of
+    /// blocking for the life of the process. One created after
+    /// that point settles `Failed` straight away, since the
+    /// timer it needs can't be armed at all
+    ///
+    /// ## If the runtime is shut down
+    /// A delay that hasn't fired is written off rather than
+    /// waited for. A task sitting on a timer is holding no
+    /// thread and sitting in no queue, so the drain can't see
+    /// it and wouldn't wait for it if it could — a shutdown
+    /// that blocked for an hour because something was
+    /// scheduled an hour out would be no use to anybody
+    #[inline(always)]
+    pub fn after<F>(delay: Duration, task: F) -> TaskHandle<F::Output>
+    where
+        F: Task,
+    {
+        Executor::new_delayed(task, TaskSetup::after(DEFAULT_PRIORITY, delay))
+    }
+
     /// Builds a task up before spawning it
     ///
     /// ## Behaviour
