@@ -19,6 +19,7 @@ mod modules {
     pub(crate) mod sleep_thread;
     pub(crate) mod task_data;
     pub(crate) mod task_kind;
+    pub(crate) mod task_setup;
     pub(crate) mod task_handle;
     pub(crate) mod task_state;
     pub(crate) mod task_table;

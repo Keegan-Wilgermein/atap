@@ -361,6 +361,53 @@ fn repeating_finishes_a_run_before_the_next() {
 }
 
 #[test]
+fn repeat_every_waits_between_runs() {
+    Runtime::init();
+
+    let interval = Duration::from_millis(50);
+    let runs: u32 = 5;
+
+    // A task with nothing in it, so what is being measured is
+    // the gap rather than the work
+    let handle = Runtime::repeat_every(interval, Sleep::sleep(Duration::from_nanos(1), true));
+
+    // One on its own first, so the clock starts at the end of a
+    // run rather than part way through one
+    take_a_run(&handle);
+
+    let started = Instant::now();
+
+    for _ in 0..runs {
+        take_a_run(&handle);
+    }
+
+    let elapsed = started.elapsed();
+
+    handle.clone().cancel();
+
+    // Four whole gaps between the first take and the last, and
+    // a fifth that was already being waited out when the clock
+    // started
+    let floor = interval * (runs - 1);
+
+    println!(
+        "{} runs {:?} apart took {:?}, floor {:?}",
+        runs, interval, elapsed, floor,
+    );
+
+    // A floor, so a busy pool makes this slower and never
+    // wrong. Runs closer together than the interval would mean
+    // the gap wasn't being waited out at all
+    assert!(
+        elapsed >= floor,
+        "{} runs {:?} apart took only {:?}",
+        runs,
+        interval,
+        elapsed,
+    );
+}
+
+#[test]
 fn cancelling_a_spawned_task_settles_every_listener() {
     Runtime::init();
 
@@ -888,6 +935,9 @@ fn monolithic() {
     println!("\n== a repeating task holds one slot ==");
     repeating_holds_one_slot();
 
+    println!("\n== waiting costs no thread ==");
+    waiting_costs_no_thread();
+
     println!("\n== the table gives its pages back ==");
     gives_the_table_back();
 
@@ -928,14 +978,19 @@ fn gives_the_table_back() {
     // Capped rather than run to the floor, because each pass
     // walks the whole free list and forty of them would take
     // longer than the rest of this test put together
-    for _ in 0..passes {
-        match Runtime::trim() {
-            Ok(bytes) => {
-                released += bytes;
-                done += 1;
-            }
+    //
+    // A refusal isn't the end of it. The runtime trims itself
+    // as well, and one already under way turns this one away
+    // rather than fighting it for the free list, so a few extra
+    // attempts are allowed to land the passes wanted
+    for _ in 0..passes * 4 {
+        if done >= passes {
+            break;
+        }
 
-            Err(_) => break,
+        if let Ok(bytes) = Runtime::trim() {
+            released += bytes;
+            done += 1;
         }
     }
 
@@ -1061,6 +1116,64 @@ fn repeating_holds_one_slot() {
         after.live, before.live,
         "{} runs took the live count from {} to {}",
         runs, before.live, after.live,
+    );
+}
+
+/// Waiting out an interval costs the pool nothing
+///
+/// The whole reason `repeat_every` waits on a timer rather than
+/// on a sleep. A thread put down for the interval would be a
+/// worker or a sleep thread held for it, and worse, a worker
+/// that stops finishing tasks is exactly what the manager reads
+/// as stuck and grows the pool to make up for — so a task doing
+/// nothing at all would have talked the pool into more threads
+///
+/// Run here rather than on its own because it counts threads
+/// across the whole pool
+fn waiting_costs_no_thread() {
+    let interval = Duration::from_secs(1);
+
+    let handle = Runtime::repeat_every(interval, Sleep::sleep(Duration::from_nanos(1), true));
+
+    // The first run out of the way, so what follows is the wait
+    take_a_run(&handle);
+
+    // Well into the interval, and past enough manager ticks
+    // that a pool inclined to grow would have done by now
+    thread::sleep(Duration::from_millis(300));
+
+    let stats = Runtime::workers();
+    report("waiting out an interval");
+
+    handle.clone().cancel();
+
+    println!(
+        "waiting out {:?}: {} workers busy, {} sleep threads ({} busy), {} waiting anywhere",
+        interval,
+        stats.busy(),
+        stats.sleep_threads,
+        stats.sleep_busy,
+        stats.backlog(),
+    );
+
+    assert_eq!(
+        stats.busy(),
+        0,
+        "a task that was only waiting had {} workers busy",
+        stats.busy(),
+    );
+
+    assert_eq!(
+        stats.sleep_busy, 0,
+        "a task that was only waiting had {} sleep threads busy",
+        stats.sleep_busy,
+    );
+
+    assert_eq!(
+        stats.backlog(),
+        0,
+        "a task that was only waiting left {} queued",
+        stats.backlog(),
     );
 }
 

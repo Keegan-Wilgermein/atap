@@ -24,7 +24,10 @@ use crate::{
         CANCELLING, INLINE_PAYLOAD, NOT_WAITING, PAYLOAD_OFFSET, PRIORITY_BAND_SHIFT,
         PRIORITY_CLASS_SHIFT, PRIORITY_SEQUENCE_MASK,
     },
-    modules::{erased_task::ErasedTask, mapping, task_kind::TaskKind, task_state::TaskState},
+    modules::{
+        erased_task::ErasedTask, mapping, task_kind::TaskKind, task_setup::TaskSetup,
+        task_state::TaskState,
+    },
 };
 use libc::c_void;
 use std::{
@@ -116,6 +119,14 @@ pub(crate) struct TaskData {
     /// still a load rather than a walk through the erasure
     blocking: AtomicBool,
 
+    /// Nanoseconds a `RepeatEvery` task waits between runs
+    ///
+    /// Zero for everything else, which never reads it. Kept in
+    /// the slot rather than in the task, because the wait is
+    /// arranged by the `Executor` after the run has finished
+    /// and the task itself is not consulted about it
+    interval: AtomicU64,
+
     /// The kqueue this task is sitting in a wait on, or
     /// `NOT_WAITING`
     ///
@@ -176,9 +187,7 @@ impl TaskData {
         data: *mut Self,
         task: *mut c_void,
         state: TaskState,
-        kind: TaskKind,
-        blocking: bool,
-        class: u8,
+        setup: TaskSetup,
         sequence: u64,
     ) -> bool {
         // Both fold away at compile time, and both are silent
@@ -207,8 +216,9 @@ impl TaskData {
                 next: AtomicU32::new(0),
                 queue_next: AtomicU32::new(0),
                 filled: AtomicBool::new(false),
-                kind: AtomicU8::new(kind as u8),
-                blocking: AtomicBool::new(blocking),
+                kind: AtomicU8::new(setup.kind as u8),
+                blocking: AtomicBool::new(setup.blocking),
+                interval: AtomicU64::new(setup.interval.as_nanos() as u64),
                 waiting: AtomicI32::new(NOT_WAITING),
                 priority: AtomicU64::new(0),
                 task: AtomicPtr::new(task),
@@ -219,7 +229,7 @@ impl TaskData {
 
         // Through the accessor rather than packed inline, so
         // that the layout is written down in exactly one place
-        unsafe { (*data).set_priority(class, sequence) };
+        unsafe { (*data).set_priority(setup.priority, sequence) };
 
         // Published last, so that anything finding the task
         // in a live state also sees the whole header behind it
@@ -482,6 +492,12 @@ impl TaskData {
     #[inline(always)]
     pub(crate) fn blocking(&self) -> bool {
         self.blocking.load(Ordering::Acquire)
+    }
+
+    /// Nanoseconds to wait before running this again
+    #[inline(always)]
+    pub(crate) fn interval(&self) -> u64 {
+        self.interval.load(Ordering::Acquire)
     }
 
     /// Takes the slot for a run

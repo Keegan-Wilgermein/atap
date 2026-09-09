@@ -27,7 +27,7 @@ use crate::{
     Runtime, RuntimeError,
     constants::{
         DEAD_KQUEUE_ID, MANAGER_TICK, MANAGER_TICK_IDENT, MAX_TASK_ID, NO_TASK, RESTART_BACKOFF,
-        RESTART_LIMIT, RESTART_WINDOW, WAKE_IDENT,
+        RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE, WAKE_IDENT,
     },
     futures::task::Task,
     modules::{
@@ -38,7 +38,7 @@ use crate::{
         kevent::{KEvent, eventlist},
         task_data::TaskData,
         task_handle::TaskHandle,
-        task_kind::TaskKind,
+        task_setup::TaskSetup,
         task_state::TaskState,
         task_table::TaskTable,
         worker_pool::POOL,
@@ -127,17 +127,14 @@ impl Executor {
     /// can be looking the id up the moment it is queued, so the
     /// task has to be findable before anything is told to go
     /// looking for it
-    pub(crate) fn new_task<F>(task: F, priority: u8, kind: TaskKind) -> TaskHandle<F::Output>
+    pub(crate) fn new_task<F>(task: F, setup: TaskSetup) -> TaskHandle<F::Output>
     where
         F: Task,
     {
         // Asked here, where the task is still itself, rather
-        // than by the worker that picks it up. A blocking task
-        // wants a thread that can be blocked, not a core, so
-        // sending it to the workers' queue would have it wait
-        // behind every bit of unrelated work in the process for
-        // a resource it never wanted
-        let blocking = task.blocking();
+        // than by the worker that picks it up. A re-arm has no
+        // concrete type left to ask, so the answer is kept
+        let setup = setup.blocking(task.blocking());
 
         let boxed: Box<dyn ErasedTask> = Box::new(task);
         let erased = Box::into_raw(Box::new(boxed)).cast::<c_void>();
@@ -156,9 +153,7 @@ impl Executor {
                 entry as *const TaskData as *mut TaskData,
                 erased,
                 TaskState::Pending,
-                kind,
-                blocking,
-                priority,
+                setup,
                 SEQUENCE.fetch_add(1, Ordering::Relaxed),
             )
         };
@@ -172,7 +167,7 @@ impl Executor {
 
         // Queued and somebody will come for it, which is every
         // case but a pool that is gone and won't restart
-        if queue(id, blocking) {
+        if queue(id, setup.blocking) {
             return handle;
         }
 
@@ -574,7 +569,14 @@ pub(crate) fn run(id: usize) {
     // because it stands for the series and not for one run
     data.rearm(Box::into_raw(task).cast::<c_void>());
 
-    if queue(id, data.blocking()) {
+    // A timed one waits on the kernel rather than on a thread,
+    // so nothing of the pool's is tied up for the interval
+    let armed = match data.kind().waits() {
+        true => wait_out(id, data.interval()),
+        false => queue(id, data.blocking()),
+    };
+
+    if armed {
         return;
     }
 
@@ -597,6 +599,73 @@ fn queue(id: usize, blocking: bool) -> bool {
         true => POOL.offload(id),
         false => POOL.submit(id),
     }
+}
+
+/// Puts a task down until its interval is up
+///
+/// ## Returns
+/// Whether the kernel took the timer. A refusal ends the
+/// series, because a task waiting on a timer that was never
+/// armed waits for good
+///
+/// ## Behaviour
+/// The wait costs nothing at all. No worker is held, no sleep
+/// thread is held, and the pool sees the task as gone rather
+/// than as one of its threads sitting still — which matters,
+/// because a worker that stops finishing tasks is exactly what
+/// the pool reads as stuck and grows itself to make up for
+///
+/// The ident is shifted clear of the ones this crate keeps for
+/// itself, since a kqueue keys an event on its ident and filter
+/// together and the manager's own tick is a timer on this very
+/// queue
+fn wait_out(id: usize, interval: u64) -> bool {
+    let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
+
+    if manager == DEAD_KQUEUE_ID {
+        return false;
+    }
+
+    unsafe {
+        KEvent::register(
+            manager,
+            id + SCHEDULE_IDENT_BASE,
+            interval as libc::intptr_t,
+            ptr::null_mut(),
+            EventDesc::new_timer(),
+        )
+    }
+    .check()
+    .is_ok()
+}
+
+/// Puts a task whose interval is up back on the queue
+///
+/// ## Behaviour
+/// Nothing is checked here. A series cancelled while it waited
+/// still comes back through this, and `run` turns it away the
+/// same way it turns away anything else that was cancelled
+/// before it started — which is one path rather than two
+fn fire(ident: usize) {
+    let Some(id) = ident.checked_sub(SCHEDULE_IDENT_BASE) else {
+        return;
+    };
+
+    let Some(data) = slot(id) else {
+        return;
+    };
+
+    if queue(id, data.blocking()) {
+        return;
+    }
+
+    // Nothing is left to run it, so the series ends the way it
+    // would have if the timer itself had been refused
+    if data.try_state(TaskState::Ready, TaskState::Failed) {
+        wake(data);
+    }
+
+    release(id);
 }
 
 /// Says this thread is now sitting in a wait on `queue`
@@ -855,13 +924,15 @@ fn executor_loop(id: i32) {
             Err(_) => break,
         };
 
-        // Nothing in the events is worth reading. Being woken
-        // is the whole of the message, and what to do about it
-        // is whatever the next pass of policy decides
+        // The tick carries nothing — being woken is the whole
+        // of its message. Everything else on this queue is a
+        // scheduled task whose interval is up
         for event in events.iter().take(count) {
-            if event.flags & libc::EV_ERROR != 0 {
+            if event.flags & libc::EV_ERROR != 0 || event.ident == MANAGER_TICK_IDENT {
                 continue;
             }
+
+            fire(event.ident);
         }
     }
 }

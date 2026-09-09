@@ -28,6 +28,14 @@ pub(crate) enum TaskKind {
 
     /// Runs again the moment it finishes, until it is cancelled
     Repeating = 1,
+
+    /// Waits out an interval between runs, until it is
+    /// cancelled
+    ///
+    /// The wait costs no thread. The task goes back in its slot
+    /// and a timer on the manager's queue puts it back on the
+    /// worker queue when the interval is up
+    RepeatEvery = 2,
 }
 
 impl TaskKind {
@@ -41,6 +49,7 @@ impl TaskKind {
     pub(crate) fn from_u8(raw: u8) -> Self {
         match raw {
             1 => Self::Repeating,
+            2 => Self::RepeatEvery,
             _ => Self::Once,
         }
     }
@@ -49,5 +58,14 @@ impl TaskKind {
     #[inline(always)]
     pub(crate) fn repeats(self) -> bool {
         self != Self::Once
+    }
+}
+
+impl TaskKind {
+    /// Whether a run of this is followed by a wait rather than
+    /// by the next run
+    #[inline(always)]
+    pub(crate) fn waits(self) -> bool {
+        self == Self::RepeatEvery
     }
 }

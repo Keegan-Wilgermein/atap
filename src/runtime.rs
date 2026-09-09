@@ -10,11 +10,12 @@ use crate::{
     futures::task::Task,
     modules::{
         int_check::IntCheck, pool_stats::PoolStats, task_handle::TaskHandle,
-        task_kind::TaskKind, worker_pool::POOL,
+        task_setup::TaskSetup, worker_pool::POOL,
     },
     reactor::Reactor,
 };
 use std::{
+    time::Duration,
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
         mpsc,
@@ -121,7 +122,7 @@ impl Runtime {
     where
         F: Task,
     {
-        Executor::new_task(task, DEFAULT_PRIORITY, TaskKind::Once)
+        Executor::new_task(task, TaskSetup::once(DEFAULT_PRIORITY))
     }
 
     /// Spawns a task at a priority of your choosing
@@ -152,7 +153,7 @@ impl Runtime {
     where
         F: Task,
     {
-        Executor::new_task(task, priority, TaskKind::Once)
+        Executor::new_task(task, TaskSetup::once(priority))
     }
 
     /// Spawns a task that keeps running until it is cancelled
@@ -189,7 +190,50 @@ impl Runtime {
     where
         F: Task,
     {
-        Executor::new_task(task, DEFAULT_PRIORITY, TaskKind::Repeating)
+        Executor::new_task(task, TaskSetup::repeating(DEFAULT_PRIORITY))
+    }
+
+    /// Spawns a task that runs, waits, and runs again until it
+    /// is cancelled
+    ///
+    /// ## Behaviour
+    /// The interval is the gap *between* runs, not the period
+    /// of them. A run finishes, the interval is waited out, and
+    /// the next run starts — so a task taking 200ms on a 50ms
+    /// interval runs every 250ms rather than every 50ms, and no
+    /// two runs are ever in flight together
+    ///
+    /// The wait costs nothing. No worker and no sleep thread is
+    /// held for it: the task goes back in its slot and a timer
+    /// on the manager's queue puts it back on the worker queue
+    /// when the interval is up, so a thousand tasks waiting out
+    /// an hour cost a thousand slots and no threads
+    ///
+    /// ## Accuracy
+    /// The kernel timer is asked for the interval exactly and
+    /// marked critical, so it fires as tightly as one can be
+    /// asked to. What the timer can't cover is the moment
+    /// between firing and a worker picking the task up, which
+    /// is however busy the pool is
+    ///
+    /// ## The handle
+    /// Everything `repeating` says about its handle holds here.
+    /// `join` gives the most recent output, `take` moves one
+    /// out and the next run publishes another, and `cancel`
+    /// ends the series
+    ///
+    /// #### Note
+    /// A cancel lands immediately for every reader, but the
+    /// slot itself isn't given back until the interval it was
+    /// waiting out is up. The timer is left to fire and clear
+    /// up on its way through rather than being chased down,
+    /// which is worth knowing if the interval is long
+    #[inline(always)]
+    pub fn repeat_every<F>(interval: Duration, task: F) -> TaskHandle<F::Output>
+    where
+        F: Task,
+    {
+        Executor::new_task(task, TaskSetup::every(DEFAULT_PRIORITY, interval))
     }
 
     /// Gives back the memory behind the unused part of the

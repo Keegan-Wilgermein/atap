@@ -32,7 +32,7 @@ use crate::{
 };
 use std::{
     ptr,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 
 /// Every task in the process, by id
@@ -58,6 +58,15 @@ pub(crate) struct TaskTable {
     /// counting does
     live: AtomicUsize,
 
+    /// Whether a trim is already under way
+    ///
+    /// One at a time, because two would fight over the same
+    /// free list: the first takes it whole to walk it, and the
+    /// second finds nothing there and concludes the table is
+    /// too busy to touch. Waiting costs nothing, since a trim
+    /// is a tidy up and nothing is waiting on the answer
+    trimming: AtomicBool,
+
     /// The head of the free list
     ///
     /// Packed as `tag << TAG_SHIFT | index + 1`, with a
@@ -76,6 +85,7 @@ impl TaskTable {
             blocks: [const { AtomicPtr::new(ptr::null_mut()) }; TABLE_BLOCKS],
             next_id: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
+            trimming: AtomicBool::new(false),
             free: AtomicUsize::new(0),
         }
     }
@@ -254,6 +264,23 @@ impl TaskTable {
     /// page and cancels the reclaim, which is exactly what
     /// `MADV_FREE` promises
     pub(crate) fn trim(&self) -> Result<usize, RuntimeError> {
+        // Held for the whole walk, so a second caller turns
+        // straight round rather than emptying the list out from
+        // under the first one and then reporting that the table
+        // is busy — which it would be, with itself
+        if self.trimming.swap(true, Ordering::AcqRel) {
+            return Err(RuntimeError::StillInUse);
+        }
+
+        let given = self.reclaim();
+
+        self.trimming.store(false, Ordering::Release);
+
+        given
+    }
+
+    /// The trim itself, once it is known to be the only one
+    fn reclaim(&self) -> Result<usize, RuntimeError> {
         let current = self.next_id.load(Ordering::Acquire);
         let live = self.live.load(Ordering::Acquire);
 

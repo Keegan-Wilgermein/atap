@@ -229,6 +229,17 @@ pub(crate) const CANCELLING: i32 = i32::MIN;
 /// Stored in place of a task id when a worker isn't on one
 pub(crate) const NO_TASK: usize = usize::MAX;
 
+/// The first `kevent` ident a scheduled task may use on the
+/// manager's queue
+///
+/// A `repeat_every` task waits on a timer identified by its own
+/// id, and a kqueue keys an event on its ident and filter
+/// together — so an id of 1 would land on the same timer as
+/// `MANAGER_TICK_IDENT` and quietly re-arm the manager's own
+/// tick instead of the task. Shifting task idents clear of the
+/// ones this crate reserves is what keeps them apart
+pub(crate) const SCHEDULE_IDENT_BASE: usize = 2;
+
 /// The `kevent` ident the manager's own tick arrives on
 ///
 /// Distinct from `WAKE_IDENT` so a tick and a poke can be told
