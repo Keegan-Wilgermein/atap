@@ -18,7 +18,7 @@ use crate::{
         kevent::{KEvent, eventlist},
     },
 };
-use std::cell::Cell;
+use std::{cell::Cell, time::Duration};
 
 /// Owns a thread's kqueue descriptor
 ///
@@ -64,6 +64,40 @@ pub(crate) fn id() -> Result<i32, RuntimeError> {
 
         Ok(created)
     })
+}
+
+/// Blocks on a queue until anything lands on it, or the time
+/// runs out
+///
+/// ## Behaviour
+/// Unlike `wait_for`, nothing here is looking for a particular
+/// event. Every caller of this re-reads what it was waiting on
+/// afterwards, so one wake is as good as another and a wake
+/// that turns out to be somebody else's costs a second look
+///
+/// The ceiling is what makes that safe. A notification that
+/// never arrives — because the task settled before the caller
+/// registered, or because somebody else was already registered
+/// on it — turns into a wait of at most `timeout` rather than a
+/// wait of forever
+///
+/// #### Note
+/// `EINTR` goes round again with the full timeout rather than
+/// the remainder. This is a backstop on a path that has a real
+/// notification for the ordinary case, so the arithmetic to be
+/// exact about it would buy nothing
+pub(crate) fn wait_any(queue: i32, timeout: Duration) {
+    let mut events = eventlist();
+
+    loop {
+        match unsafe { KEvent::listen_for(queue, &mut events, timeout) }.check() {
+            // Something landed, or the time ran out. Either way
+            // the caller wants to look again
+            Ok(_) => return,
+            Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
+            Err(_) => return,
+        }
+    }
 }
 
 /// Blocks on a queue until a particular event lands on it

@@ -1,4 +1,4 @@
-use atap::{File, Runtime, RuntimeError, Sleep, TaskHandle, TaskState};
+use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, TaskHandle, TaskState};
 use std::{
     fs,
     path::PathBuf,
@@ -1094,8 +1094,101 @@ fn monolithic() {
     println!("\n== outputs that own memory are dropped ==");
     file_outputs_are_dropped_not_leaked();
 
+    println!("\n== a race picks one and settles the rest ==");
+    join_first_settles_every_loser();
+
     println!();
     report("finished");
+}
+
+/// A race gives every slot back, whichever way the losers end
+///
+/// ## Why it lives here
+/// The isolated tests check that each policy does what it says.
+/// What they can't check is the accounting: a race holds a
+/// registration on every slot in its set, and three of the
+/// four ways out of one — cancelled, dropped, handed back and
+/// then forgotten — end somewhere other than a read
+///
+/// A registration left behind on a slot that has since been
+/// freed and handed to somebody else would point a later task's
+/// wake at a queue nobody is waiting on. Nothing about that is
+/// visible from one race, and everything about it is visible
+/// from a few thousand
+fn join_first_settles_every_loser() {
+    let races = 512;
+    let width = 8;
+
+    let base = settled_live();
+
+    // All three policies, in rotation, so no one way out of a
+    // race is the only one exercised
+    for race in 0..races {
+        let quick = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).spawn();
+
+        let slow: Vec<_> = (0..width)
+            .map(|_| Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn())
+            .collect();
+
+        let policy = match race % 3 {
+            0 => JoinPolicy::Cancel,
+            1 => JoinPolicy::Drop,
+            _ => JoinPolicy::PassBack,
+        };
+
+        let (first, rest) = Runtime::join_first(std::iter::once(quick).chain(slow), policy);
+
+        assert!(first.settled(), "a race produced an unsettled winner");
+
+        match rest {
+            Some(losers) => {
+                assert_eq!(losers.len(), width, "PassBack lost track of a loser");
+
+                // Handed back and then let go without being
+                // read, which is the case a caller who asked
+                // for them and then changed their mind makes
+                drop(losers);
+            }
+            None => assert_ne!(policy, JoinPolicy::PassBack, "PassBack handed back nothing"),
+        }
+    }
+
+    report("races run");
+
+    // Waited for, rather than sampled once it stops moving.
+    // `settled_live` asks whether the count has stopped
+    // changing, and a backlog that hasn't started draining
+    // answers yes to that just as readily as one that has
+    // finished — four thousand sleeps queued behind a pool that
+    // can run sixty of them at a time look perfectly still for
+    // as long as the first one takes
+    //
+    // Every race here ends without a read, so there is no
+    // handle left to join and no way to wait on the work
+    // itself. Waiting on the pool is what is left
+    let waited = Instant::now();
+
+    while waited.elapsed() < Duration::from_secs(30) {
+        let now = Runtime::workers();
+
+        if !now.has_any_task() && now.live <= base + 8 {
+            break;
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let after = Runtime::workers().live;
+
+    println!("  {} races of {}, live {} -> {}", races, width + 1, base, after);
+
+    assert!(
+        after <= base + 8,
+        "{} live tasks after {} races against {} before them",
+        after,
+        races,
+        base,
+    );
 }
 
 /// An output that owns memory is dropped, however it ends

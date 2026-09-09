@@ -26,8 +26,9 @@
 use crate::{
     Runtime, RuntimeError,
     constants::{
-        DEAD_KQUEUE_ID, MANAGER_TICK, MANAGER_TICK_IDENT, MAX_TASK_ID, NO_TASK, RESTART_BACKOFF,
-        RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE, SHUTDOWN_POLL, WAKE_IDENT,
+        DEAD_KQUEUE_ID, MANAGER_TICK, MANAGER_TICK_IDENT, MAX_TASK_ID, NO_SELECT, NO_TASK,
+        RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE, SELECT_IDENT,
+        SELECT_POLL, SHUTDOWN_POLL, WAKE_IDENT,
     },
     futures::task::Task,
     modules::{
@@ -36,6 +37,7 @@ use crate::{
         event_desc::EventDesc,
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
+        kqueue,
         series::SeriesTask,
         task_data::TaskData,
         task_handle::TaskHandle,
@@ -1650,6 +1652,117 @@ fn lost(data: &TaskData, state: TaskState) -> RuntimeError {
 #[inline(always)]
 fn wake(data: &TaskData) {
     address_lock::wake(data.wait_address());
+
+    // A `join_first` waiting on a set this task is in doesn't
+    // block on the state word — it can only block on one
+    // address and it is watching several tasks — so it gets a
+    // poke on its own queue instead
+    //
+    // Best effort, and deliberately so. The thread on the far
+    // end re-reads every slot it was given whenever it wakes,
+    // so a trigger the kernel refused costs it a wait rather
+    // than an answer
+    let queue = data.select_queue();
+
+    if queue == NO_SELECT {
+        return;
+    }
+
+    let _ = unsafe {
+        KEvent::register(
+            queue,
+            SELECT_IDENT,
+            0,
+            ptr::null_mut(),
+            EventDesc::new_user_trigger(),
+        )
+    }
+    .check();
+}
+
+/// Waits until one of `ids` has settled, and says which
+///
+/// ## Behaviour
+/// Two mechanisms, and only one of them is load bearing. Every
+/// slot in the set is asked to poke this thread's queue when it
+/// settles, which is what makes the answer prompt. The state
+/// words are then read on every wake, which is what makes it
+/// right
+///
+/// Nothing depends on a notification arriving. A task that
+/// settled between the first look and the registration never
+/// sends one; a task already in somebody else's set refuses the
+/// registration outright; a thread with no queue of its own
+/// never registers at all. All three end the same way — the
+/// next look round finds it
+///
+/// ## Returns
+/// The id of the first task found settled, or `None` if there
+/// were no ids to wait on
+///
+/// #### Note
+/// A slot that has gone counts as settled. It answers
+/// `NoSuchTask` and always will, so there is nothing to wait
+/// for and a caller left blocking on it would block for good
+pub(crate) fn join_first(ids: &[usize]) -> Option<usize> {
+    if ids.is_empty() {
+        return None;
+    }
+
+    // Asked before anything is registered, because most of the
+    // time one of them is already done and the whole dance
+    // below is avoidable
+    if let Some(done) = settled_any(ids) {
+        return Some(done);
+    }
+
+    let Ok(queue) = kqueue::id() else {
+        // No queue to be poked on, so this is a poll and
+        // nothing more. Rare enough to be worth the simplicity:
+        // it takes a kernel out of descriptors
+        loop {
+            if let Some(done) = settled_any(ids) {
+                return Some(done);
+            }
+
+            thread::sleep(SELECT_POLL);
+        }
+    };
+
+    let registered: Vec<usize> = ids
+        .iter()
+        .filter(|id| slot(**id).is_some_and(|data| data.set_select(queue)))
+        .copied()
+        .collect();
+
+    // Looked at again, after registering. A task that settled
+    // in the window between the first look and the registration
+    // fired its poke before there was anything listening for
+    // it, and this is the read that catches it — the same shape
+    // as the second check in `waiting_on`, for the same reason
+    let winner = loop {
+        if let Some(done) = settled_any(ids) {
+            break Some(done);
+        }
+
+        kqueue::wait_any(queue, SELECT_POLL);
+    };
+
+    for id in registered {
+        if let Some(data) = slot(id) {
+            data.clear_select(queue);
+        }
+    }
+
+    winner
+}
+
+/// The first of `ids` with nothing left to wait for
+fn settled_any(ids: &[usize]) -> Option<usize> {
+    ids.iter().copied().find(|id| match slot(*id) {
+        Some(data) => data.state().terminal(),
+        None => true,
+    })
 }
 
 /// A handle for a task that never made it into the table

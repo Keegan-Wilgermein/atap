@@ -21,7 +21,7 @@
 
 use crate::{
     constants::{
-        CANCELLING, INLINE_PAYLOAD, NOT_WAITING, PAYLOAD_OFFSET, PRIORITY_BAND_SHIFT,
+        CANCELLING, INLINE_PAYLOAD, NO_SELECT, NOT_WAITING, PAYLOAD_OFFSET, PRIORITY_BAND_SHIFT,
         PRIORITY_CLASS_SHIFT, PRIORITY_SEQUENCE_MASK,
     },
     modules::{
@@ -204,6 +204,23 @@ pub(crate) struct TaskData {
     /// so the header is the same 64 bytes it was
     waiting: AtomicI32,
 
+    /// The kqueue a `join_first` wants poking when this settles
+    ///
+    /// `NO_SELECT` when nobody is selecting on it, which is
+    /// every slot almost all of the time
+    ///
+    /// #### Note
+    /// Sits beside `waiting` on purpose. The header has very
+    /// little room left before `PAYLOAD_OFFSET`, and an `i32`
+    /// here lands in the padding that field already leaves
+    /// rather than costing four bytes of its own
+    ///
+    /// One at a time. A second `join_first` over a task that is
+    /// already in somebody's set doesn't register, and finds
+    /// its answer on the next look round instead — which is why
+    /// nothing depends on the notification arriving
+    select: AtomicI32,
+
     /// The class this task was spawned at and the order it
     /// was spawned in, packed into one word
     ///
@@ -303,6 +320,7 @@ impl TaskData {
                 start_delay: AtomicU64::new(setup.start_delay.as_nanos() as u64),
                 interval: AtomicU64::new(setup.interval.as_nanos() as u64),
                 waiting: AtomicI32::new(NOT_WAITING),
+                select: AtomicI32::new(NO_SELECT),
                 priority: AtomicU64::new(0),
                 task: AtomicPtr::new(task),
                 drop_glue: glue::<T>,
@@ -517,6 +535,40 @@ impl TaskData {
     /// on could finish, let its thread be reaped and its queue
     /// closed, and leave the canceller making a syscall against
     /// a descriptor that now belongs to something else
+    /// Says a `join_first` wants this slot to poke `queue` when
+    /// it settles
+    ///
+    /// ## Returns
+    /// Whether the registration took. `false` means somebody
+    /// else got there first, and the caller falls back to
+    /// looking again rather than being told
+    ///
+    /// #### Note
+    /// Registering is only ever an optimisation. The state word
+    /// is the truth, and a caller that never hears anything
+    /// still finds its answer by reading it
+    pub(crate) fn set_select(&self, queue: i32) -> bool {
+        self.select
+            .compare_exchange(NO_SELECT, queue, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Takes a `join_first`'s registration back off
+    ///
+    /// Compared rather than stored, so a caller leaving only
+    /// clears its own registration and never somebody else's
+    pub(crate) fn clear_select(&self, queue: i32) {
+        let _ = self
+            .select
+            .compare_exchange(queue, NO_SELECT, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    /// The kqueue to poke when this settles, if there is one
+    #[inline(always)]
+    pub(crate) fn select_queue(&self) -> i32 {
+        self.select.load(Ordering::Acquire)
+    }
+
     pub(crate) fn clear_waiting(&self) {
         loop {
             let current = self.waiting.load(Ordering::Acquire);
@@ -917,6 +969,7 @@ impl TaskData {
         }
 
         self.waiting.store(NOT_WAITING, Ordering::Release);
+        self.select.store(NO_SELECT, Ordering::Release);
 
         // Nothing is in a queue once it is being destroyed, so
         // the link is cleared rather than left pointing at a

@@ -2,7 +2,7 @@
 //! Generates kevent syscalls from a tasks functionality
 
 use libc::c_void;
-use std::{mem, ptr};
+use std::{mem, ptr, time::Duration};
 
 use crate::{EventDesc, constants::KEVENT_COUNT};
 
@@ -29,6 +29,40 @@ impl KEvent {
                 ptr::null_mut(),
                 0,
                 ptr::null(),
+            )
+        }
+    }
+
+    /// Waits for events, but not forever
+    ///
+    /// ## Behaviour
+    /// The same call as `listen` with a timespec on the end,
+    /// which turns a wait with no way out into one that comes
+    /// back empty handed
+    ///
+    /// ## Returns
+    /// How many events landed. Zero means the time ran out,
+    /// which is an answer rather than a failure — the caller
+    /// asked to be let go, and it has been
+    #[inline(always)]
+    pub(crate) unsafe fn listen_for(
+        id: i32,
+        event_list: &mut [libc::kevent; KEVENT_COUNT],
+        timeout: Duration,
+    ) -> i32 {
+        let spec = libc::timespec {
+            tv_sec: timeout.as_secs().min(libc::time_t::MAX as u64) as libc::time_t,
+            tv_nsec: timeout.subsec_nanos() as libc::c_long,
+        };
+
+        unsafe {
+            libc::kevent(
+                id,
+                ptr::null(),
+                0,
+                event_list.as_mut_ptr(),
+                event_list.len() as i32,
+                &spec,
             )
         }
     }

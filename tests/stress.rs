@@ -18,7 +18,7 @@
 //! standing at the end, still takes work, and gives its slots
 //! back once the noise stops
 
-use atap::{File, Runtime, Sleep, SleepTask};
+use atap::{File, JoinPolicy, Runtime, Sleep, SleepTask};
 use std::{
     fs,
     path::PathBuf,
@@ -49,6 +49,7 @@ struct Tally {
     taken: AtomicU64,
     cancelled: AtomicU64,
     blocked: AtomicU64,
+    raced: AtomicU64,
     errors: AtomicU64,
 }
 
@@ -63,12 +64,13 @@ impl Tally {
 
     fn report(&self) {
         println!(
-            "\n  spawned {}, joined {}, taken {}, cancelled {}, blocked {}, errors {}",
+            "\n  spawned {}, joined {}, taken {}, cancelled {}, blocked {}, raced {}, errors {}",
             Self::get(&self.spawned),
             Self::get(&self.joined),
             Self::get(&self.taken),
             Self::get(&self.cancelled),
             Self::get(&self.blocked),
+            Self::get(&self.raced),
             Self::get(&self.errors),
         );
     }
@@ -358,6 +360,77 @@ fn everything_at_once() {
                 Runtime::sleep(Duration::from_micros(200));
 
                 Tally::bump(&tally.blocked);
+            }
+        }));
+    }
+
+    // ---- races, which are the only crew that holds a claim on
+    // a slot it isn't going to read
+    //
+    // Every set mixes lengths so the winner is never the same
+    // one twice, and the policies rotate so all three ways out
+    // of a race are exercised against everything else running
+    for crew in 0..2u64 {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+        let small = Arc::clone(&small);
+
+        crews.push(thread::spawn(move || {
+            let mut round = crew;
+
+            while !stop.load(Ordering::Relaxed) {
+                round = round.wrapping_add(1);
+
+                let racers: Vec<_> = (0..6u64)
+                    .map(|index| {
+                        Tally::bump(&tally.spawned);
+
+                        Runtime::task(quick(index * 300 + 1)).spawn()
+                    })
+                    .collect();
+
+                let policy = match round % 3 {
+                    0 => JoinPolicy::Cancel,
+                    1 => JoinPolicy::Drop,
+                    _ => JoinPolicy::PassBack,
+                };
+
+                let (first, rest) = Runtime::join_first(racers, policy);
+
+                Tally::bump(&tally.raced);
+
+                assert!(first.settled(), "a race produced an unsettled winner");
+
+                // Read as often as not, so the winner is
+                // sometimes taken and sometimes abandoned
+                if round % 2 == 0 && first.maybe_take().is_ok() {
+                    Tally::bump(&tally.taken);
+                }
+
+                if let Some(losers) = rest {
+                    assert_eq!(losers.len(), 5, "PassBack lost track of a loser");
+
+                    // Handed back and then dropped unread,
+                    // which is the case nothing else covers
+                    drop(losers);
+                }
+
+                // A race across two kinds of work is the same
+                // shape, and this one is against a file so the
+                // set spans both pools at once
+                let mixed: Vec<_> = (0..3)
+                    .map(|_| {
+                        Tally::bump(&tally.spawned);
+
+                        Runtime::task(File::read(small.as_path())).spawn()
+                    })
+                    .collect();
+
+                let (won, _) = Runtime::join_first(mixed, JoinPolicy::Cancel);
+
+                Tally::bump(&tally.raced);
+
+                assert!(won.settled(), "a file race produced an unsettled winner");
             }
         }));
     }

@@ -242,6 +242,31 @@ pub(crate) const TRIM_INTERVAL: u32 = 500;
 /// sitting in a kernel wait
 pub(crate) const NOT_WAITING: i32 = -1;
 
+/// The `waiting` value for a slot nobody is selecting on
+pub(crate) const NO_SELECT: i32 = -1;
+
+/// The ident a `join_first` notification arrives under
+///
+/// A fixed number rather than the task's id, because the thread
+/// waiting on it re-reads every slot it was given anyway and so
+/// never needs to be told which one woke it. One ident keeps
+/// the fire side a single constant and the wait side a single
+/// comparison
+///
+/// #### Note
+/// Unique on a thread's own queue for the pair it is used as.
+/// `WAKE_IDENT` is the only other `EVFILT_USER` ident that
+/// lands there, and sleeps use `EVFILT_TIMER` with the task id,
+/// which is a different filter
+pub(crate) const SELECT_IDENT: usize = 1;
+
+/// How long a `join_first` waits before looking again anyway
+///
+/// The notification is what makes it prompt; this is what makes
+/// it correct. Nothing about the result depends on a wake ever
+/// arriving — a missed one costs latency, not an answer
+pub(crate) const SELECT_POLL: Duration = Duration::from_millis(50);
+
 /// Stored in a slot's waiting field while a canceller is part
 /// way through interrupting it
 ///

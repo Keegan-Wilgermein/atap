@@ -5,12 +5,13 @@
 
 use crate::{
     RuntimeError, Sleep,
-    constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
+    constants::{DEAD_KQUEUE_ID, MAX_TASK_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
     executor::{self, Executor},
     futures::task::Task,
     modules::{
-        builder::TaskBuilder, int_check::IntCheck, pool_stats::PoolStats,
-        runtime_status::RuntimeStatus, task_handle::TaskHandle, worker_pool::POOL,
+        builder::TaskBuilder, int_check::IntCheck, join_policy::JoinPolicy,
+        pool_stats::PoolStats, runtime_status::RuntimeStatus, task_handle::TaskHandle,
+        worker_pool::POOL,
     },
     reactor::Reactor,
 };
@@ -211,6 +212,131 @@ impl Runtime {
         T: Clone,
     {
         handles.into_iter().map(|handle| handle.join()).collect()
+    }
+
+    /// Waits for the first of several tasks to settle
+    ///
+    /// The other side of `join_all`. That one waits for every
+    /// task and takes as long as the slowest; this waits for
+    /// whichever gets there first and takes as long as the
+    /// quickest
+    ///
+    /// ## Behaviour
+    /// Every task in the set is asked to poke this thread when
+    /// it settles, and the thread then blocks on its own queue
+    /// rather than spinning. Nothing about the answer depends
+    /// on that notification arriving — the states are read
+    /// again on every wake and on a ceiling of its own — so a
+    /// task that finished before it was registered, or one
+    /// already in somebody else's race, is found rather than
+    /// waited on forever
+    ///
+    /// Settled means terminal: ready, taken, cancelled or
+    /// failed. A handle with no task behind it counts as
+    /// settled the moment it is looked at, since it has an
+    /// answer already and it is never going to have another
+    ///
+    /// ## Returns
+    /// The winning handle, and what `policy` said to do about
+    /// the rest. Only [`JoinPolicy::PassBack`] gives a `Some`,
+    /// and it keeps the order they were given in
+    ///
+    /// **The winner is a handle, not an output.** Reading it is
+    /// left to the caller, who is then the one deciding between
+    /// `join` and `take` and whether to wait at all — and it
+    /// keeps a `Clone` bound off a method that has no other
+    /// reason to want one
+    ///
+    /// ## An empty set
+    /// A race with nothing in it has no winner, so what comes
+    /// back is a handle to no task — every read on it answers
+    /// `NoSuchTask` rather than blocking. The same dead handle
+    /// a spawn that never found a slot gives back, for the same
+    /// reason: there is no task, and saying so is more use than
+    /// a panic
+    ///
+    /// ```ignore
+    /// let (first, rest) = Runtime::join_first(handles, JoinPolicy::Cancel);
+    /// let answer = first.take()?;
+    /// ```
+    ///
+    /// ## If the manager goes
+    /// Nothing here needs it. The wait is on this thread's own
+    /// queue and the answer is in the state words, neither of
+    /// which the manager is involved in. A task in the set that
+    /// the manager was carrying settles `Failed` when it gives
+    /// up, which is terminal, so it wins the race rather than
+    /// stalling it
+    ///
+    /// #### Note
+    /// Cheap to lose. A task that isn't the winner is untouched
+    /// by having been in the set — no output is read, no state
+    /// is moved, and the registration comes off on the way out
+    ///
+    /// #### Note
+    /// Every handle in the set has the same output type, which
+    /// is all `TaskHandle<T>` can mean. Racing two different
+    /// kinds of work against each other — a read against a
+    /// timer, to put a deadline on it — needs them to agree on
+    /// an output type first, and nothing here erases one on a
+    /// caller's behalf. `join_with_timeout` is the answer to
+    /// that particular question
+    pub fn join_first<T, I>(
+        handles: I,
+        policy: JoinPolicy,
+    ) -> (TaskHandle<T>, Option<Vec<TaskHandle<T>>>)
+    where
+        I: IntoIterator<Item = TaskHandle<T>>,
+    {
+        let mut handles: Vec<TaskHandle<T>> = handles.into_iter().collect();
+
+        let ids: Vec<usize> = handles.iter().map(|handle| handle.id()).collect();
+
+        // `None` only for an empty set, since every other set
+        // has something terminal in it eventually
+        let winner = match executor::join_first(&ids) {
+            Some(winner) => winner,
+            None => {
+                return (
+                    TaskHandle::new(MAX_TASK_ID),
+                    match policy {
+                        JoinPolicy::PassBack => Some(Vec::new()),
+                        _ => None,
+                    },
+                );
+            }
+        };
+
+        // Removed rather than swapped out, so the losers come
+        // back in the order they were handed over. A caller
+        // that built the set in a meaningful order gets to keep
+        // it
+        let at = ids
+            .iter()
+            .position(|id| *id == winner)
+            .unwrap_or_default();
+
+        let first = handles.remove(at);
+
+        match policy {
+            JoinPolicy::PassBack => (first, Some(handles)),
+
+            JoinPolicy::Cancel => {
+                for handle in handles {
+                    handle.cancel();
+                }
+
+                (first, None)
+            }
+
+            // Explicit, because the tasks carry on either way
+            // and a bare fall through would read as an oversight
+            JoinPolicy::Drop => {
+                drop(handles);
+
+                (first, None)
+            }
+        }
     }
 
     /// Whether the runtime has finished initialising

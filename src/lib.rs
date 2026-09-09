@@ -12,6 +12,7 @@ mod modules {
     pub mod errors;
     pub(crate) mod event_desc;
     pub(crate) mod injector;
+    pub mod join_policy;
     pub(crate) mod int_check;
     pub(crate) mod kevent;
     pub(crate) mod kqueue;
@@ -50,6 +51,7 @@ pub use futures::sleep::Sleep;
 pub use futures::sleep_task::SleepTask;
 pub use futures::task::Task;
 pub use modules::errors::RuntimeError;
+pub use modules::join_policy::JoinPolicy;
 pub use modules::event_desc::EventDesc;
 pub use modules::pool_stats::PoolStats;
 pub use modules::runtime_status::RuntimeStatus;
