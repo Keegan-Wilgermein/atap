@@ -59,16 +59,23 @@ pub(crate) const FIRST_BLOCK_LOG2: u32 = FIRST_BLOCK.trailing_zeros();
 
 /// Blocks in the task table, each twice the size of the last
 ///
-/// Doubling from 256 means 32 blocks cover roughly 2^40 ids,
-/// so the table has no ceiling worth planning around
-pub(crate) const TABLE_BLOCKS: usize = 32;
+/// Held at 23 rather than anything larger because a slot's
+/// free list and run queue links are `u32`s, so an id plus one
+/// has to fit in 32 bits. That caps the table at a shade over
+/// two billion live tasks, which is 274GB of slots and so not
+/// a ceiling anybody is going to reach
+pub(crate) const TABLE_BLOCKS: usize = 23;
 
-/// Bits of the free list head given over to the index,
+/// Bits of a tagged stack head given over to the index,
 /// leaving the rest for the tag that defeats ABA
-pub(crate) const FREE_TAG_SHIFT: u32 = 48;
+///
+/// Shared by the task table's free list and the injector's
+/// ready bands, which are the same structure pointed at
+/// different ends of a task's life
+pub(crate) const TAG_SHIFT: u32 = 48;
 
-/// Picks the index back out of a free list head
-pub(crate) const FREE_INDEX_MASK: usize = (1 << FREE_TAG_SHIFT) - 1;
+/// Picks the index back out of a tagged stack head
+pub(crate) const INDEX_MASK: usize = (1 << TAG_SHIFT) - 1;
 
 /// One past the highest id the task table can address
 ///
@@ -89,3 +96,102 @@ pub(crate) const MAX_TASK_ID: usize = (FIRST_BLOCK << TABLE_BLOCKS) - FIRST_BLOC
 /// event on its ident and its filter together, and these are
 /// `EVFILT_USER` against their `EVFILT_TIMER`
 pub(crate) const WAKE_IDENT: usize = 0;
+
+/// Task ids one worker can hold in its own ring
+///
+/// A power of two so the ring indexes with a mask rather than
+/// a division. Small on purpose: a worker only needs enough
+/// work to keep itself fed between visits to the injector, and
+/// a long local queue is work that isn't available to be stolen
+pub(crate) const LOCAL_QUEUE: usize = 256;
+
+/// Picks a ring position out of a head or tail counter
+pub(crate) const LOCAL_QUEUE_MASK: u32 = (LOCAL_QUEUE - 1) as u32;
+
+/// Workers the static pool has room for
+///
+/// The bound on the array, not the number that run. The live
+/// cap is `WORKER_MULTIPLIER` times the core count, so this
+/// only has to be large enough that no real machine hits it
+pub(crate) const MAX_WORKERS: usize = 256;
+
+/// Live workers allowed per core
+///
+/// Above one because a worker handing a blocking task to its
+/// sleep thread is still occupied by it, so a pool capped at
+/// the core count would sit idle with work queued
+pub(crate) const WORKER_MULTIPLIER: usize = 4;
+
+/// Sleep threads allowed per core
+///
+/// Higher than the worker multiplier because a sleep thread is
+/// almost always inside a `kevent` call rather than on a core,
+/// so the number of them that makes sense has very little to
+/// do with how many cores there are
+pub(crate) const SLEEP_MULTIPLIER: usize = 8;
+
+/// How often the manager wakes to do policy on its own
+pub(crate) const MANAGER_TICK: Duration = Duration::from_millis(10);
+
+/// How long a worker sits idle before it is reaped
+pub(crate) const IDLE_REAP: Duration = Duration::from_millis(500);
+
+/// Tasks that may overtake a queued one before it counts
+/// as starving
+///
+/// Measured in tasks rather than time because that is what a
+/// task's sequence number counts, and being overtaken is the
+/// thing that actually starves a task
+pub(crate) const STARVE_AGE: u64 = 4096;
+
+/// Pops a starving queue is served oldest first for, each
+/// time the manager finds it starving
+///
+/// A budget rather than a mode. Turning the order upside down
+/// and leaving it there would invert priority for exactly as
+/// long as the backlog is deep, which is when priority is
+/// worth having. A budget per tick drains the oldest work
+/// steadily while everything else is still served in the order
+/// the caller asked for
+pub(crate) const STARVE_RELIEF: u32 = 64;
+
+/// Priority bands the injector serves, highest first
+pub(crate) const PRIORITY_BANDS: usize = 4;
+
+/// Turns a priority class into the band that serves it
+pub(crate) const PRIORITY_BAND_SHIFT: u32 = 6;
+
+/// Bits of a packed priority given over to the class,
+/// leaving the rest for the sequence
+pub(crate) const PRIORITY_CLASS_SHIFT: u32 = 56;
+
+/// Picks the sequence back out of a packed priority
+pub(crate) const PRIORITY_SEQUENCE_MASK: u64 = (1 << PRIORITY_CLASS_SHIFT) - 1;
+
+/// The class a task gets when the caller doesn't pick one
+///
+/// Halfway up on purpose, so a caller has as much room to
+/// drop a task below the default as to lift one above it
+pub(crate) const DEFAULT_PRIORITY: u8 = 128;
+
+/// Stored in a slot's waiting field when its task isn't
+/// sitting in a kernel wait
+pub(crate) const NOT_WAITING: i32 = -1;
+
+/// Stored in a slot's waiting field while a canceller is part
+/// way through interrupting it
+///
+/// The waiting thread can't clear the field, and so can't
+/// finish and let its queue be closed, until the canceller has
+/// put it back. That is what stops a cancel landing on a
+/// descriptor that has already been closed and reused
+pub(crate) const CANCELLING: i32 = i32::MIN;
+
+/// Stored in place of a task id when a worker isn't on one
+pub(crate) const NO_TASK: usize = usize::MAX;
+
+/// The `kevent` ident the manager's own tick arrives on
+///
+/// Distinct from `WAKE_IDENT` so a tick and a poke can be told
+/// apart, though the manager does the same work either way
+pub(crate) const MANAGER_TICK_IDENT: usize = 1;

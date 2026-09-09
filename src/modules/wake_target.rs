@@ -35,11 +35,11 @@ impl WakeTarget {
     /// a real kqueue on descriptor 0 doesn't encode to the
     /// same word as having no waiter at all
     pub(crate) fn encode(self) -> *mut c_void {
-        return match self {
-            Self::None => 0 as *mut c_void,
+        match self {
+            Self::None => std::ptr::null_mut::<c_void>(),
             Self::Queue(queue) => (((queue as usize) + 1) << 1) as *mut c_void,
             Self::Parked(waiter) => ((waiter as usize) | 1) as *mut c_void,
-        };
+        }
     }
 
     /// Reads a target back out of an event
@@ -57,6 +57,6 @@ impl WakeTarget {
             return Self::Parked((raw & !1) as *mut Waiter);
         }
 
-        return Self::Queue(((raw >> 1) - 1) as i32);
+        Self::Queue(((raw >> 1) - 1) as i32)
     }
 }

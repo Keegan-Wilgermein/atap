@@ -35,10 +35,10 @@ pub(crate) struct Waiter {
 impl Waiter {
     /// A waiter for the calling thread
     pub(crate) fn new() -> Self {
-        return Self {
+        Self {
             thread: thread::current(),
             fired: AtomicBool::new(false),
-        };
+        }
     }
 
     /// Blocks until the event arrives

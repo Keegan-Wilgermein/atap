@@ -6,7 +6,7 @@ use crate::{RuntimeError, executor::Executor};
 use std::marker::PhantomData;
 
 /// A task handle
-/// 
+///
 /// Task handles can be infinitely duplicated,
 /// passed around threads, and
 /// access data from any thread
@@ -29,9 +29,7 @@ where
     T: Sized,
 {
     /// Creates a new task handle
-    pub(crate) fn new(
-        id: usize,
-    ) -> Self {
+    pub(crate) fn new(id: usize) -> Self {
         Self {
             id,
             _pd: PhantomData,

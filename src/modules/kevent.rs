@@ -19,13 +19,13 @@ impl KEvent {
         udata: *mut c_void,
         desc: EventDesc,
     ) -> i32 {
-        let event_c = create(kevent_id, data, udata ,desc);
+        let event_c = create(kevent_id, data, udata, desc);
 
         unsafe {
             libc::kevent(
-                id,                             // kqueue id
-                &event_c,               // Events to register
-                1,                        // Number of events to register
+                id,       // kqueue id
+                &event_c, // Events to register
+                1,        // Number of events to register
                 ptr::null_mut(),
                 0,
                 ptr::null(),
@@ -58,18 +58,13 @@ pub(crate) const fn eventlist() -> [libc::kevent; KEVENT_COUNT] {
 ///
 /// `data` is the sleep duration
 #[inline(always)]
-fn create(
-    id: usize,
-    data: libc::intptr_t,
-    udata: *mut c_void,
-    desc: EventDesc,
-) -> libc::kevent {
+fn create(id: usize, data: libc::intptr_t, udata: *mut c_void, desc: EventDesc) -> libc::kevent {
     libc::kevent {
-        ident: id,                  // Timer id, is unique across threads so it's fine
+        ident: id, // Timer id, is unique across threads so it's fine
         filter: desc.filter,
         flags: desc.flags,
         fflags: desc.fflags,
-        data,                       // The sleep duration in ns
-        udata,                      // Thread handle as *mut c_void
+        data,  // The sleep duration in ns
+        udata, // Thread handle as *mut c_void
     }
 }

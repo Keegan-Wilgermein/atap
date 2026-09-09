@@ -37,7 +37,7 @@ pub(crate) fn page_size() -> usize {
     let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
     PAGE_SIZE.store(size, Ordering::Relaxed);
 
-    return size;
+    size
 }
 
 /// Rounds a length up to the next whole page
@@ -49,7 +49,7 @@ pub(crate) fn page_size() -> usize {
 pub(crate) fn round_up(len: usize) -> usize {
     let page = page_size();
 
-    return len.div_ceil(page) * page;
+    len.div_ceil(page) * page
 }
 
 /// Maps `len` bytes of zeroed, readable, writable memory
@@ -65,7 +65,7 @@ pub(crate) fn alloc(len: usize) -> *mut u8 {
 
     let base = unsafe {
         libc::mmap(
-            ptr::null_mut(),                    // Let the kernel pick the address
+            ptr::null_mut(), // Let the kernel pick the address
             len,
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_ANON | libc::MAP_PRIVATE, // Not backed by a file, not shared
@@ -78,7 +78,7 @@ pub(crate) fn alloc(len: usize) -> *mut u8 {
         return ptr::null_mut();
     }
 
-    return base.cast::<u8>();
+    base.cast::<u8>()
 }
 
 /// Gives a mapping back to the kernel

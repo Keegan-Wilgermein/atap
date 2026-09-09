@@ -51,7 +51,7 @@ impl TaskState {
     /// trusted and a listener waiting on it should be let go
     #[inline(always)]
     pub(crate) fn from_u32(raw: u32) -> Self {
-        return match raw {
+        match raw {
             0 => Self::Free,
             1 => Self::Pending,
             2 => Self::Running,
@@ -59,7 +59,7 @@ impl TaskState {
             4 => Self::Taken,
             5 => Self::Cancelled,
             _ => Self::Failed,
-        };
+        }
     }
 
     /// Whether the state can still change
@@ -68,6 +68,6 @@ impl TaskState {
     /// for, and the point past which a read won't block
     #[inline(always)]
     pub(crate) fn terminal(self) -> bool {
-        return !matches!(self, Self::Pending | Self::Running);
+        !matches!(self, Self::Pending | Self::Running)
     }
 }

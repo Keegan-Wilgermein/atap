@@ -23,10 +23,9 @@ pub struct SleepTask {
 
     /// Whether to trade cpu for precision
     ///
-    /// On, the thread is promoted into the realtime band and
-    /// the last stretch is spun rather than slept. Off, every
-    /// sleep is handed to the kernel and whatever comes back
-    /// is the answer
+    /// On, the last stretch of the wait is spun rather than
+    /// slept. Off, every sleep is handed to the kernel and
+    /// whatever comes back is the answer
     pub(crate) p_mode: bool,
 }
 

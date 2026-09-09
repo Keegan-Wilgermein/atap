@@ -30,5 +30,26 @@ pub enum RuntimeError {
     /// The `Executor` gave up before it
     /// could finish the task, so no result
     /// is ever going to arrive
+    ///
+    /// The `Executor` restarts itself
+    /// so you can start a new task
+    /// whenever
+    ///
+    /// Tasks aren't
+    /// bound to the `Executor` so they
+    /// will continue like normal
     ExecutorDead,
+
+    /// The thread running this task died
+    /// part way through it
+    ///
+    /// The task was already taken out of
+    /// its slot by the thread that died, so
+    /// there is nothing left to run again
+    ///
+    /// Every other task that thread was
+    /// holding is handed to another worker
+    /// and comes back normally. This is the
+    /// only one that can't
+    TaskFailed,
 }

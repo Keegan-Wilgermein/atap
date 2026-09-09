@@ -24,8 +24,7 @@
 
 use crate::{
     constants::{
-        FIRST_BLOCK, FIRST_BLOCK_LOG2, FREE_INDEX_MASK, FREE_TAG_SHIFT, MAX_TASK_ID, SLOT_SIZE,
-        TABLE_BLOCKS,
+        FIRST_BLOCK, FIRST_BLOCK_LOG2, INDEX_MASK, MAX_TASK_ID, SLOT_SIZE, TABLE_BLOCKS, TAG_SHIFT,
     },
     modules::{mapping, task_data::TaskData},
 };
@@ -51,7 +50,7 @@ pub(crate) struct TaskTable {
 
     /// The head of the free list
     ///
-    /// Packed as `tag << FREE_TAG_SHIFT | index + 1`, with a
+    /// Packed as `tag << TAG_SHIFT | index + 1`, with a
     /// whole word of zero meaning the list is empty. See
     /// `alloc` for what the tag is for
     free: AtomicUsize,
@@ -63,11 +62,11 @@ impl TaskTable {
     /// A `const fn` so the table can be a plain static with
     /// no lazy initialisation guarding every single access
     pub(crate) const fn new() -> Self {
-        return Self {
+        Self {
             blocks: [const { AtomicPtr::new(ptr::null_mut()) }; TABLE_BLOCKS],
             next_id: AtomicUsize::new(0),
             free: AtomicUsize::new(0),
-        };
+        }
     }
 
     /// The slot for an id, if its block has been mapped
@@ -92,7 +91,7 @@ impl TaskTable {
 
         // Blocks are never unmapped, so a slot borrowed out
         // of one is good for as long as the process is
-        return Some(unsafe { &*base.add(offset * SLOT_SIZE).cast::<TaskData>() });
+        Some(unsafe { &*base.add(offset * SLOT_SIZE).cast::<TaskData>() })
     }
 
     /// Takes an id, reusing a retired one if there is one
@@ -113,7 +112,7 @@ impl TaskTable {
     pub(crate) fn alloc(&self) -> Option<usize> {
         loop {
             let head = self.free.load(Ordering::Acquire);
-            let index = head & FREE_INDEX_MASK;
+            let index = head & INDEX_MASK;
 
             if index == 0 {
                 break;
@@ -127,8 +126,8 @@ impl TaskTable {
             // finished before it published the head above
             let next = slot.next();
 
-            let tag = (head >> FREE_TAG_SHIFT).wrapping_add(1);
-            let new = (tag << FREE_TAG_SHIFT) | next;
+            let tag = (head >> TAG_SHIFT).wrapping_add(1);
+            let new = (tag << TAG_SHIFT) | next;
 
             if self
                 .free
@@ -143,7 +142,7 @@ impl TaskTable {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.block_for(id)?;
 
-        return Some(id);
+        Some(id)
     }
 
     /// Hands an id back to be used again
@@ -166,10 +165,10 @@ impl TaskTable {
 
         loop {
             let head = self.free.load(Ordering::Acquire);
-            slot.set_next(head & FREE_INDEX_MASK);
+            slot.set_next(head & INDEX_MASK);
 
-            let tag = head >> FREE_TAG_SHIFT;
-            let new = (tag << FREE_TAG_SHIFT) | index;
+            let tag = head >> TAG_SHIFT;
+            let new = (tag << TAG_SHIFT) | index;
 
             if self
                 .free
@@ -188,7 +187,7 @@ impl TaskTable {
     /// task at once
     #[inline(always)]
     pub(crate) fn high_water(&self) -> usize {
-        return self.next_id.load(Ordering::Acquire);
+        self.next_id.load(Ordering::Acquire)
     }
 
     /// The block holding an id, mapping it on first use
@@ -215,7 +214,7 @@ impl TaskTable {
         // The mapping comes back zeroed, and a zeroed slot is
         // already a valid retired one, so there is nothing to
         // write before it can be published
-        return match self.blocks[block].compare_exchange(
+        match self.blocks[block].compare_exchange(
             ptr::null_mut(),
             fresh,
             Ordering::AcqRel,
@@ -228,7 +227,7 @@ impl TaskTable {
                 mapping::free(fresh, len);
                 Some(won)
             }
-        };
+        }
     }
 }
 
@@ -247,5 +246,5 @@ fn position(id: usize) -> (usize, usize) {
     let highest = (usize::BITS - 1 - shifted.leading_zeros()) as usize;
     let block = highest - FIRST_BLOCK_LOG2 as usize;
 
-    return (block, shifted - (FIRST_BLOCK << block));
+    (block, shifted - (FIRST_BLOCK << block))
 }

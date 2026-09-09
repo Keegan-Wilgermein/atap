@@ -34,25 +34,22 @@ impl Sleep {
     /// ## `p_mode`
     /// Trades cpu time for precision
     ///
-    /// On, the calling thread is promoted into
-    /// the realtime band and the last stretch of
-    /// the wait is spun rather than slept, which
-    /// burns a core for up to the crossover
-    /// duration on every call
+    /// On, the last stretch of the wait is spun
+    /// rather than slept, which burns a core for
+    /// up to the crossover duration on every call
     ///
     /// Off, every sleep is handed to the kernel
     /// no matter how short it is, and whatever
     /// the kernel returns is the answer. No core
-    /// is burnt and no thread priority is touched
+    /// is burnt
     ///
     /// #### Note
-    /// The realtime promotion lasts for the life
-    /// of the thread. Passing `false` on a later
-    /// call from the same thread doesn't undo it
-    ///
-    /// The first per thread call with `p_mode` set to `true`
-    /// will run slower than expected due to the overhead of setting
-    /// the priority of that thread
+    /// A spawned sleep with `p_mode` off, or one
+    /// long enough to pass the crossover either
+    /// way, is handed to a sleep thread rather
+    /// than run on a worker, so it never holds a
+    /// worker up. A spinning sleep stays where it
+    /// is, because it never gives the thread up
     ///
     /// ## Accuracy
     /// Measured on apple silicon across

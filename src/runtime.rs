@@ -4,13 +4,22 @@
 //! their results as they finish
 
 use crate::{
-    RuntimeError, constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW}, executor::Executor, futures::task::Task, modules::{int_check::IntCheck, task_handle::TaskHandle}, reactor::Reactor,
+    RuntimeError,
+    constants::{DEAD_KQUEUE_ID, DEFAULT_PRIORITY, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
+    executor::Executor,
+    futures::task::Task,
+    modules::{
+        int_check::IntCheck, pool_stats::PoolStats, task_handle::TaskHandle, worker_pool::POOL,
+    },
+    reactor::Reactor,
 };
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
         mpsc,
-    }, thread, time::Instant,
+    },
+    thread,
+    time::Instant,
 };
 
 /// Whether the runtime has been initialised yet
@@ -76,7 +85,7 @@ impl Runtime {
     /// Used when you need the data
     /// the instant it arrives and
     /// don't mind waiting for it
-    /// 
+    ///
     /// Blocking calls can't be cancelled
     /// by other threads
     #[inline(always)]
@@ -90,24 +99,70 @@ impl Runtime {
         // Always use task ID of 0 in blocking calls
         // because IDs are per thread so this
         // can't overlap
-        let out = task.execute(reactor_id, 0);
 
-        out
+        task.execute(reactor_id, 0)
     }
 
     #[inline(always)]
     /// Spawns a task to run asynchronously
-    /// 
+    ///
     /// This method doesn't promise consistent
     /// timimg for running tasks, so `SleepTask`s
     /// can exit late but never early
-    /// 
+    ///
     /// Use `block()` if this is a problem
+    ///
+    /// ## Behaviour
+    /// Never blocks the calling thread. A task arriving faster
+    /// than the pool can get through goes on a queue with no
+    /// ceiling rather than pushing back on whoever spawned it
     pub fn spawn<F>(task: F) -> TaskHandle<F::Output>
     where
         F: Task,
     {
-        Executor::new_task(task)
+        Executor::new_task(task, DEFAULT_PRIORITY)
+    }
+
+    /// Spawns a task at a priority of your choosing
+    ///
+    /// Higher is more urgent. `DEFAULT_PRIORITY` sits halfway
+    /// up, so there is as much room to put a task below what
+    /// `spawn` gives it as to lift one above
+    ///
+    /// ## Behaviour
+    /// A task is served ahead of everything at a lower
+    /// priority and behind everything at a higher one, with
+    /// one exception: a task that has been overtaken far
+    /// enough is served ahead of its priority anyway. Nothing
+    /// queued is ever starved by a stream of more urgent work
+    /// arriving behind it
+    /// 
+    /// A priority of `u8::MAX` does not gaurantee immediate
+    /// execution, it just means it'll run sooner than it
+    /// would have otherwise
+    ///
+    /// #### Note
+    /// Priority decides the order tasks are *started* in, not
+    /// how much of a thread they get once they are running. A
+    /// task at the top priority behind one long task still
+    /// waits for a worker to come free
+    #[inline(always)]
+    pub fn spawn_with_priority<F>(task: F, priority: u8) -> TaskHandle<F::Output>
+    where
+        F: Task,
+    {
+        Executor::new_task(task, priority)
+    }
+
+    /// What the worker pool looks like right now
+    ///
+    /// #### Note
+    /// A snapshot rather than a lock. Every number in it was
+    /// true when it was read, and the pool carries on growing,
+    /// shrinking and moving work about while it is being
+    /// looked at
+    pub fn workers() -> PoolStats {
+        POOL.stats()
     }
 
     /// The kqueue the `Reactor` is watching

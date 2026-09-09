@@ -12,6 +12,7 @@
 
 use crate::{
     RuntimeError,
+    constants::WAKE_IDENT,
     modules::{
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
@@ -42,7 +43,7 @@ thread_local! {
     /// Thread local because a kqueue is only safe to wait on
     /// from one thread at a time. Giving every thread its own
     /// means no sharing and no synchronisation
-    static QUEUE: KQueue = KQueue(Cell::new(-1));
+    static QUEUE: KQueue = const { KQueue(Cell::new(-1)) };
 }
 
 /// This thread's kqueue, creating it on first use
@@ -51,7 +52,7 @@ thread_local! {
 /// branch, so it stays out of the way on the hot path
 #[inline(always)]
 pub(crate) fn id() -> Result<i32, RuntimeError> {
-    return QUEUE.with(|queue| {
+    QUEUE.with(|queue| {
         let existing = queue.0.get();
 
         if existing >= 0 {
@@ -61,8 +62,8 @@ pub(crate) fn id() -> Result<i32, RuntimeError> {
         let created = unsafe { libc::kqueue() }.check()?;
         queue.0.set(created);
 
-        return Ok(created);
-    });
+        Ok(created)
+    })
 }
 
 /// Blocks on a queue until a particular event lands on it
@@ -92,6 +93,15 @@ pub(crate) fn wait_for(queue: i32, ident: usize, filter: i16) {
             }
 
             if event.ident == ident && event.filter == filter {
+                return;
+            }
+
+            // Somebody wants this thread back before the thing
+            // it asked for arrived, which is what a cancelled
+            // sleep looks like from in here. The caller is told
+            // apart from a real answer by what it finds in the
+            // slot afterwards
+            if event.ident == WAKE_IDENT && event.filter == libc::EVFILT_USER {
                 return;
             }
         }
