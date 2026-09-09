@@ -7,6 +7,12 @@
 //! is fixed for the life of the process and finding one is
 //! arithmetic rather than a walk
 //!
+//! The blocks hold the slots themselves rather than pointers
+//! to them, so a task's memory is found by multiplying its id
+//! out rather than by chasing anything. That also means an id
+//! and the memory behind it are recycled by the same act, and
+//! there is one free list rather than two
+//!
 //! Ids are handed out from a free list before the table is
 //! allowed to grow, so the table settles at the peak number
 //! of tasks alive at once rather than the number ever spawned
@@ -18,19 +24,24 @@
 
 use crate::{
     constants::{
-        FIRST_BLOCK, FIRST_BLOCK_LOG2, FREE_INDEX_MASK, FREE_TAG_SHIFT, MAX_TASK_ID, TABLE_BLOCKS,
+        FIRST_BLOCK, FIRST_BLOCK_LOG2, FREE_INDEX_MASK, FREE_TAG_SHIFT, MAX_TASK_ID, SLOT_SIZE,
+        TABLE_BLOCKS,
     },
-    modules::{mapping, task_slot::TaskSlot},
+    modules::{mapping, task_data::TaskData},
 };
 use std::{
-    mem, ptr,
+    ptr,
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
 /// Every task in the process, by id
 pub(crate) struct TaskTable {
     /// The blocks, mapped as they are first needed
-    blocks: [AtomicPtr<TaskSlot>; TABLE_BLOCKS],
+    ///
+    /// Held as bytes because slots sit `SLOT_SIZE` apart
+    /// rather than end to end, so the arithmetic is done in
+    /// bytes and cast at the last moment
+    blocks: [AtomicPtr<u8>; TABLE_BLOCKS],
 
     /// The highest id ever handed out
     ///
@@ -60,8 +71,13 @@ impl TaskTable {
     }
 
     /// The slot for an id, if its block has been mapped
+    ///
+    /// #### Note
+    /// Says nothing about whether there is a task in it. A
+    /// slot that has never been used reads as `Free`, which
+    /// is what the `Executor` filters on
     #[inline(always)]
-    pub(crate) fn slot(&self, id: usize) -> Option<&'static TaskSlot> {
+    pub(crate) fn slot(&self, id: usize) -> Option<&'static TaskData> {
         if id >= MAX_TASK_ID {
             return None;
         }
@@ -76,7 +92,7 @@ impl TaskTable {
 
         // Blocks are never unmapped, so a slot borrowed out
         // of one is good for as long as the process is
-        return Some(unsafe { &*base.add(offset) });
+        return Some(unsafe { &*base.add(offset * SLOT_SIZE).cast::<TaskData>() });
     }
 
     /// Takes an id, reusing a retired one if there is one
@@ -176,7 +192,7 @@ impl TaskTable {
     }
 
     /// The block holding an id, mapping it on first use
-    fn block_for(&self, id: usize) -> Option<*mut TaskSlot> {
+    fn block_for(&self, id: usize) -> Option<*mut u8> {
         if id >= MAX_TASK_ID {
             return None;
         }
@@ -189,8 +205,8 @@ impl TaskTable {
             return Some(existing);
         }
 
-        let len = (FIRST_BLOCK << block) * mem::size_of::<TaskSlot>();
-        let fresh = mapping::alloc(len).cast::<TaskSlot>();
+        let len = (FIRST_BLOCK << block) * SLOT_SIZE;
+        let fresh = mapping::alloc(len);
 
         if fresh.is_null() {
             return None;
@@ -209,7 +225,7 @@ impl TaskTable {
             Err(won) => {
                 // Another thread mapped this block first, so
                 // this one goes back rather than leaking
-                mapping::free(fresh.cast::<u8>(), len);
+                mapping::free(fresh, len);
                 Some(won)
             }
         };

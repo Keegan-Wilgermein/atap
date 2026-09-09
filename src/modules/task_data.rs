@@ -2,11 +2,17 @@
 //! The memory a single spawned task owns, from the task
 //! waiting to be run through to the output waiting to be read
 //!
-//! One mapping per task, taken straight from the kernel so
-//! that the address holds still for the whole life of the
-//! task no matter what the table around it does. The header
-//! sits at the base and the output lives at a fixed offset
-//! past it, which is what lets the output type stay erased
+//! Slots are carved out of the table's blocks rather than
+//! given a mapping each. A block is mapped once, never moves
+//! and is never given back, so a slot's address is as fixed
+//! as a private mapping's would be at a fraction of the cost.
+//! The header sits at the base of the slot and the output
+//! lives at a fixed offset past it, which is what lets the
+//! output type stay erased
+//!
+//! Every handle on a task reaches the same slot through the
+//! same id, so duplicating a handle has never duplicated any
+//! of this. The sharing is the id, not the allocator
 //!
 //! #### Note
 //! Nothing outside the `Executor` may call any of this. The
@@ -14,7 +20,7 @@
 //! still alive, so it is the only thing allowed to touch one
 
 use crate::{
-    constants::PAYLOAD_OFFSET,
+    constants::{INLINE_PAYLOAD, PAYLOAD_OFFSET},
     modules::{erased_task::ErasedTask, mapping, task_state::TaskState},
 };
 use libc::c_void;
@@ -29,6 +35,11 @@ use std::{
 /// Laid out `repr(C)` because the payload is found by adding
 /// a fixed offset to the base of the header, and that only
 /// holds if the header can't be reordered out from under it
+///
+/// The whole thing is sized to fit inside `PAYLOAD_OFFSET`,
+/// which the assert in `init` checks. Adding a field without
+/// taking one away will fail that assert at compile time
+/// rather than quietly running the header into the output
 #[repr(C)]
 pub(crate) struct TaskData {
     /// Where the task is in its life
@@ -42,9 +53,6 @@ pub(crate) struct TaskData {
     /// Tracked apart from the state so that cancelling a
     /// finished task doesn't have to drop the output out
     /// from under a listener that is reading it
-    ///
-    /// Sits here rather than further down so the header packs
-    /// into the space before the payload with room to spare
     filled: AtomicBool,
 
     /// Live `TaskHandle`s, plus one for the `Executor`
@@ -68,60 +76,84 @@ pub(crate) struct TaskData {
     /// Drops a payload of the output type in place
     drop_glue: unsafe fn(*mut u8),
 
-    /// The length of the mapping, for handing it back
-    map_len: usize,
-
     /// `size_of` the output type, checked before any read
     size: usize,
+
+    /// An output too big to sit beside the header, or null
+    /// when it fits inline like every realistic one does
+    payload: AtomicPtr<u8>,
+
+    /// The next slot on the free list, as its id plus one so
+    /// that zero can mean the end of it
+    ///
+    /// Only meaningful while this slot is `Free`. Nothing can
+    /// be reading it then, because a slot only goes on the
+    /// list once its last listener has gone
+    next: AtomicUsize,
 }
 
 impl TaskData {
-    /// Maps and fills in the memory for one task
-    ///
-    /// `listeners` starts at 2, one for the `TaskHandle`
-    /// being handed back and one for the `Executor`. The
-    /// `Executor`'s reference is what stops a handle that is
-    /// dropped immediately from freeing the slot out from
-    /// under the thread about to run it
+    /// Fills in an empty slot ready for a task
     ///
     /// ## Returns
-    /// The base of the mapping, or null if the kernel
-    /// refused it
-    pub(crate) fn create<T>(task: *mut c_void, state: TaskState) -> *mut Self {
-        // Both of these fold away at compile time, and both
-        // are silent memory corruption if they ever fail
+    /// Whether the slot is ready. The only way this fails is
+    /// an output too big to sit inline and a kernel unwilling
+    /// to map one of its own
+    ///
+    /// ## Safety
+    /// The id must have come from `TaskTable::alloc`, so that
+    /// nothing else is looking at the slot while it is
+    /// written. The state is published last, which is what
+    /// makes the rest of the header visible to anything that
+    /// finds the task afterwards
+    pub(crate) unsafe fn init<T>(data: *mut Self, task: *mut c_void, state: TaskState) -> bool {
+        // Both fold away at compile time, and both are silent
+        // memory corruption if they ever stop holding
         const { assert!(mem::size_of::<Self>() <= PAYLOAD_OFFSET) };
         assert!(mem::align_of::<T>() <= PAYLOAD_OFFSET);
 
         let size = mem::size_of::<T>();
-        let map_len = mapping::round_up(PAYLOAD_OFFSET + size);
-        let base = mapping::alloc(map_len);
+        let oversized = size > INLINE_PAYLOAD;
 
-        if base.is_null() {
-            return ptr::null_mut();
+        let payload = match oversized {
+            true => mapping::alloc(size),
+            false => ptr::null_mut(),
+        };
+
+        if oversized && payload.is_null() {
+            return false;
         }
-
-        let data = base.cast::<Self>();
 
         unsafe {
             data.write(Self {
-                state: AtomicU32::new(state as u32),
+                state: AtomicU32::new(TaskState::Free as u32),
                 filled: AtomicBool::new(false),
                 listeners: AtomicUsize::new(2),
                 task: AtomicPtr::new(task),
                 readers: AtomicUsize::new(0),
                 drop_glue: glue::<T>,
-                map_len,
                 size,
+                payload: AtomicPtr::new(payload),
+                next: AtomicUsize::new(0),
             })
         };
 
-        return data;
+        // Published last, so that anything finding the task
+        // in a live state also sees the whole header behind it
+        unsafe { (*data).state.store(state as u32, Ordering::Release) };
+
+        return true;
     }
 
     /// Where the output lives, filled or not
     #[inline(always)]
     pub(crate) fn payload(&self) -> *mut u8 {
+        let oversized = self.payload.load(Ordering::Acquire);
+
+        if !oversized.is_null() {
+            return oversized;
+        }
+
         return unsafe { (self as *const Self as *mut u8).add(PAYLOAD_OFFSET) };
     }
 
@@ -160,6 +192,18 @@ impl TaskData {
     #[inline(always)]
     pub(crate) fn wait_address(&self) -> *mut c_void {
         return &self.state as *const AtomicU32 as *mut c_void;
+    }
+
+    /// The encoded id of the next slot on the free list
+    #[inline(always)]
+    pub(crate) fn next(&self) -> usize {
+        return self.next.load(Ordering::Relaxed);
+    }
+
+    /// Points this retired slot at the next one
+    #[inline(always)]
+    pub(crate) fn set_next(&self, next: usize) {
+        self.next.store(next, Ordering::Relaxed);
     }
 
     /// Takes a read of the output, if there is still one
@@ -265,31 +309,40 @@ impl TaskData {
         return !self.task.load(Ordering::Acquire).is_null();
     }
 
-    /// Drops everything the slot owns and gives the
-    /// mapping back
+    /// Drops everything the slot owns and empties it
+    ///
+    /// The slot's own memory belongs to a table block and
+    /// stays where it is, ready for the next task to take the
+    /// id. Only an oversized output, which had a mapping to
+    /// itself, goes back to the kernel
     ///
     /// ## Safety
     /// Only the last listener may call this, and nothing may
     /// touch the slot afterwards. The payload is dropped here
     /// and nowhere else, which is what keeps it to one owner
-    pub(crate) unsafe fn destroy(data: *mut Self) {
-        let this = unsafe { &*data };
-
+    pub(crate) unsafe fn destroy(&self) {
         // A task nobody ever got round to running still owns
         // itself, so it goes back the way it came
-        let task = this.claim();
+        let task = self.claim();
 
         if !task.is_null() {
             drop(unsafe { Box::from_raw(task.cast::<Box<dyn ErasedTask>>()) });
         }
 
         // An output nobody took is still a live value
-        if this.filled.load(Ordering::Acquire) {
-            unsafe { (this.drop_glue)(this.payload()) };
+        if self.filled.load(Ordering::Acquire) {
+            unsafe { (self.drop_glue)(self.payload()) };
         }
 
-        let map_len = this.map_len;
-        mapping::free(data.cast::<u8>(), map_len);
+        let oversized = self.payload.swap(ptr::null_mut(), Ordering::AcqRel);
+
+        if !oversized.is_null() {
+            mapping::free(oversized, self.size);
+        }
+
+        // Last, so the slot only reads as empty once there is
+        // genuinely nothing left in it
+        self.set_state(TaskState::Free);
     }
 }
 

@@ -209,6 +209,86 @@ fn spawning_does_not_leak() {
     );
 }
 
+#[test]
+fn many_one_by_one_tasks() {
+    Runtime::init();
+
+    let tasks = 1_000_000;
+
+    let mut avg = 0.0;
+
+    for _ in 0..tasks {
+        let handle = Runtime::spawn(Sleep::sleep(Duration::from_nanos(500), false));
+
+        if let Ok(time) = handle.join() {
+            avg += time.as_nanos() as f32;
+        }
+    }
+
+    avg /= tasks as f32;
+
+    println!("Average time: {}", avg);
+}
+
+#[test]
+fn many_concurrent_tasks() {
+    Runtime::init();
+
+    let tasks = 1_000_000;
+    let mut handle_list = Vec::with_capacity(tasks);
+
+    let mut avg = 0.0;
+
+    let baseline = max_rss();
+
+    for _ in 0..tasks {
+        let handle = Runtime::spawn(Sleep::sleep(Duration::from_nanos(500), true));
+
+        handle_list.push(handle);
+    }
+
+    // Read before the handles are joined, while every task is
+    // still live and holding its slot. This is the only test
+    // that has more than a handful alive at once, so it is the
+    // only one that says anything about what a slot costs
+    let peak = max_rss();
+
+    for handle in handle_list {
+        if let Ok(time) = handle.join() {
+            avg += time.as_nanos() as f32;
+        }
+    }
+
+    avg /= tasks as f32;
+
+    let growth = peak.saturating_sub(baseline);
+
+    println!("Average time: {}", avg);
+    println!(
+        "{} live tasks cost {} bytes, {} each",
+        tasks,
+        growth,
+        growth / tasks,
+    );
+
+    // Slots come out of shared blocks, so a live task costs
+    // SLOT_SIZE and its share of the block holding it, which
+    // is around 134MB across a million of them. The handles
+    // and the boxed tasks waiting to be run add to that, so
+    // the threshold sits well clear of it
+    //
+    // What it is really watching for is a slot going back to
+    // owning its own mapping. That is a whole page each, or
+    // roughly 16GB at this count on Apple silicon, so the two
+    // are never going to be confused for one another
+    assert!(
+        growth < 512 * 1024 * 1024,
+        "{} live tasks took {} bytes, which is page per slot territory",
+        tasks,
+        growth,
+    );
+}
+
 /// The high water mark of the process's resident memory
 fn max_rss() -> usize {
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };

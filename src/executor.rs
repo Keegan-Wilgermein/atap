@@ -109,14 +109,14 @@ impl Executor {
             return failed(erased);
         };
 
-        let data = TaskData::create::<F::Output>(erased, state);
+        let ready = unsafe {
+            TaskData::init::<F::Output>(entry as *const TaskData as *mut TaskData, erased, state)
+        };
 
-        if data.is_null() {
+        if !ready {
             DATA.free(id);
             return failed(erased);
         }
-
-        entry.publish(data);
 
         let handle = TaskHandle::new(id);
 
@@ -183,16 +183,12 @@ impl Executor {
             return;
         }
 
-        // Emptied before it is unmapped so that nothing can
-        // find the slot in the window between the two
-        if let Some(entry) = DATA.slot(id) {
-            entry.clear();
-        }
+        // Drops the task, the output and any mapping the
+        // output needed, and leaves the slot reading `Free`
+        unsafe { data.destroy() };
 
-        unsafe { TaskData::destroy(data as *const TaskData as *mut TaskData) };
-
-        // Only once the memory is gone, since the id is live
-        // again the moment it lands on the free list
+        // Only once it is empty, since the id and the memory
+        // behind it are both live again the moment this lands
         DATA.free(id);
     }
 
@@ -336,17 +332,20 @@ impl Executor {
     }
 }
 
-/// The slot for an id, if it is still live
+/// The slot for an id, if there is a task in it
+///
+/// A slot that has never been used, or whose last listener
+/// has gone, reads as `Free`. Filtering it out here is what
+/// stops a stale id from finding the task that took its place
 #[inline(always)]
 fn slot(id: usize) -> Option<&'static TaskData> {
-    let entry = DATA.slot(id)?;
-    let data = entry.data();
+    let data = DATA.slot(id)?;
 
-    if data.is_null() {
+    if data.state() == TaskState::Free {
         return None;
     }
 
-    return Some(unsafe { &*data });
+    return Some(data);
 }
 
 /// Turns a settled state into the error it stands for

@@ -29,12 +29,27 @@ pub(crate) const DEAD_KQUEUE_ID: i32 = -1;
 
 /// Bytes between the start of a task's slot and its payload
 ///
-/// Wide enough to clear the header and to put the payload on
-/// its own cache line, away from the state word that every
-/// listener is hammering. `mmap` returns page aligned memory,
-/// so an offset of 64 also aligns the payload for any type
-/// that doesn't ask for more than 64 byte alignment
+/// Doubles as the budget for a slot's header, which an assert
+/// in `TaskData::init` holds it to. Slots sit at multiples of
+/// `SLOT_SIZE` inside a page aligned block, so an offset of 64
+/// also aligns the payload for any output type that doesn't
+/// ask for more than 64 byte alignment
 pub(crate) const PAYLOAD_OFFSET: usize = 64;
+
+/// Bytes one task slot takes up in a table block
+///
+/// Slots are carved out of shared pages rather than given a
+/// mapping each, so this is the whole cost of a task whose
+/// output fits beside its header. Sized so a slot lands on
+/// its own cache line, which keeps two tasks from sharing the
+/// word their listeners are blocked on
+pub(crate) const SLOT_SIZE: usize = 128;
+
+/// Bytes of output a slot can hold beside its header
+///
+/// Anything larger gets a mapping of its own and the header
+/// points at it, which nothing realistic ever needs
+pub(crate) const INLINE_PAYLOAD: usize = SLOT_SIZE - PAYLOAD_OFFSET;
 
 /// Slots in the first block of the task table
 pub(crate) const FIRST_BLOCK: usize = 256;

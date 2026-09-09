@@ -1,7 +1,7 @@
 //! # Task State
 //! Where a spawned task is in its life, from the moment
 //! the `Executor` is handed it to the moment its slot
-//! goes back to the kernel
+//! goes back on the free list
 
 /// The lifecycle of one spawned task
 ///
@@ -12,27 +12,35 @@
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum TaskState {
+    /// No task in this slot
+    ///
+    /// Zero on purpose. Table blocks come back from the
+    /// kernel zeroed, so a block that has never been touched
+    /// already reads as a run of empty slots with nothing
+    /// needing to be written to it first
+    Free = 0,
+
     /// Waiting for the `Executor` to claim it
-    Pending = 0,
+    Pending = 1,
 
     /// Claimed, and running right now
-    Running = 1,
+    Running = 2,
 
     /// The output is written and safe to read
-    Ready = 2,
+    Ready = 3,
 
     /// The output was moved out by `take`,
     /// so there is nothing left to hand out
-    Taken = 3,
+    Taken = 4,
 
     /// Abandoned by a listener
     ///
     /// A task already in flight still runs to the end,
     /// its result just never reaches anyone
-    Cancelled = 4,
+    Cancelled = 5,
 
     /// The `Executor` died before it could finish the task
-    Failed = 5,
+    Failed = 6,
 }
 
 impl TaskState {
@@ -44,11 +52,12 @@ impl TaskState {
     #[inline(always)]
     pub(crate) fn from_u32(raw: u32) -> Self {
         return match raw {
-            0 => Self::Pending,
-            1 => Self::Running,
-            2 => Self::Ready,
-            3 => Self::Taken,
-            4 => Self::Cancelled,
+            0 => Self::Free,
+            1 => Self::Pending,
+            2 => Self::Running,
+            3 => Self::Ready,
+            4 => Self::Taken,
+            5 => Self::Cancelled,
             _ => Self::Failed,
         };
     }

@@ -13,7 +13,6 @@ mod modules {
     pub(crate) mod task_data;
     pub(crate) mod erased_task;
     pub(crate) mod mapping;
-    pub(crate) mod task_slot;
     pub(crate) mod task_state;
     pub(crate) mod task_table;
     pub mod errors;

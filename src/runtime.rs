@@ -96,6 +96,9 @@ impl Runtime {
     }
 
     #[inline(always)]
+    /// Spawns a task to run asynchronously
+    /// 
+    /// This can mess with the time a sleep task sleeps for
     pub fn spawn<F>(task: F) -> TaskHandle<F::Output>
     where
         F: Task,
