@@ -140,11 +140,6 @@ where
         self.inner.prepare();
     }
 
-    #[inline(always)]
-    fn get_intptr_t_data(&self) -> libc::intptr_t {
-        self.inner.get_intptr_t_data()
-    }
-
     /// Whatever the task inside says
     ///
     /// Asked of the copy rather than of the wrapper, so a
@@ -153,16 +148,5 @@ where
     #[inline(always)]
     fn blocking(&self) -> bool {
         self.inner.blocking()
-    }
-
-    /// Never reached through the `Executor`, which only ever
-    /// calls `execute`, but a `Task` has to have one and the
-    /// honest implementation is the same as above
-    #[inline(always)]
-    fn offload(&self, queue: Option<i32>, reactor_id: i32, task_id: usize) -> Self::Output {
-        executor::publish(
-            self.series,
-            self.inner.offload(queue, reactor_id, task_id),
-        );
     }
 }

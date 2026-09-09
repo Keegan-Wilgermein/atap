@@ -425,8 +425,7 @@ where
     /// running
     ///
     /// ## If the runtime is shut down
-    /// The opposite, and the difference is worth knowing. A
-    /// manager that dies leaves a pool that still runs
+    /// A manager that dies leaves a pool that still runs
     /// everything; a shutdown stops the pool as well. A task
     /// spawned after one settles `Failed` straight away with
     /// its slot given back, so the handle reads an error rather

@@ -1,5 +1,7 @@
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle, TaskState};
+use atap::{File, Runtime, RuntimeError, Sleep, TaskHandle, TaskState};
 use std::{
+    fs,
+    path::PathBuf,
     sync::{Arc, Barrier},
     thread,
     time::{Duration, Instant},
@@ -1089,8 +1091,151 @@ fn monolithic() {
     println!("\n== the table gives its pages back ==");
     gives_the_table_back();
 
+    println!("\n== outputs that own memory are dropped ==");
+    file_outputs_are_dropped_not_leaked();
+
     println!();
     report("finished");
+}
+
+/// An output that owns memory is dropped, however it ends
+///
+/// Every output the crate ran before file tasks existed was a
+/// `Duration`, a `usize` or a `()`. All of them `Copy`, so the
+/// `drop_glue` a slot keeps compiled to nothing and the three
+/// places that call it had never dropped anything real
+///
+/// A `Vec<u8>` is the first that does, which puts all three on
+/// the hook at once:
+///
+/// - `destroy` drops an output nobody took, when the last
+///   listener leaves
+/// - `recycle` drops the previous run's output when a repeat
+///   comes round again
+/// - `drop_glue` is how either of them knows what it is
+///   dropping, after the type is gone
+///
+/// ## Why it lives here
+/// A leak in any of them is invisible to a test that takes its
+/// results and asserts on them. The slot count stays perfect,
+/// every assertion passes, and the only symptom is memory that
+/// never comes back — which needs volume and an accounting
+/// pass either side of it to show up at all
+///
+/// #### Note
+/// Half the handles are dropped rather than read, and the
+/// repeat is never read at all. Reading them would be the
+/// version of this test that can't fail
+fn file_outputs_are_dropped_not_leaked() {
+    let reads = 2048;
+    let size = 16 * 1024;
+    let runs = 64;
+
+    let path = fixture("monolithic-outputs", size);
+
+    // Read once nothing is moving, for the same reason every
+    // other phase does it — the one before is still winding
+    // down and a baseline taken now is a number on its way
+    let base = settled_live();
+    let before = Runtime::workers();
+
+    let handles: Vec<_> = (0..reads)
+        .map(|_| Runtime::task(File::read(&path)).spawn())
+        .collect();
+
+    let mut taken = 0;
+    let mut dropped = 0;
+
+    for (index, handle) in handles.into_iter().enumerate() {
+        // Settled before either branch, so the half that goes
+        // unread is dropped holding a whole output rather than
+        // being dropped before there was one to hold
+        let _ = handle.wait();
+
+        if index % 2 == 0 {
+            let read = handle.take().expect("take failed").expect("read failed");
+
+            assert_eq!(read.len(), size, "a read came back the wrong length");
+
+            taken += 1;
+
+            continue;
+        }
+
+        drop(handle);
+
+        dropped += 1;
+    }
+
+    report("outputs taken and dropped");
+
+    // Every run but the last has its output dropped by the
+    // recycle the next one does, and the last by the teardown.
+    // Nothing reads any of them
+    let repeated = Runtime::task(File::read(&path))
+        .repeat()
+        .every(Duration::from_millis(1))
+        .count(runs)
+        .spawn();
+
+    let waited = Instant::now();
+
+    while !repeated.is_finished() && waited.elapsed() < Duration::from_secs(30) {
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    assert!(repeated.is_finished(), "the unread repeat never finished");
+
+    drop(repeated);
+
+    let after = settled_live();
+    let stats = Runtime::workers();
+
+    report("outputs settled");
+
+    println!(
+        "  {} taken, {} dropped unread, {} recycled unread, live {} -> {}",
+        taken, dropped, runs, base, after,
+    );
+
+    assert_eq!(taken + dropped, reads, "some handles went missing");
+
+    // Slots rather than bytes, because a slot is the thing this
+    // suite can count. A payload leaked without its slot would
+    // pass here — the number that catches that one is the
+    // process's own memory, which is what running the whole of
+    // this under a watch is for
+    assert!(
+        after <= base + 8,
+        "{} live tasks after the file phase against {} before it",
+        after,
+        base,
+    );
+
+    assert!(
+        stats.slots >= before.slots,
+        "the table lost slots it had already handed out",
+    );
+
+    let _ = fs::remove_file(&path);
+}
+
+/// Writes a file of `size` bytes and gives back its path
+///
+/// Under `tests/files`, which is ignored whole — git doesn't
+/// track directories, so an ignored one doesn't survive a clone
+/// and it has to be made rather than assumed
+fn fixture(name: &str, size: usize) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/files");
+
+    fs::create_dir_all(&root).expect("could not make tests/files");
+
+    let path = root.join(format!("{}-{}.txt", name, std::process::id()));
+    let body: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+
+    fs::write(&path, body).expect("could not write the fixture");
+
+    path
 }
 
 /// The table hands its pages back once it has stopped using
@@ -2310,8 +2455,7 @@ fn builder_priority_reaches_the_band() {
         .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50), true)).spawn())
         .collect();
 
-    // Last in, and served first anyway — through the builder
-    // rather than through `spawn_with_priority`
+    // Last in, and served first anyway
     let queued_at = Instant::now();
     let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(50), true))
         .priority(255)

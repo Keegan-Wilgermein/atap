@@ -97,6 +97,19 @@ pub enum RuntimeError {
     /// of tasks alive in it to give any of
     /// it back
     StillInUse,
+
+    /// A path could not be handed to the kernel
+    ///
+    /// The kernel takes a path as bytes ending at the first
+    /// zero, so a path with a zero of its own inside it has no
+    /// faithful form to be passed in — the call would silently
+    /// act on the part before it, which is a different file
+    ///
+    /// #### Note
+    /// Not a `CheckError`. No syscall was made and no errno was
+    /// set, and dressing this up as one would put a number in
+    /// the message that the kernel never said
+    BadPath,
 }
 
 impl fmt::Display for RuntimeError {
@@ -124,6 +137,7 @@ impl fmt::Display for RuntimeError {
             Self::TaskFailed => write!(formatter, "the task will never produce an output"),
             Self::NotReady => write!(formatter, "the task has not settled yet"),
             Self::StillInUse => write!(formatter, "too much of the task table is in use to trim"),
+            Self::BadPath => write!(formatter, "the path contains a zero byte"),
         }
     }
 }

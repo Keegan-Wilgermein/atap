@@ -95,6 +95,27 @@ impl Injector {
         let band = data.band().min(PRIORITY_BANDS - 1);
         let index = id + 1;
 
+        // Counted before it is published rather than after, and
+        // the order is the whole point. The instant the swing
+        // below lands, another thread can flip this task onto
+        // the served side, take it, and subtract for it — so an
+        // add left until afterwards can arrive second and leave
+        // the count at nought minus one, which reads as a queue
+        // of eighteen quintillion tasks that don't exist
+        //
+        // Early is the safe direction for the park handshake
+        // too. It can only bring the moment `is_empty` starts
+        // saying no forward, and a worker that doesn't park
+        // when it could have costs a lap of the queue, where
+        // one that parks on a queue with work in it costs
+        // however long it takes somebody to notice
+        //
+        // Sequentially consistent because a worker about to
+        // park reads this after publishing that it is parking,
+        // and this is read against that publication. See
+        // `Worker::park`
+        self.len.fetch_add(1, Ordering::SeqCst);
+
         loop {
             let head = self.incoming[band].load(Ordering::Acquire);
             data.set_queue_next(head);
@@ -103,11 +124,6 @@ impl Injector {
                 .compare_exchange_weak(head, index, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
-                // Sequentially consistent because a worker
-                // about to park reads this after publishing
-                // that it is parking, and this is read against
-                // that publication. See `Worker::park`
-                self.len.fetch_add(1, Ordering::SeqCst);
                 return;
             }
         }
@@ -143,6 +159,18 @@ impl Injector {
     }
 
     /// Tasks queued and not yet taken
+    ///
+    /// ## Behaviour
+    /// Approximate, and approximate in one direction only. A
+    /// push counts the task before it publishes it and a pop
+    /// subtracts after it has taken it, so every window either
+    /// side of a real change reads high — never low, and never
+    /// through nought into the top of the range
+    ///
+    /// That asymmetry is deliberate rather than incidental.
+    /// Everything reading this treats a queue as emptier than
+    /// it is as the expensive mistake: a worker parks on work
+    /// that was already there, and waits for somebody to notice
     #[inline(always)]
     pub(crate) fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
@@ -368,6 +396,20 @@ impl Injector {
         let mut reversed = 0;
 
         while cursor != 0 {
+            // The link to the rest of the chain lives in the
+            // slot, so a slot that can't be read takes the
+            // whole tail behind it — there is no way to reach
+            // past a node you can't look inside
+            //
+            // Written down rather than handled, because it
+            // can't happen. `slot` refuses an id only past
+            // `MAX_TASK_ID` or one whose block was never
+            // mapped, and nothing queued here is either:
+            // allocation maps the block before it hands the id
+            // out, blocks are never unmapped, and the sentinel
+            // id a failed spawn carries is never queued at all.
+            // `trim` doesn't reach it either — it gives pages
+            // back with `madvise` and every address stays valid
             let Some(data) = executor::slot(cursor - 1) else {
                 break;
             };

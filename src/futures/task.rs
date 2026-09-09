@@ -1,20 +1,13 @@
 //! # Task
 //! A trait that defines a task that can be
 //! initialised and run asynchronously
-
-use crate::{
-    EventDesc,
-    constants::{SLEEP_TOLERANCE, WAKE_IDENT},
-    executor,
-    futures::sleep_task::SleepTask,
-    modules::{
-        int_check::IntCheck, kevent::KEvent, kqueue, waiter::Waiter, wake_target::WakeTarget,
-    },
-};
-use std::{
-    ptr,
-    time::{Duration, Instant},
-};
+//!
+//! Definitions only. Every implementor lives beside the type
+//! it is implemented for — `SleepTask` in `sleep_task`, the
+//! file tasks in `file/file_task` — so a reader who wants to
+//! know what a task *does* is never sent here, and a reader
+//! who wants to know what a task *is* is never sent anywhere
+//! else
 
 /// Marker that closes `Task` to the outside world
 ///
@@ -38,6 +31,17 @@ pub(crate) mod sealed {
 /// passed into a runtime function must implement
 /// to function correctly
 ///
+/// ## Behaviour
+/// A task runs to completion. `execute` is called once, on one
+/// thread, and whatever it returns is the output — there is no
+/// way to hand back part of an answer and be called again,
+/// because a native stack can't be put down half way through a
+/// call and picked up elsewhere
+///
+/// That is the whole reason `blocking` exists. A task that
+/// waits holds its thread for as long as it waits, so the only
+/// choice the runtime has is which thread to hold
+///
 /// #### Note
 /// `Send` and `'static` are on the trait rather than on
 /// `spawn`, because a spawned task is moved onto the
@@ -59,19 +63,24 @@ pub trait Task: sealed::Sealed + Send + 'static {
     /// Delegated to a seperate function
     /// in case it determines whether a
     /// function runs `.execute()` at all
-    fn prepare(&mut self);
-
-    /// Gets the type specific data to be passed into the event
-    fn get_intptr_t_data(&self) -> libc::intptr_t;
+    ///
+    /// #### Note
+    /// Defaulted, because most tasks are immutable input and
+    /// have nothing to set up — a path and some bytes are the
+    /// same on the tenth run as on the first. Override it when
+    /// a run would otherwise start with the last one's state,
+    /// which is what a repeat makes possible: the same box goes
+    /// back into the same slot, so anything left in it carries
+    fn prepare(&mut self) {}
 
     /// Whether running this will hold the thread long enough
     /// to be worth giving it to a thread that exists to be held
     ///
     /// ## Behaviour
-    /// A spawned task that says yes is handed to its worker's
-    /// sleep thread rather than run on the worker, so the
-    /// worker goes straight back to the queue instead of
-    /// sitting inside a `kevent` call for the duration
+    /// A spawned task that says yes is handed to a sleep thread
+    /// rather than run on a worker, so the worker goes straight
+    /// back to the queue instead of sitting inside a syscall
+    /// for the duration
     ///
     /// Blocking calls ignore this entirely. `Runtime::block`
     /// runs on the caller's thread because that is what the
@@ -83,234 +92,11 @@ pub trait Task: sealed::Sealed + Send + 'static {
     /// saying yes when the answer was no costs a hand off that
     /// wasn't needed. Neither is a correctness problem, which
     /// is why the default is the cheaper of the two
+    ///
+    /// Asked once, at spawn, and kept in the slot. A re arm has
+    /// no concrete type left to ask
     #[inline(always)]
     fn blocking(&self) -> bool {
         false
-    }
-
-    /// Registers the event with the
-    /// kernel and waits for a response
-    /// from the `Reactor`
-    ///
-    /// ## Behaviour
-    /// The event goes on the `Reactor`'s queue carrying the
-    /// way back to this thread, and this thread then waits on
-    /// a queue of its own. Waking it is a single trigger, with
-    /// no thread handle to pass around and nothing to free
-    ///
-    /// A thread that can't get a queue parks instead, and the
-    /// `Reactor` sets its flag and unparks it. Slower, and the
-    /// only reason `Waiter` exists
-    ///
-    /// #### Note
-    /// Nothing waits on a registration that didn't take. A
-    /// wake only ever comes from an event the kernel accepted,
-    /// so waiting on one it refused waits for good
-    #[inline(always)]
-    fn register_event(&self, reactor_id: i32, task_id: usize, desc: EventDesc) {
-        // Split rather than shared so the fast path never
-        // builds a `Waiter` it has no use for. Taking one
-        // costs a `thread::current`, which is the sort of
-        // thing waiting on your own queue exists to avoid
-        let Ok(queue) = kqueue::id() else {
-            let waiter = Waiter::new();
-
-            let registered = unsafe {
-                KEvent::register(
-                    reactor_id,
-                    task_id,
-                    self.get_intptr_t_data(),
-                    WakeTarget::Parked(&waiter as *const Waiter as *mut Waiter).encode(),
-                    desc,
-                )
-            }
-            .check();
-
-            if registered.is_ok() {
-                waiter.wait();
-            }
-
-            return;
-        };
-
-        let registered = unsafe {
-            KEvent::register(
-                reactor_id,
-                task_id,
-                self.get_intptr_t_data(),
-                WakeTarget::Queue(queue).encode(),
-                desc,
-            )
-        }
-        .check();
-
-        if registered.is_err() {
-            return;
-        }
-
-        kqueue::wait_for(queue, WAKE_IDENT, libc::EVFILT_USER);
-    }
-
-    /// Prepares data and handles what comes back
-    /// from the kernel
-    ///
-    /// Not required to make any syscalls
-    ///
-    /// `queue` is this thread's own kqueue when it has one,
-    /// which is the cheap path, and `None` when it doesn't
-    fn offload(&self, queue: Option<i32>, reactor_id: i32, task_id: usize) -> Self::Output;
-}
-
-impl sealed::Sealed for SleepTask {}
-
-impl Task for SleepTask {
-    type Output = Duration;
-
-    #[inline(always)]
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
-        if !self.p_mode || self.sleep_for > SLEEP_TOLERANCE {
-            return self.offload(kqueue::id().ok(), reactor_id, task_id);
-        }
-
-        let until = self.created + self.sleep_for;
-        self.spinlock(until);
-
-        self.created.elapsed()
-    }
-
-    #[inline(always)]
-    fn prepare(&mut self) {
-        self.created = Instant::now();
-    }
-
-    /// The same question `execute` asks itself
-    ///
-    /// A spin never reaches a sleep thread, because it never
-    /// gives the thread up in the first place. Everything else
-    /// ends up inside a `kevent` call for the whole duration,
-    /// which is precisely what a worker shouldn't be doing
-    #[inline(always)]
-    fn blocking(&self) -> bool {
-        !self.p_mode || self.sleep_for > SLEEP_TOLERANCE
-    }
-
-    #[inline(always)]
-    fn get_intptr_t_data(&self) -> libc::intptr_t {
-        let target = if self.p_mode {
-            self.sleep_for.saturating_sub(SLEEP_TOLERANCE)
-        } else {
-            self.sleep_for
-        };
-
-        target.saturating_sub(self.created.elapsed()).as_nanos() as libc::intptr_t
-    }
-
-    #[inline(always)]
-    fn offload(&self, queue: Option<i32>, reactor_id: i32, task_id: usize) -> Self::Output {
-        // Sleep functions wait on their own thread's
-        // queue rather than going through the reactor,
-        // which avoids the overhead of the unpark
-        //
-        // Unless the thread couldn't get a queue, in which
-        // case the timer goes to the reactor like anything
-        // else and the thread parks for it
-        let carry_on = match queue {
-            Some(queue) => self.wait_on_own(queue, task_id),
-            None => {
-                self.wait_on_reactor(reactor_id, task_id);
-                true
-            }
-        };
-
-        // A cancelled sleep has nothing left to be accurate
-        // about. Spinning out the rest of a duration nobody is
-        // waiting for would give the thread straight back to
-        // the kernel wait it was just taken out of
-        if carry_on && self.p_mode {
-            let until = self.created + self.sleep_for;
-            self.spinlock(until);
-        }
-
-        self.created.elapsed()
-    }
-}
-
-impl SleepTask {
-    /// Puts the timer on this thread's own queue and waits
-    /// there, with nothing else involved in the wake
-    ///
-    /// `udata` is left empty, because the only thread that
-    /// could be woken is the one already sitting on the queue
-    ///
-    /// ## Returns
-    /// Whether the sleep is still worth finishing. A spawned
-    /// sleep that was cancelled comes back here early and has
-    /// nothing left to do
-    #[inline(always)]
-    fn wait_on_own(&self, queue: i32, task_id: usize) -> bool {
-        let registered = unsafe {
-            KEvent::register(
-                queue,
-                task_id,
-                self.get_intptr_t_data(),
-                WakeTarget::None.encode(),
-                EventDesc::new_timer(),
-            )
-        }
-        .check();
-
-        // Nothing waits on a registration the kernel refused,
-        // and a spin is left to make up the time as best it can
-        if registered.is_err() {
-            return true;
-        }
-
-        // Cancelled before the wait even started, so the timer
-        // comes straight back off rather than going off later
-        // into a queue nobody is waiting on it in
-        if !executor::waiting_on(queue) {
-            let _ = unsafe {
-                KEvent::register(
-                    queue,
-                    task_id,
-                    0,
-                    ptr::null_mut(),
-                    EventDesc::new_timer_delete(),
-                )
-            }
-            .check();
-
-            return false;
-        }
-
-        kqueue::wait_for(queue, task_id, libc::EVFILT_TIMER);
-
-        executor::stopped_waiting()
-    }
-
-    /// Puts the timer on the `Reactor`'s queue and parks
-    ///
-    /// Only reached when this thread couldn't get a queue of
-    /// its own, which takes a kernel out of descriptors
-    #[inline(always)]
-    fn wait_on_reactor(&self, reactor_id: i32, task_id: usize) {
-        let waiter = Waiter::new();
-
-        let registered = unsafe {
-            KEvent::register(
-                reactor_id,
-                task_id,
-                self.get_intptr_t_data(),
-                WakeTarget::Parked(&waiter as *const Waiter as *mut Waiter).encode(),
-                EventDesc::new_timer(),
-            )
-        }
-        .check();
-
-        if registered.is_err() {
-            return;
-        }
-
-        waiter.wait();
     }
 }

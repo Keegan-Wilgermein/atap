@@ -138,11 +138,25 @@ impl Runtime {
     /// Builds a task up before spawning it
     ///
     /// ## Behaviour
-    /// The methods above are the common ways to start a task
-    /// and cover most of what anybody wants. This is for the
-    /// combinations they can't express — a repeating task at a
-    /// priority of your choosing, say, which would otherwise
-    /// need a method per pair
+    /// The only way anything reaches the `Executor`. Every
+    /// task that runs on the pool starts here, and what it
+    /// does is decided by what is chained on before `spawn` —
+    /// once now, once later, repeating back to back, repeating
+    /// with a gap, on a fixed rate, and bounded by a count or
+    /// a deadline or both. `block` is the only other way in,
+    /// and it never goes near the pool at all
+    ///
+    /// There is a method per thing rather than a method per
+    /// combination, which is the whole reason this is a chain.
+    /// A repeating task at a priority of your choosing would
+    /// otherwise need an entry point of its own, and so would
+    /// every other pair
+    ///
+    /// The states are tracked in the type, so a combination
+    /// with no meaning doesn't compile rather than being
+    /// quietly ignored — asking for a gap where no repeat was
+    /// asked for, or setting the same bound twice, is an error
+    /// at the call site
     ///
     /// Nothing happens until `spawn` is called, so a builder
     /// that is dropped instead starts nothing

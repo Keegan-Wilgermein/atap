@@ -35,12 +35,17 @@ mod modules {
 }
 
 mod futures {
+    pub mod file;
+    pub(crate) mod kernel_wait;
     pub mod sleep;
     pub(crate) mod sleep_task;
     pub(crate) mod task;
 }
 
 // Re-exports
+pub use futures::file::{
+    File, FileKind, Metadata, MetadataTask, PathTask, ReadDirTask, ReadTask, WriteTask,
+};
 pub use futures::sleep::Sleep;
 pub use futures::sleep_task::SleepTask;
 pub use futures::task::Task;

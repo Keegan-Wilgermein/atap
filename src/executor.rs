@@ -1510,6 +1510,41 @@ pub(crate) fn stopped_waiting() -> bool {
     data.state() != TaskState::Cancelled
 }
 
+/// Whether the task on this thread has been cancelled
+///
+/// ## Behaviour
+/// The question a task that can't be taken out of the kernel
+/// asks itself between chunks. A sleep is interrupted mid wait
+/// and finds out on the way back; a file read is inside a
+/// syscall nothing can reach into, so the only place it can
+/// find out is between two of them
+///
+/// ## Returns
+/// Whether there is any point carrying on. `true` means the
+/// output is going to be thrown away whatever it turns out to
+/// be, so the rest of the work is worth skipping
+///
+/// Blocking calls always get `false`. They have no id and
+/// nothing can cancel them, which is the promise `block` makes
+///
+/// #### Note
+/// Reads the same slot `waiting_on` does, and works from a
+/// sleep thread for the same reason: both go through `run`,
+/// which is what sets `CURRENT`
+pub(crate) fn cancelled() -> bool {
+    let id = CURRENT.with(|current| current.get());
+
+    if id == NO_TASK {
+        return false;
+    }
+
+    let Some(data) = slot(id) else {
+        return false;
+    };
+
+    data.state() == TaskState::Cancelled
+}
+
 /// Takes a cancelled task back out of the kernel
 ///
 /// ## Behaviour
@@ -1896,7 +1931,7 @@ fn orphaned() {
 /// A schedule needs none of this. Its timer repeats, so a lost
 /// tick costs it one run and the next period wakes it again —
 /// which is the skipping already written down on
-/// `Runtime::every` rather than anything to be recovered
+/// `TaskBuilder::at_rate` rather than anything to be recovered
 ///
 /// #### Note
 /// A walk of the whole table on every manager start, which on a
@@ -2039,16 +2074,6 @@ mod tests {
         fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
             panic!("this task is meant to go down");
         }
-
-        fn prepare(&mut self) {}
-
-        fn get_intptr_t_data(&self) -> libc::intptr_t {
-            0
-        }
-
-        fn offload(&self, _queue: Option<i32>, _reactor_id: i32, _task_id: usize) -> Self::Output {
-            0
-        }
     }
 
     /// A task that holds its thread without admitting it
@@ -2067,16 +2092,6 @@ mod tests {
         fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
             thread::sleep(Duration::from_millis(200));
 
-            0
-        }
-
-        fn prepare(&mut self) {}
-
-        fn get_intptr_t_data(&self) -> libc::intptr_t {
-            0
-        }
-
-        fn offload(&self, _queue: Option<i32>, _reactor_id: i32, _task_id: usize) -> Self::Output {
             0
         }
     }

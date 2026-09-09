@@ -163,6 +163,19 @@ pub(crate) const SHUTDOWN_POLL: Duration = Duration::from_millis(1);
 /// How long a worker sits idle before it is reaped
 pub(crate) const IDLE_REAP: Duration = Duration::from_millis(500);
 
+/// How much of a file one read or write syscall asks for
+///
+/// A file task can't be taken out of the kernel the way a sleep
+/// can, so the loop between chunks is the only place a cancel
+/// has to land. That makes this a cancellation granularity as
+/// much as a buffer size: a task cancelled the instant after a
+/// chunk starts runs until that chunk comes back
+///
+/// #### Note
+/// Small enough that a cancel isn't left waiting on a slow
+/// mount, large enough that a big file isn't a syscall per page
+pub(crate) const FILE_CHUNK: usize = 64 * 1024;
+
 /// Tasks that may overtake a queued one before it counts
 /// as starving
 ///
