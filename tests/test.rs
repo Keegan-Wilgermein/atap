@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, Sleep, TaskHandle, TaskState};
 use std::{
     sync::{Arc, Barrier},
     thread,
@@ -1002,7 +1002,7 @@ fn high_priority_runs_first() {
     let queued_at = Instant::now();
     let urgent = Runtime::spawn_with_priority(Sleep::sleep(Duration::from_micros(50), true), 255);
 
-    while !urgent.ready() {
+    while !urgent.settled() {
         thread::yield_now();
     }
 
@@ -2091,4 +2091,344 @@ fn max_rss() -> usize {
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
 
     usage.ru_maxrss as usize
+}
+
+/// A timeout that isn't needed costs nothing
+///
+/// The regression this exists for: `join_with_timeout` used to
+/// sleep out the whole duration and only then look, so a task
+/// that finished immediately still held its caller for the full
+/// timeout. It gave the right answer at the worst possible
+/// moment, and every assertion about the *value* passed while
+/// it did
+#[test]
+fn join_with_timeout_returns_as_soon_as_the_task_does() {
+    Runtime::init();
+
+    let timeout = Duration::from_secs(10);
+    let handle = Runtime::spawn(Sleep::sleep(Duration::from_millis(20), false));
+
+    let started = Instant::now();
+    let result = handle.join_with_timeout(timeout);
+    let waited = started.elapsed();
+
+    assert!(result.is_ok(), "the task finished, so it reads: {result:?}");
+
+    println!("waited {waited:?} of a {timeout:?} timeout");
+
+    // Generous on purpose. The point is the difference between
+    // "as long as the task took" and "as long as the timeout
+    // was", which is three orders of magnitude here — not
+    // whether a loaded machine took an extra millisecond
+    assert!(
+        waited < Duration::from_secs(1),
+        "came back after {waited:?}, which is the timeout being waited out rather than the task",
+    );
+}
+
+/// A timeout that is needed is roughly the timeout
+#[test]
+fn join_with_timeout_gives_up_near_its_deadline() {
+    Runtime::init();
+
+    let timeout = Duration::from_millis(100);
+    let handle = Runtime::spawn(Sleep::sleep(Duration::from_secs(5), false));
+
+    let started = Instant::now();
+    let result = handle.join_with_timeout(timeout);
+    let waited = started.elapsed();
+
+    assert_eq!(
+        result,
+        Err(RuntimeError::NotReady),
+        "nowhere near long enough, and it says so",
+    );
+
+    println!("gave up after {waited:?} against a {timeout:?} timeout");
+
+    assert!(waited >= timeout, "came back early, after only {waited:?}");
+
+    // A spurious wake used to be able to restart the whole
+    // timeout. The budget is recomputed each pass now, so a
+    // stream of them can't push the deadline out
+    assert!(
+        waited < timeout * 10,
+        "took {waited:?} over a {timeout:?} timeout, so something is restarting the wait",
+    );
+
+    handle.cancel();
+}
+
+/// Polling a task whose output can't be cloned
+///
+/// `maybe_join` needs `Clone` and `take` blocks, so before
+/// `maybe_take` there was no way to look at one of these
+/// without committing to waiting for it
+#[test]
+fn maybe_take_polls_without_committing() {
+    Runtime::init();
+
+    let handle = Runtime::spawn(Sleep::sleep(Duration::from_millis(200), false));
+
+    assert_eq!(
+        handle.maybe_take(),
+        Err(RuntimeError::NotReady),
+        "a task still running hasn't failed, it just isn't finished",
+    );
+
+    handle.wait().expect("the task settles");
+
+    let taken = handle.maybe_take().expect("the value moves out once");
+    println!("took {taken:?}");
+
+    // Borrowed rather than consumed, so the handle is still
+    // here to say what happened to the value
+    assert_eq!(
+        handle.maybe_take(),
+        Err(RuntimeError::AlreadyTaken),
+        "only one caller ever gets the output, however it is asked for",
+    );
+}
+
+/// Giving up on a take leaves the output where it was
+#[test]
+fn take_with_timeout_costs_nothing_when_it_gives_up() {
+    Runtime::init();
+
+    let handle = Runtime::spawn(Sleep::sleep(Duration::from_millis(300), false));
+
+    assert_eq!(
+        handle.take_with_timeout(Duration::from_millis(20)),
+        Err(RuntimeError::NotReady),
+        "ran out of patience before the task ran out of work",
+    );
+
+    // Nothing was claimed, so the value is still there for
+    // whoever asks next
+    let taken = handle
+        .take_with_timeout(Duration::from_secs(5))
+        .expect("the output survived the caller giving up on it");
+
+    println!("took {taken:?} on the second ask");
+}
+
+/// Waiting without reading, and without giving up the handle
+#[test]
+fn wait_settles_without_consuming_or_reading() {
+    Runtime::init();
+
+    let handle = Runtime::spawn(Sleep::sleep(Duration::from_millis(50), false));
+
+    let state = handle.wait().expect("the task settles");
+
+    assert_eq!(state, TaskState::Ready, "it finished, so it has an output");
+    assert!(handle.is_ready(), "and the handle agrees");
+
+    // Read nothing and claimed nothing, so everything is still
+    // available afterwards
+    handle.join().expect("the output is still there to be had");
+}
+
+/// The state and the predicates say the same thing
+#[test]
+fn state_and_predicates_agree() {
+    Runtime::init();
+
+    let ready = Runtime::spawn(Sleep::sleep(Duration::from_millis(20), false));
+    ready.wait().expect("it settles");
+
+    assert_eq!(ready.state(), TaskState::Ready);
+    assert!(ready.is_ready() && ready.settled());
+
+    let cancelled = Runtime::spawn(Sleep::sleep(Duration::from_secs(5), false));
+    cancelled.clone().cancel();
+
+    assert_eq!(cancelled.state(), TaskState::Cancelled);
+    assert!(cancelled.is_cancelled() && cancelled.settled());
+
+    // Settled is not the same as having something to hand out,
+    // which is the whole reason both questions exist
+    assert!(
+        !cancelled.is_ready(),
+        "a cancelled task has settled and has nothing to give",
+    );
+
+    let taken = Runtime::spawn(Sleep::sleep(Duration::from_millis(20), false));
+    let watcher = taken.clone();
+    taken.take().expect("the value moves out");
+
+    assert_eq!(watcher.state(), TaskState::Taken);
+    assert!(watcher.is_taken());
+
+    // Never observable through a handle. The `Executor` filters
+    // an empty slot out and answers `Failed` in its place
+    for handle in [&ready, &cancelled, &watcher] {
+        assert_ne!(handle.state(), TaskState::Free, "a live handle is never free");
+    }
+}
+
+/// A bare builder is the plain spawn it stands in for
+#[test]
+fn builder_with_nothing_set_matches_spawn() {
+    Runtime::init();
+
+    let duration = Duration::from_millis(50);
+
+    let built = Runtime::task(Sleep::sleep(duration, false)).spawn();
+    let plain = Runtime::spawn(Sleep::sleep(duration, false));
+
+    let built = built.join().expect("the built one finishes");
+    let plain = plain.join().expect("the plain one finishes");
+
+    println!("built {built:?}, plain {plain:?}");
+
+    assert!(
+        built >= duration && plain >= duration,
+        "both slept at least what they were asked for",
+    );
+}
+
+/// Priority set through the builder reaches the injector
+///
+/// Measured the way `high_priority_runs_first` measures it:
+/// against the batch rather than against a fixed number, so it
+/// says the same thing on a fast machine as on a slow one
+#[test]
+fn builder_priority_reaches_the_band() {
+    Runtime::init();
+
+    let tasks = 50_000;
+    let started = Instant::now();
+
+    let queued: Vec<_> = (0..tasks)
+        .map(|_| Runtime::spawn(Sleep::sleep(Duration::from_micros(50), true)))
+        .collect();
+
+    // Last in, and served first anyway — through the builder
+    // rather than through `spawn_with_priority`
+    let queued_at = Instant::now();
+    let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(50), true))
+        .priority(255)
+        .spawn();
+
+    while !urgent.settled() {
+        thread::yield_now();
+    }
+
+    let waited = queued_at.elapsed();
+
+    for handle in queued {
+        handle.join().expect("every task finishes");
+    }
+
+    let total = started.elapsed();
+
+    println!(
+        "urgent task waited {:?}, the {} before it took {:?}",
+        waited, tasks, total,
+    );
+
+    assert!(
+        waited * 4 < total,
+        "the top priority task waited {waited:?} of the batch's {total:?}",
+    );
+}
+
+/// A repeat built at a priority is still a repeat
+///
+/// The combination the builder exists for: there is no
+/// `repeating_with_priority`, and before the builder there was
+/// no way to ask for one at all
+#[test]
+fn builder_repeats_at_a_priority() {
+    Runtime::init();
+
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10), false))
+        .priority(200)
+        .repeating()
+        .spawn();
+
+    // A repeat settles between runs rather than at the end, so
+    // reading it twice is how you know it went round
+    let first = handle.take_with_timeout(Duration::from_secs(5));
+    assert!(first.is_ok(), "the first run publishes: {first:?}");
+
+    let second = handle.take_with_timeout(Duration::from_secs(5));
+    assert!(
+        second.is_ok(),
+        "a later read succeeds where a one shot would stay AlreadyTaken: {second:?}",
+    );
+
+    handle.cancel();
+}
+
+/// A handle can be a map key, which is what hashing one is for
+#[test]
+fn handles_compare_and_hash_on_the_task() {
+    use std::collections::HashSet;
+
+    Runtime::init();
+
+    let handle = Runtime::spawn(Sleep::sleep(Duration::from_millis(20), false));
+    let same = handle.clone();
+    let other = Runtime::spawn(Sleep::sleep(Duration::from_millis(20), false));
+
+    assert_eq!(handle, same, "a clone points at the same task");
+    assert_ne!(handle.id(), other.id(), "two spawns are two tasks");
+
+    let mut seen = HashSet::new();
+
+    assert!(seen.insert(handle.clone()));
+    assert!(!seen.insert(same), "the same task doesn't go in twice");
+    assert!(seen.insert(other.clone()));
+
+    handle.join().expect("still finishes");
+    other.join().expect("still finishes");
+}
+
+/// Every task in a set, in the order they were given
+#[test]
+fn join_all_keeps_the_order_it_was_given() {
+    Runtime::init();
+
+    let handles: Vec<_> = (1..=5)
+        .map(|step| Runtime::spawn(Sleep::sleep(Duration::from_millis(step * 10), false)))
+        .collect();
+
+    let results = Runtime::join_all(handles);
+
+    assert_eq!(results.len(), 5, "one result per task");
+
+    // Given longest-last, so the results coming back in
+    // ascending order is the order being kept rather than the
+    // order they happened to finish in
+    for (index, result) in results.into_iter().enumerate() {
+        let slept = result.expect("every task finishes");
+        let asked = Duration::from_millis((index as u64 + 1) * 10);
+
+        assert!(
+            slept >= asked,
+            "result {index} slept {slept:?} against {asked:?}, so the order moved",
+        );
+    }
+}
+
+/// A healthy runtime says so
+#[test]
+fn status_reports_a_live_runtime() {
+    Runtime::init();
+
+    let status = Runtime::status();
+    println!("{status}");
+
+    assert!(Runtime::initialised(), "init has finished");
+    assert!(status.initialised);
+    assert!(!status.shut_down, "nothing has shut this down");
+
+    // Both supervisors are independent, and this test only
+    // claims what it can see: a runtime nothing has knocked
+    // over has both of them
+    assert!(status.reactor_alive, "the reactor is up");
+    assert!(status.manager_alive, "the manager is up");
+    assert!(status.healthy());
 }

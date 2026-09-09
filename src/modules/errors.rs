@@ -1,9 +1,11 @@
 //! # Errors
 //! Errors that the crate can return
 
+use std::{error::Error, fmt, io};
+
 /// A collection of all the errors
 /// that can occur, that the user can see
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeError {
     /// CheckErrors occur
     /// when a `.check()`
@@ -19,6 +21,13 @@ pub enum RuntimeError {
     /// Runtime has already been previously initialised
     AlreadyInit,
 
+    /// The runtime has been shut down
+    ///
+    /// Shutting down is final for the life of the process, so
+    /// this is the answer to initialising again rather than
+    /// something that can be waited out
+    ShutDown,
+
     /// The output was already moved out
     /// by a call to `take()`
     AlreadyTaken,
@@ -27,29 +36,31 @@ pub enum RuntimeError {
     /// one of its listeners
     Cancelled,
 
-    /// The `Executor` crashed for some reason
+    /// There is no task behind this handle
     ///
-    /// The `Executor` restarts itself
-    /// and you can start a new task
-    /// without it, it'll just sacrifice
-    /// worker adaptation until it recovers
+    /// The slot the id points at is empty, so there is nothing
+    /// to read, wait on or cancel
     ///
-    /// Tasks aren't
-    /// bound to the `Executor` so they
-    /// will continue like normal
-    ExecutorDead,
+    /// #### Note
+    /// Nothing to do with the health of the runtime. It means
+    /// the handle never had a task in the first place — the
+    /// table had no slot to give when it was spawned — or that
+    /// the task it did have is long finished and every listener
+    /// on it has gone
+    NoSuchTask,
 
-    /// The thread running this task died
-    /// part way through it
+    /// Nothing is going to produce an output for this task
     ///
-    /// The task was already taken out of
-    /// its slot by the thread that died, so
-    /// there is nothing left to run again
+    /// Covers every way that can happen: the task panicked, the
+    /// thread running it died holding it, there was nothing
+    /// left to run it, or a repeat couldn't be put back on the
+    /// clock
     ///
-    /// Every other task that thread was
-    /// holding is handed to another worker
-    /// and comes back normally. This is the
-    /// only one that can't
+    /// A task that panicked or whose thread died was already
+    /// taken out of its slot by the run that came apart, so
+    /// there is nothing left to run again. Every other task
+    /// that thread was holding is handed to another worker and
+    /// comes back normally
     TaskFailed,
 
     /// The task hasn't settled yet
@@ -57,6 +68,9 @@ pub enum RuntimeError {
     /// Not a failure, just an answer that
     /// isn't there yet. The handle is still
     /// good and the task is still coming
+    ///
+    /// Also what a timed read gives back when its
+    /// timeout ran out first
     NotReady,
 
     /// The table is too close to the number
@@ -64,3 +78,33 @@ pub enum RuntimeError {
     /// it back
     StillInUse,
 }
+
+impl fmt::Display for RuntimeError {
+    /// One line, saying what went wrong rather than what to do
+    /// about it
+    ///
+    /// #### Note
+    /// `CheckError` renders whatever the kernel said, since the
+    /// errno is the only part of it that carries any
+    /// information and a bare "a syscall failed" wastes the one
+    /// useful thing it is holding
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CheckError(Some(errno)) => {
+                write!(formatter, "system call failed: {}", io::Error::from_raw_os_error(*errno))
+            }
+            Self::CheckError(None) => write!(formatter, "system call failed"),
+            Self::AddressLock => write!(formatter, "the kernel refused a wait on an address"),
+            Self::AlreadyInit => write!(formatter, "the runtime is already initialised"),
+            Self::ShutDown => write!(formatter, "the runtime has been shut down"),
+            Self::AlreadyTaken => write!(formatter, "the output was already taken"),
+            Self::Cancelled => write!(formatter, "the task was cancelled"),
+            Self::NoSuchTask => write!(formatter, "there is no task behind this handle"),
+            Self::TaskFailed => write!(formatter, "the task will never produce an output"),
+            Self::NotReady => write!(formatter, "the task has not settled yet"),
+            Self::StillInUse => write!(formatter, "too much of the task table is in use to trim"),
+        }
+    }
+}
+
+impl Error for RuntimeError {}

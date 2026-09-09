@@ -17,7 +17,7 @@
 
 use crate::RuntimeError;
 use libc::c_void;
-use std::{io::Error, mem, sync::atomic::AtomicU32};
+use std::{io::Error, mem, sync::atomic::AtomicU32, time::Duration};
 
 /// Blocks while a word still reads `value`
 ///
@@ -45,6 +45,74 @@ pub(crate) fn wait(address: *mut c_void, value: u32) -> Result<(), RuntimeError>
     // wait, both just mean go round again
     if error == Some(libc::EINTR) || error == Some(libc::EAGAIN) {
         return Ok(());
+    }
+
+    Err(RuntimeError::AddressLock)
+}
+
+/// Blocks while a word still reads `value`, giving up if it
+/// stays that way for `timeout`
+///
+/// ## Returns
+/// `Ok(true)` when the word may have changed and the caller
+/// should look again, `Ok(false)` when the timeout ran out
+/// first, and an error only when the kernel refused in a way
+/// that going round again won't fix
+///
+/// ## Behaviour
+/// The clock is `OS_CLOCK_MACH_ABSOLUTE_TIME`, which is
+/// monotonic. A timeout is therefore the duration that was
+/// asked for rather than a point on a calendar, and doesn't
+/// move if the wall clock is set underneath the wait
+///
+/// #### Note
+/// A zero timeout is the caller saying its patience has already
+/// run out, so the kernel isn't asked at all. Passing it
+/// through would be asking to wait for no time, which the
+/// caller can answer for itself
+pub(crate) fn wait_until(
+    address: *mut c_void,
+    value: u32,
+    timeout: Duration,
+) -> Result<bool, RuntimeError> {
+    let nanos = timeout.as_nanos();
+
+    if nanos == 0 {
+        return Ok(false);
+    }
+
+    let status = unsafe {
+        libc::os_sync_wait_on_address_with_timeout(
+            address,
+            value as u64,                       // Sleep only while it still reads this
+            mem::size_of::<u32>(),              // A single word, whatever it holds
+            libc::OS_SYNC_WAIT_ON_ADDRESS_NONE, // Single process waiting
+            libc::OS_CLOCK_MACH_ABSOLUTE_TIME,  // Monotonic, so setting the clock can't move it
+            // Saturating rather than wrapping, because a
+            // `Duration` holds more nanoseconds than a `u64`
+            // does and a truncated one would come back
+            // immediately instead of waiting the age it asked
+            // for
+            nanos.min(u64::MAX as u128) as u64,
+        )
+    };
+
+    if status >= 0 {
+        return Ok(true);
+    }
+
+    let error = Error::last_os_error().raw_os_error();
+
+    // The answer this call exists to give: the word never moved
+    // and the time ran out
+    if error == Some(libc::ETIMEDOUT) {
+        return Ok(false);
+    }
+
+    // A signal, or a value that moved between the read and the
+    // wait, both just mean go round again
+    if error == Some(libc::EINTR) || error == Some(libc::EAGAIN) {
+        return Ok(true);
     }
 
     Err(RuntimeError::AddressLock)

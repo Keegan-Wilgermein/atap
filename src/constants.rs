@@ -150,6 +150,16 @@ pub(crate) const SLEEP_MULTIPLIER: usize = 8;
 /// How often the manager wakes to do policy on its own
 pub(crate) const MANAGER_TICK: Duration = Duration::from_millis(10);
 
+/// How often a shutdown looks to see whether the pool has
+/// finished draining
+///
+/// Polled rather than woken because a shutdown happens once and
+/// the thread asking for it has nothing else to do. Wiring a
+/// wake through every path that could empty the pool would put
+/// a cost on every task to save a few milliseconds at the end
+/// of the process
+pub(crate) const SHUTDOWN_POLL: Duration = Duration::from_millis(1);
+
 /// How long a worker sits idle before it is reaped
 pub(crate) const IDLE_REAP: Duration = Duration::from_millis(500);
 

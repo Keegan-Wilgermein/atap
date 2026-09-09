@@ -10,14 +10,22 @@
 /// listeners block on, and `os_sync_wait_on_address` only
 /// watches words of 4 or 8 bytes
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum TaskState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TaskState {
     /// No task in this slot
     ///
     /// Zero on purpose. Table blocks come back from the
     /// kernel zeroed, so a block that has never been touched
     /// already reads as a run of empty slots with nothing
     /// needing to be written to it first
+    ///
+    /// #### Note
+    /// A `TaskHandle` never sees this. The `Executor` filters
+    /// an empty slot out before anything can read one and
+    /// answers `Failed` in its place, so this is bookkeeping
+    /// that happens to be visible rather than a state a task
+    /// can be found in. It is public only because matching on
+    /// the rest of the enum has to account for it
     Free = 0,
 
     /// Waiting for the `Executor` to claim it
@@ -39,7 +47,13 @@ pub(crate) enum TaskState {
     /// its result just never reaches anyone
     Cancelled = 5,
 
-    /// The `Executor` died before it could finish the task
+    /// Nothing is going to produce an output for this task
+    ///
+    /// Covers every way that can happen: the task panicked,
+    /// the thread running it died holding it, there was
+    /// nothing left to run it, or a repeat could not be put
+    /// back on the clock. What they have in common is that
+    /// waiting longer won't help
     Failed = 6,
 }
 
@@ -66,8 +80,14 @@ impl TaskState {
     ///
     /// Terminal states are the ones worth waking a listener
     /// for, and the point past which a read won't block
+    ///
+    /// #### Note
+    /// Settled is not the same as having an output. A
+    /// cancelled task, a failed one and one whose output has
+    /// already been taken have all settled, and none of them
+    /// has anything to hand out
     #[inline(always)]
-    pub(crate) fn terminal(self) -> bool {
+    pub fn terminal(self) -> bool {
         !matches!(self, Self::Pending | Self::Running)
     }
 }

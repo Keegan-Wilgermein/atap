@@ -4,13 +4,13 @@
 //! their results as they finish
 
 use crate::{
-    RuntimeError,
+    RuntimeError, Sleep,
     constants::{DEAD_KQUEUE_ID, DEFAULT_PRIORITY, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
     executor::{self, Executor},
     futures::task::Task,
     modules::{
-        int_check::IntCheck, pool_stats::PoolStats, task_handle::TaskHandle,
-        task_setup::TaskSetup, worker_pool::POOL,
+        int_check::IntCheck, pool_stats::PoolStats, runtime_status::RuntimeStatus, spawn::Spawn,
+        task_handle::TaskHandle, task_setup::TaskSetup, worker_pool::POOL,
     },
     reactor::Reactor,
 };
@@ -57,6 +57,15 @@ impl Runtime {
     ///
     /// For this reason, Runtimes are threadsafe
     pub fn init() -> Option<RuntimeError> {
+        // A shutdown gave every slot in the table back, so
+        // starting again would hand those ids to new tasks
+        // while old handles are still holding them. Refused
+        // rather than quietly doing nothing, because a caller
+        // that gets `None` here is entitled to spawn
+        if executor::shutting_down() {
+            return Some(RuntimeError::ShutDown);
+        }
+
         // Claimed and checked in one operation so that two
         // threads arriving together can't both get past it
         if INIT.swap(true, Ordering::SeqCst) {
@@ -95,6 +104,13 @@ impl Runtime {
     /// Nothing, and less than nothing. This runs on the calling
     /// thread and never goes near the `Executor`, so there is
     /// no part of it the manager could have been involved in
+    ///
+    /// ## If the runtime is shut down
+    /// Nothing here either, and deliberately so. `shutdown`
+    /// leaves the `Reactor` up precisely because a blocking
+    /// call on a thread that couldn't get a queue of its own
+    /// waits on it, and closing it would break the promise
+    /// above
     #[inline(always)]
     pub fn block<F>(mut task: F) -> F::Output
     where
@@ -135,6 +151,14 @@ impl Runtime {
     /// no lifting an overtaken task out of the way. Under load
     /// that shows up as tasks taking longer, never as tasks not
     /// running
+    ///
+    /// ## If the runtime is shut down
+    /// The opposite, and the difference is worth knowing. A
+    /// manager that dies leaves a pool that still runs
+    /// everything; a shutdown stops the pool as well. A task
+    /// spawned after one settles `Failed` straight away with
+    /// its slot given back, so the handle reads an error rather
+    /// than blocking on a result that was never coming
     pub fn spawn<F>(task: F) -> TaskHandle<F::Output>
     where
         F: Task,
@@ -184,7 +208,7 @@ impl Runtime {
     ///
     /// ## The handle
     /// The same handle as any other task, meaning the same
-    /// things. `ready` is true when a result is waiting,
+    /// things. `is_ready` is true when a result is waiting,
     /// `join` gives the most recent one, and `take` moves one
     /// out — after which the next run publishes another, so a
     /// later read succeeds where on a one shot it would stay
@@ -209,6 +233,13 @@ impl Runtime {
     /// on the pool as its last act, so this is the one repeat
     /// that never involved the manager and the only one that
     /// survives it giving up for good
+    ///
+    /// ## If the runtime is shut down
+    /// The series ends. Surviving a manager that died is not
+    /// the same as surviving a pool that has been stopped —
+    /// putting itself back on the queue is exactly the move
+    /// that fails once nothing is accepting work, so the run in
+    /// flight finishes and the series settles `Failed` after it
     #[inline(always)]
     pub fn repeating<F>(task: F) -> TaskHandle<F::Output>
     where
@@ -281,6 +312,12 @@ impl Runtime {
     ///
     /// So an interval that spans a restart runs long, by however
     /// long the manager was away, and the series carries on
+    ///
+    /// ## If the runtime is shut down
+    /// The same ending as "gone for good" above, reached on
+    /// purpose rather than by failure. The wait can't be armed
+    /// against a closed queue, so the series settles and every
+    /// reader gets an answer
     #[inline(always)]
     pub fn repeat_every<F>(interval: Duration, task: F) -> TaskHandle<F::Output>
     where
@@ -374,12 +411,183 @@ impl Runtime {
     ///
     /// Runs already in flight when it goes are not interrupted.
     /// They finish, and find nowhere to publish
+    ///
+    /// ## If the runtime is shut down
+    /// The same ending as "gone for good" above, reached on
+    /// purpose rather than by failure. A shutdown drains first,
+    /// so runs already started finish and publish normally, and
+    /// the schedule settles once there is nothing left to tick
     #[inline(always)]
     pub fn every<F>(interval: Duration, task: F) -> TaskHandle<F::Output>
     where
         F: Task + Clone,
     {
         Executor::new_series(task, TaskSetup::series(DEFAULT_PRIORITY, interval))
+    }
+
+    /// Builds a task up before spawning it
+    ///
+    /// ## Behaviour
+    /// The methods above are the common ways to start a task
+    /// and cover most of what anybody wants. This is for the
+    /// combinations they can't express — a repeating task at a
+    /// priority of your choosing, say, which would otherwise
+    /// need a method per pair
+    ///
+    /// Nothing happens until `spawn` is called, so a builder
+    /// that is dropped instead starts nothing
+    ///
+    /// ```ignore
+    /// Runtime::task(work).priority(200).repeat_every(gap).spawn();
+    /// ```
+    ///
+    /// #### Note
+    /// `Runtime::task(t).spawn()` is exactly `Runtime::spawn(t)`
+    #[inline(always)]
+    pub fn task<F>(task: F) -> Spawn<F>
+    where
+        F: Task,
+    {
+        Spawn::new(task)
+    }
+
+    /// Sleeps the calling thread, accurately
+    ///
+    /// Shorthand for `Runtime::block(Sleep::sleep(time, true))`
+    ///
+    /// ## Returns
+    /// The total time it actually took
+    ///
+    /// #### Note
+    /// Precision mode, so the last stretch is spun rather than
+    /// slept. Use `block` with `Sleep::sleep(time, false)` for
+    /// a sleep that never burns a core
+    #[inline(always)]
+    pub fn sleep(time: Duration) -> Duration {
+        Self::block(Sleep::sleep(time, true))
+    }
+
+    /// Waits for every one of a set of tasks
+    ///
+    /// ## Returns
+    /// One result per task, in the order they were given, each
+    /// exactly what `join` would have given for that task —
+    /// including its error, so one task failing doesn't hide
+    /// the others
+    ///
+    /// ## Behaviour
+    /// Waits for them one after another, which costs nothing
+    /// against waiting for them all at once: they are already
+    /// running in parallel, and the last one to finish is the
+    /// last one to finish whichever order they are read in
+    pub fn join_all<T, I>(handles: I) -> Vec<Result<T, RuntimeError>>
+    where
+        I: IntoIterator<Item = TaskHandle<T>>,
+        T: Clone,
+    {
+        handles.into_iter().map(|handle| handle.join()).collect()
+    }
+
+    /// Whether the runtime has finished initialising
+    ///
+    /// #### Note
+    /// Says initialisation is over, not that it worked. Use
+    /// `status` for whether anything came of it
+    pub fn initialised() -> bool {
+        READY.load(Ordering::Acquire)
+    }
+
+    /// Whether everything is up and nothing has given up
+    ///
+    /// Shorthand for `Runtime::status().healthy()`
+    pub fn healthy() -> bool {
+        Self::status().healthy()
+    }
+
+    /// What the runtime looks like right now
+    ///
+    /// ## Behaviour
+    /// The `Reactor` and the manager are supervised separately
+    /// and fail separately, so they are reported separately.
+    /// Every method on here that talks about what happens "if
+    /// the manager goes" is describing a state this is how you
+    /// detect
+    ///
+    /// #### Note
+    /// A snapshot rather than a lock, like `workers`. Both
+    /// supervisors carry on doing whatever they were doing
+    /// while it is being looked at
+    pub fn status() -> RuntimeStatus {
+        let initialised = Self::initialised();
+
+        RuntimeStatus {
+            initialised,
+            shut_down: executor::shutting_down(),
+
+            // Both only mean anything once there has been an
+            // initialisation to have survived. Before that the
+            // ids hold whatever they were born with, which is
+            // not the same as a queue that is up
+            reactor_alive: initialised
+                && REACTOR_KQUEUE_ID.load(Ordering::Relaxed) != DEAD_KQUEUE_ID,
+            manager_alive: initialised && executor::manager_alive(),
+        }
+    }
+
+    /// Stops the runtime for good
+    ///
+    /// ## Behaviour
+    /// Drains rather than aborts. Nothing new gets in from the
+    /// moment this is called — a spawn after it settles
+    /// `Failed` straight away rather than blocking — and
+    /// everything already queued still runs. Workers stop
+    /// between tasks, never inside one, so a task in flight
+    /// runs to the end and comes back to its listeners
+    /// normally, and a task waiting its turn still gets one
+    ///
+    /// Blocks until the pool has nothing left to do, so a
+    /// caller that comes back from this knows the work is
+    /// finished rather than merely asked to finish
+    ///
+    /// Everything the drain can't reach is written off on the
+    /// way out: a schedule waiting on a queue that has closed,
+    /// a repeat between runs, a task in the ring of a worker
+    /// that went down. Their listeners get an answer instead of
+    /// blocking for the life of the process
+    ///
+    /// ## The `Reactor`
+    /// Deliberately left up. `block` runs on the calling thread
+    /// and is documented as uncancellable by any means, and a
+    /// blocking call on a thread that couldn't get a queue of
+    /// its own waits on the `Reactor` — closing it would break
+    /// exactly the promise `block` makes. A blocking call
+    /// during or after a shutdown still works
+    ///
+    /// ## It is one way
+    /// The table's slots are handed back here, so starting
+    /// again would give those ids to new tasks while old
+    /// handles still hold them. `init` after this returns
+    /// `ShutDown` rather than appearing to succeed
+    ///
+    /// #### Note
+    /// Calling it twice is safe and does nothing the second
+    /// time. The second caller comes straight back rather than
+    /// tearing down a runtime somebody else is already tearing
+    /// down — though it does *not* wait for the first one to
+    /// finish draining
+    ///
+    /// #### Note
+    /// The one way this doesn't come back is a task that never
+    /// finishes. Draining means waiting for the work, and a
+    /// task that runs forever is work that never ends
+    ///
+    /// For the same reason, don't call this from inside a
+    /// spawned task. The drain waits for the pool to empty and
+    /// the caller is itself the thing keeping it full, so it
+    /// would be waiting on itself. Shut down from a thread the
+    /// runtime isn't running
+    pub fn shutdown() {
+        executor::shutdown_now();
     }
 
     /// Gives back the memory behind the unused part of the

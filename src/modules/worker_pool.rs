@@ -688,6 +688,33 @@ impl WorkerPool {
         self.stopped.store(true, Ordering::Release);
     }
 
+    /// Asks every thread in the pool to stop
+    ///
+    /// ## Behaviour
+    /// Never interrupts a task. Both halves check between
+    /// tasks, so whatever is in flight runs to the end and
+    /// comes back to its listeners normally — this asks them
+    /// not to pick anything else up rather than putting down
+    /// what they have
+    ///
+    /// #### Note
+    /// Only useful with `stop_permanently` already set. On its
+    /// own the manager's next tick would find the pool below
+    /// its floor and start the threads straight back up
+    pub(crate) fn stop_all(&'static self) {
+        let highest = self.highest.load(Ordering::Acquire);
+
+        for index in 0..highest {
+            self.workers[index].stop();
+        }
+
+        let sleeps = self.sleeps_highest.load(Ordering::Acquire);
+
+        for index in 0..sleeps {
+            self.sleeps[index].stop();
+        }
+    }
+
     /// Clears up after every worker that went down
     fn sweep_all(&'static self) {
         let highest = self.highest.load(Ordering::Acquire);

@@ -27,7 +27,7 @@ use crate::{
     Runtime, RuntimeError,
     constants::{
         DEAD_KQUEUE_ID, MANAGER_TICK, MANAGER_TICK_IDENT, MAX_TASK_ID, NO_TASK, RESTART_BACKOFF,
-        RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE, WAKE_IDENT,
+        RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE, SHUTDOWN_POLL, WAKE_IDENT,
     },
     futures::task::Task,
     modules::{
@@ -51,7 +51,7 @@ use std::{
     mem,
     panic::{self, AssertUnwindSafe},
     ptr,
-    sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
     thread,
     time::Instant,
 };
@@ -95,6 +95,137 @@ thread_local! {
     /// machinery applies to it, which is the promise blocking
     /// calls make
     static CURRENT: Cell<usize> = const { Cell::new(NO_TASK) };
+}
+
+/// Whether the runtime has been shut down
+///
+/// One way. Nothing clears this, because a shutdown gives back
+/// every slot in the table and starting again would hand those
+/// ids to new tasks while old handles still hold them
+///
+/// `SeqCst` throughout — it is read once per manager loop and
+/// written once in the life of a process, so nothing here is
+/// worth being clever about
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Whether somebody has asked the runtime to stop
+#[inline(always)]
+pub(crate) fn shutting_down() -> bool {
+    SHUTDOWN.load(Ordering::SeqCst)
+}
+
+/// Stops the runtime for good
+///
+/// ## Behaviour
+/// Drains rather than aborts. Nothing new gets in from the
+/// moment this starts, and everything already queued still
+/// runs — workers pull their own work and stop only between
+/// tasks, so a task in flight is never interrupted and a task
+/// waiting its turn still gets one
+///
+/// Blocks until the pool has nothing left to do, so a caller
+/// that comes back from this knows the work is finished rather
+/// than merely asked to finish
+///
+/// The manager's queue is closed first, before the drain rather
+/// than after it. Both re-arm paths check it, so a repeating
+/// task that publishes part way through the drain ends its
+/// series there instead of putting itself back on a pool that
+/// is trying to empty — which is what stops the drain being a
+/// wait for something that keeps renewing itself
+///
+/// ## Returns
+/// Nothing, and it cannot fail. A second caller finds the flag
+/// already set and comes straight back, rather than tearing
+/// down a runtime somebody else is already tearing down
+///
+/// #### Note
+/// The one way this doesn't come back is a task that never
+/// finishes. Draining means waiting for the work, and a task
+/// that runs forever is work that never ends — the same task
+/// would have held a worker for the life of the process
+/// anyway, this is just where it becomes visible
+///
+/// The same goes for calling this from inside a spawned task.
+/// The caller is one of the things keeping the pool busy, so
+/// the drain would be waiting on the thread doing the waiting
+pub(crate) fn shutdown_now() {
+    // Claimed and checked in one operation, so two threads
+    // arriving together can't both go through it
+    if SHUTDOWN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    // Nothing new gets in past here. A spawn after this settles
+    // `Failed` with its slot given straight back, down the same
+    // path a spawn onto a dead pool has always taken
+    POOL.stop_permanently();
+
+    let manager = EXECUTOR_KQUEUE_ID.swap(DEAD_KQUEUE_ID, Ordering::SeqCst);
+
+    // Woken rather than closed. The manager may be sitting in
+    // `kevent` on this descriptor at this very moment, so the
+    // supervisor closes it once that thread has actually gone
+    if manager != DEAD_KQUEUE_ID {
+        let _ = unsafe {
+            KEvent::register(
+                manager,
+                WAKE_IDENT,
+                0,
+                ptr::null_mut(),
+                EventDesc::new_user_trigger(),
+            )
+        }
+        .check();
+    }
+
+    // Everything already queued still runs
+    while POOL.stats().has_any_task() {
+        thread::sleep(SHUTDOWN_POLL);
+    }
+
+    POOL.stop_all();
+    POOL.abandon();
+
+    // Both halves. A blocking task stranded in its own queue
+    // has listeners waiting on it exactly like any other, and
+    // nothing else is going to come for it now
+    for task in POOL
+        .injector()
+        .drain()
+        .into_iter()
+        .chain(POOL.blocking().drain())
+    {
+        fail(task);
+    }
+
+    // Everything the runtime is still holding a reference on:
+    // a schedule whose queue has closed, a repeat between runs,
+    // a task in the ring of a worker that went down
+    for task in 0..DATA.high_water() {
+        let Some(data) = slot(task) else {
+            continue;
+        };
+
+        let state = data.state();
+
+        // A thread is inside this one and gives the reference
+        // back itself on the way out. A series is the exception,
+        // because the thread inside one is a run publishing into
+        // it rather than the series itself, and that run holds a
+        // claim of its own — so the count can't reach zero while
+        // it is still writing
+        if state == TaskState::Running && !data.kind().schedules() {
+            continue;
+        }
+
+        if !state.terminal() {
+            data.set_state(TaskState::Failed);
+            wake(data);
+        }
+
+        release(task);
+    }
 }
 
 /// Manager deaths still owed
@@ -290,14 +421,38 @@ impl Executor {
 
     /// Blocks until a task settles, and says how it settled
     ///
+    /// Waits for as long as it takes. `wait_until` is the same
+    /// wait with somewhere to stop
+    pub(crate) fn wait(id: usize) -> Result<TaskState, RuntimeError> {
+        Self::wait_until(id, None)
+    }
+
+    /// Blocks until a task settles or a deadline passes
+    ///
+    /// ## Returns
+    /// How it settled, or `NotReady` if the deadline came
+    /// first. `None` for the deadline is a wait with nowhere to
+    /// stop, which is what `wait` asks for
+    ///
     /// ## Behaviour
     /// The wait sleeps only while the state word still reads
     /// the value it was given, so a state that has already
     /// moved on doesn't sleep at all and the loop simply looks
     /// again
-    pub(crate) fn wait(id: usize) -> Result<TaskState, RuntimeError> {
+    ///
+    /// What is left of the deadline is worked out fresh on
+    /// every pass rather than handed to the kernel once. A
+    /// signal, a spurious wake and a state that moved without
+    /// settling all send this round again, and giving each of
+    /// them the whole timeout over again would let a stream of
+    /// them hold a caller long past the moment it asked to stop
+    /// waiting
+    pub(crate) fn wait_until(
+        id: usize,
+        deadline: Option<Instant>,
+    ) -> Result<TaskState, RuntimeError> {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::ExecutorDead);
+            return Err(RuntimeError::NoSuchTask);
         };
 
         loop {
@@ -307,7 +462,35 @@ impl Executor {
                 return Ok(state);
             }
 
-            address_lock::wait(data.wait_address(), state as u32)?;
+            let Some(deadline) = deadline else {
+                address_lock::wait(data.wait_address(), state as u32)?;
+                continue;
+            };
+
+            let left = deadline.saturating_duration_since(Instant::now());
+
+            // Out of time. Asked after the state read above, so
+            // a task that settled on the way round here still
+            // comes back with its answer rather than a timeout
+            if left.is_zero() {
+                return Err(RuntimeError::NotReady);
+            }
+
+            if address_lock::wait_until(data.wait_address(), state as u32, left)? {
+                continue;
+            }
+
+            // The time ran out, so the word is read once more
+            // before giving up on it. A settle landing in the
+            // same moment as the timeout is still a settle, and
+            // the caller would rather have it than not
+            let state = data.state();
+
+            if state.terminal() {
+                return Ok(state);
+            }
+
+            return Err(RuntimeError::NotReady);
         }
     }
 
@@ -319,12 +502,28 @@ impl Executor {
     where
         T: Clone,
     {
+        Self::clone_result_until(id, None)
+    }
+
+    /// The same read, with somewhere to stop waiting
+    ///
+    /// ## Returns
+    /// The output, or `NotReady` if the deadline passed before
+    /// there was one. Any other error is the task's own and
+    /// waiting longer wouldn't have helped
+    pub(crate) fn clone_result_until<T>(
+        id: usize,
+        deadline: Option<Instant>,
+    ) -> Result<T, RuntimeError>
+    where
+        T: Clone,
+    {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::ExecutorDead);
+            return Err(RuntimeError::NoSuchTask);
         };
 
         loop {
-            settled(Self::wait(id)?)?;
+            settled(Self::wait_until(id, deadline)?)?;
 
             // Held for as long as the clone takes, so that a
             // `take` on another thread waits rather than moving
@@ -343,6 +542,13 @@ impl Executor {
 
             if error != RuntimeError::NotReady {
                 return Err(error);
+            }
+
+            // Losing that race costs another go round, and a
+            // caller that put a deadline on this has only as
+            // many goes as the deadline leaves room for
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(RuntimeError::NotReady);
             }
         }
 
@@ -365,7 +571,7 @@ impl Executor {
         T: Clone,
     {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::ExecutorDead);
+            return Err(RuntimeError::NoSuchTask);
         };
 
         if !data.enter_read() {
@@ -380,6 +586,33 @@ impl Executor {
         Ok(value)
     }
 
+    /// Moves the output out if it is there, without waiting
+    ///
+    /// The same move `take_result` does, minus the waiting. A
+    /// task that hasn't settled says so rather than blocking,
+    /// which is the difference between polling a handle and
+    /// taking from one
+    ///
+    /// #### Note
+    /// `claim_result` only wins against `Ready`, so a task
+    /// still running turns this away on its own and nothing
+    /// here has to ask whether it settled first
+    pub(crate) fn poll_take<T>(id: usize) -> Result<T, RuntimeError> {
+        let Some(data) = slot(id) else {
+            return Err(RuntimeError::NoSuchTask);
+        };
+
+        if !data.claim_result() {
+            return Err(lost(data.state()));
+        }
+
+        debug_assert_eq!(data.size(), mem::size_of::<T>());
+
+        data.empty();
+
+        Ok(unsafe { ptr::read(data.payload().cast::<T>()) })
+    }
+
     /// Waits for a task and moves its output out
     ///
     /// Winning the move to `Taken` is what makes this the one
@@ -387,12 +620,30 @@ impl Executor {
     /// later read fail rather than hand out a second owner of
     /// the same value
     pub(crate) fn take_result<T>(id: usize) -> Result<T, RuntimeError> {
+        Self::take_result_until(id, None)
+    }
+
+    /// The same move, with somewhere to stop waiting
+    ///
+    /// ## Returns
+    /// The output, or `NotReady` if the deadline passed before
+    /// there was one
+    ///
+    /// #### Note
+    /// A deadline that passes leaves the output where it is.
+    /// Nothing was claimed, so a later read still finds it and
+    /// running out of patience costs the caller nothing but the
+    /// wait
+    pub(crate) fn take_result_until<T>(
+        id: usize,
+        deadline: Option<Instant>,
+    ) -> Result<T, RuntimeError> {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::ExecutorDead);
+            return Err(RuntimeError::NoSuchTask);
         };
 
         loop {
-            settled(Self::wait(id)?)?;
+            settled(Self::wait_until(id, deadline)?)?;
 
             if data.claim_result() {
                 break;
@@ -403,6 +654,10 @@ impl Executor {
 
             if error != RuntimeError::NotReady {
                 return Err(error);
+            }
+
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(RuntimeError::NotReady);
             }
         }
 
@@ -611,6 +866,15 @@ pub(crate) fn slot(id: usize) -> Option<&'static TaskData> {
     }
 
     Some(data)
+}
+
+/// Whether the manager still has a queue to work from
+///
+/// False once its supervisor has given up on it, and false the
+/// moment a shutdown starts
+#[inline(always)]
+pub(crate) fn manager_alive() -> bool {
+    EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed) != DEAD_KQUEUE_ID
 }
 
 /// Task slots the table has ever handed out
@@ -1168,7 +1432,7 @@ fn lost(state: TaskState) -> RuntimeError {
 
         // The slot is empty, so whatever id reached here belongs
         // to nothing at all
-        TaskState::Free => RuntimeError::ExecutorDead,
+        TaskState::Free => RuntimeError::NoSuchTask,
     }
 }
 
@@ -1182,7 +1446,7 @@ fn wake(data: &TaskData) {
 ///
 /// The task is dropped here rather than run, and the id is
 /// one no slot will ever answer to, so every read on the
-/// handle comes back `ExecutorDead` instead of blocking
+/// handle comes back `NoSuchTask` instead of blocking
 fn failed<T>(erased: *mut c_void) -> TaskHandle<T> {
     drop(unsafe { Box::from_raw(erased.cast::<Box<dyn ErasedTask>>()) });
 
@@ -1254,6 +1518,17 @@ fn supervise(id: i32) {
         loop {
             let _ = thread::spawn(move || executor_loop(id)).join();
 
+            // Asked to stop rather than fell over, so this is
+            // not a failure and there is nothing to bring back.
+            // The queue is closed here rather than by the
+            // caller, because this is the one place that knows
+            // the manager thread has actually gone and isn't
+            // still sitting in a `kevent` on it
+            if shutting_down() {
+                let _ = unsafe { libc::close(id) };
+                break;
+            }
+
             if started.elapsed() >= RESTART_WINDOW {
                 failures = 0;
             }
@@ -1301,6 +1576,14 @@ fn executor_loop(id: i32) {
     recover_waits();
 
     loop {
+        // Checked before the policy pass as well as after the
+        // wait, so a manager asked to stop while it was already
+        // inside `kevent` doesn't go round and grow a pool that
+        // is being taken down
+        if shutting_down() {
+            return;
+        }
+
         POOL.tick();
 
         let count = match unsafe { KEvent::listen(id, &mut events) }.check() {
@@ -1308,6 +1591,13 @@ fn executor_loop(id: i32) {
             Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
             Err(_) => break,
         };
+
+        // The poke that woke this is the whole of its message,
+        // and the events it came back with belong to a queue
+        // nothing is going to read again
+        if shutting_down() {
+            return;
+        }
 
         // Nothing at all unless a test has asked for it, and
         // deliberately here rather than at the top of the loop.

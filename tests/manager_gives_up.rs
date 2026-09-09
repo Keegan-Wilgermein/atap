@@ -52,7 +52,7 @@ fn a_manager_that_gives_up_strands_nothing() {
     thread::sleep(Duration::from_millis(100));
 
     assert!(
-        !schedule.ready() || schedule.maybe_join().is_ok(),
+        !schedule.settled() || schedule.maybe_join().is_ok(),
         "the schedule settled before the manager was touched",
     );
 
@@ -93,7 +93,7 @@ fn a_manager_that_gives_up_strands_nothing() {
     // on either gets an answer instead of waiting for the life
     // of the process
     assert!(
-        schedule.ready() && timed.ready(),
+        schedule.settled() && timed.settled(),
         "something was left unsettled with nothing able to run it, pool {:?}",
         Runtime::workers(),
     );
