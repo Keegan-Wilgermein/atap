@@ -25,8 +25,8 @@ use crate::{
         PRIORITY_CLASS_SHIFT, PRIORITY_SEQUENCE_MASK,
     },
     modules::{
-        erased_task::ErasedTask, mapping, task_kind::TaskKind, task_setup::TaskSetup,
-        task_state::TaskState,
+        erased_task::ErasedTask, mapping, series::SeriesTask, task_kind::TaskKind,
+        task_setup::TaskSetup, task_state::TaskState,
     },
 };
 use libc::c_void;
@@ -119,6 +119,27 @@ pub(crate) struct TaskData {
     /// still a load rather than a walk through the erasure
     blocking: AtomicBool,
 
+    /// Whether the `Executor` still holds its reference
+    ///
+    /// Taken at creation and given back exactly once, by
+    /// whichever part of the runtime finishes with the task —
+    /// the run that ends it, the tick that finds its series
+    /// cancelled, the sweep after a worker died, or the
+    /// teardown that writes off what is left. Which of those
+    /// gets there is not knowable in advance, and more than one
+    /// of them can have a fair claim to be last
+    ///
+    /// So the reference is a thing to be won rather than a
+    /// convention to be kept. Whoever takes this flag releases;
+    /// everybody else has already been beaten to it and does
+    /// nothing. Without it, correctness rests on every path
+    /// releasing exactly once, and a second release takes the
+    /// listener count below zero and frees a live slot
+    ///
+    /// Sits in the padding that already followed `blocking`, so
+    /// it costs the header nothing
+    held: AtomicBool,
+
     /// Nanoseconds a `RepeatEvery` task waits between runs
     ///
     /// Zero for everything else, which never reads it. Kept in
@@ -159,6 +180,18 @@ pub(crate) struct TaskData {
     /// An output too big to sit beside the header, or null
     /// when it fits inline like every realistic one does
     payload: AtomicPtr<u8>,
+
+    /// The task a `Series` clones each of its runs from, or
+    /// null for everything else
+    ///
+    /// Kept apart from `task` rather than sharing it, because
+    /// the two are different trait objects and a slot has to
+    /// know which one it is holding to drop it. A `Series`
+    /// slot's `task` is null for exactly that reason, which
+    /// also happens to be what stops one ever being run: a
+    /// claim that comes back empty is already the path a task
+    /// somebody else took goes down
+    prototype: AtomicPtr<c_void>,
 }
 
 /// The header has to fit in front of the payload
@@ -218,12 +251,14 @@ impl TaskData {
                 filled: AtomicBool::new(false),
                 kind: AtomicU8::new(setup.kind as u8),
                 blocking: AtomicBool::new(setup.blocking),
+                held: AtomicBool::new(true),
                 interval: AtomicU64::new(setup.interval.as_nanos() as u64),
                 waiting: AtomicI32::new(NOT_WAITING),
                 priority: AtomicU64::new(0),
                 task: AtomicPtr::new(task),
                 drop_glue: glue::<T>,
                 payload: AtomicPtr::new(payload),
+                prototype: AtomicPtr::new(ptr::null_mut()),
             })
         };
 
@@ -500,6 +535,38 @@ impl TaskData {
         self.interval.load(Ordering::Acquire)
     }
 
+    /// The task a series clones its runs from, or null
+    #[inline(always)]
+    pub(crate) fn prototype(&self) -> *mut c_void {
+        self.prototype.load(Ordering::Acquire)
+    }
+
+    /// Gives a series the task it makes copies of
+    ///
+    /// ## Safety
+    /// Written once, by the thread that allocated the slot,
+    /// before anything else can reach it. Nothing is armed and
+    /// no handle exists at that point, so this is the last of
+    /// the setup rather than a change to a live slot
+    ///
+    /// The pointer must be a `Box<Box<dyn SeriesTask>>`, since
+    /// that is what `destroy` will drop it as
+    #[inline(always)]
+    pub(crate) fn set_prototype(&self, prototype: *mut c_void) {
+        self.prototype.store(prototype, Ordering::Release);
+    }
+
+    /// Takes the `Executor`'s reference on this task
+    ///
+    /// ## Returns
+    /// Whether the caller is the one that should give it back.
+    /// Exactly one caller ever gets `true`, however many decide
+    /// they are finished with the task and in whatever order
+    #[inline(always)]
+    pub(crate) fn claim_release(&self) -> bool {
+        self.held.swap(false, Ordering::AcqRel)
+    }
+
     /// Takes the slot for a run
     ///
     /// ## Returns
@@ -629,6 +696,14 @@ impl TaskData {
         // An output nobody took is still a live value
         if self.filled.load(Ordering::Acquire) {
             unsafe { (self.drop_glue)(self.payload()) };
+        }
+
+        // A series owns the task it was making copies of, and
+        // is the only kind of slot that has one
+        let prototype = self.prototype.swap(ptr::null_mut(), Ordering::AcqRel);
+
+        if !prototype.is_null() {
+            drop(unsafe { Box::from_raw(prototype.cast::<Box<dyn SeriesTask>>()) });
         }
 
         let oversized = self.payload.swap(ptr::null_mut(), Ordering::AcqRel);

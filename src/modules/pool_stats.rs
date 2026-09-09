@@ -3,6 +3,7 @@
 //! was asked
 
 use crate::modules::worker_stats::WorkerStats;
+use std::fmt;
 
 /// A snapshot of the pool
 ///
@@ -80,5 +81,57 @@ impl PoolStats {
     /// finished
     pub fn has_any_task(&self) -> bool {
         self.busy() > 0 || self.sleep_busy > 0 || self.backlog() > 0
+    }
+}
+
+impl fmt::Display for PoolStats {
+    /// The whole pool, with its workers listed out
+    ///
+    /// Three parts, in the order the work moves through them.
+    /// The threads that exist come first, then what is waiting
+    /// for them, then a line for every worker, and last the
+    /// table underneath the lot — so reading down it goes from
+    /// the pool, through the queue, to where the tasks
+    /// themselves live
+    ///
+    /// #### Note
+    /// Several lines rather than one, which is unusual for a
+    /// `Display`. A pool with thirty two workers has thirty two
+    /// things to say and saying them on one line says none of
+    /// them. Use the `Debug` form where a single line is what
+    /// is wanted
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            formatter,
+            "{} workers ({} busy), {} sleep threads ({} busy)",
+            self.len(),
+            self.busy(),
+            self.sleep_threads,
+            self.sleep_busy,
+        )?;
+
+        writeln!(
+            formatter,
+            "{} queued, {} blocking, {} backlog",
+            self.queued,
+            self.blocking_queued,
+            self.backlog(),
+        )?;
+
+        // Numbered to the width of the highest, so the names
+        // line up and the columns after them do too. A pool of
+        // ten reads as `worker 9` and one of a hundred as
+        // `worker  9`, rather than the list stepping sideways
+        // as it passes each power of ten
+        let width = match self.workers.len() {
+            0 => 1,
+            count => (count - 1).to_string().len(),
+        };
+
+        for (index, worker) in self.workers.iter().enumerate() {
+            writeln!(formatter, "  worker {index:>width$}: {worker}")?;
+        }
+
+        write!(formatter, "{} live, {} slots", self.live, self.slots)
     }
 }

@@ -16,6 +16,7 @@ mod modules {
     pub(crate) mod kqueue;
     pub(crate) mod mapping;
     pub mod pool_stats;
+    pub(crate) mod series;
     pub(crate) mod sleep_thread;
     pub(crate) mod task_data;
     pub(crate) mod task_kind;

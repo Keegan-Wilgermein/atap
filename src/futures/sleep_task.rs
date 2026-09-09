@@ -14,6 +14,14 @@ use std::time::{Duration, Instant};
 /// All it's runtime functions output `Duration`
 /// describing the time it took for the function
 /// to run in it's entirety
+///
+/// #### Note
+/// `Clone` because `Runtime::every` makes a fresh copy of its
+/// task for every run it starts. A copy carries the duration
+/// and the mode across and nothing else that matters — the
+/// start time is overwritten by `prepare` before the copy is
+/// ever run, so each run is timed from its own beginning
+#[derive(Clone)]
 pub struct SleepTask {
     /// How long to sleep for
     pub(crate) sleep_for: Duration,

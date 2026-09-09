@@ -236,6 +236,71 @@ impl Runtime {
         Executor::new_task(task, TaskSetup::every(DEFAULT_PRIORITY, interval))
     }
 
+    /// Spawns a task that starts again on the interval, whether
+    /// the last one has finished or not
+    ///
+    /// ## Behaviour
+    /// The interval is the *period*, not the gap. A run starts
+    /// every interval on the clock, so a task taking 200ms on a
+    /// 50ms period has four of itself in flight at once and
+    /// still starts a fifth on time
+    ///
+    /// The clock is the kernel's. One repeating timer is armed
+    /// at the start and left alone, so the cadence never drifts
+    /// with how long a run took or how busy the pool was when
+    /// the last one landed
+    ///
+    /// Each run is a fresh copy of the task in a slot of its
+    /// own, which is what lets runs overlap at all. One slot
+    /// holds one output, and two runs finishing together need
+    /// somewhere separate to be until they do. That is also why
+    /// this asks for `Clone` where `repeating` doesn't
+    ///
+    /// ## The handle
+    /// One handle for the whole schedule, meaning what it
+    /// always means. `join` gives the output of whichever run
+    /// finished most recently, `take` moves one out and the run
+    /// after it publishes another, and `cancel` ends the
+    /// schedule rather than one run of it
+    ///
+    /// #### Note
+    /// Runs overlap, so "most recent" is as precise as the
+    /// order they happened to finish in. Two runs landing
+    /// together publish one output between them and the other
+    /// is dropped, nothing queues up behind a reader that
+    /// isn't looking
+    ///
+    /// #### Note
+    /// Runs pile up if the pool can't keep up. The interval is
+    /// kept whatever else is happening, so a task that takes
+    /// longer than its period, or a period that comes round
+    /// while the pool is busy with something else — leaves runs
+    /// queued behind each other, and nothing pushes back. That
+    /// is what a fixed rate means, so check
+    /// before putting a slow task on a short period
+    ///
+    /// #### Note
+    /// A cancel lands immediately for every reader, and stops
+    /// runs starting from the next tick of the interval. Runs
+    /// already in flight are not interrupted, the same as
+    /// anywhere else, their output simply goes nowhere
+    ///
+    /// The slot itself comes back once the last of them has
+    /// finished, since a run that still intends to publish is a
+    /// run the schedule has to outlive
+    ///
+    /// A run that panics costs that run. The schedule carries
+    /// on, because the copy that came apart was not the task
+    /// itself and the next copy is made from a prototype that
+    /// never ran
+    #[inline(always)]
+    pub fn every<F>(interval: Duration, task: F) -> TaskHandle<F::Output>
+    where
+        F: Task + Clone,
+    {
+        Executor::new_series(task, TaskSetup::series(DEFAULT_PRIORITY, interval))
+    }
+
     /// Gives back the memory behind the unused part of the
     /// task table
     ///

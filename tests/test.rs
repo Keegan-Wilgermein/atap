@@ -408,6 +408,151 @@ fn repeat_every_waits_between_runs() {
 }
 
 #[test]
+fn every_starts_runs_on_the_interval() {
+    Runtime::init();
+
+    let interval = Duration::from_millis(50);
+    let runs: u32 = 5;
+
+    // A task with nothing in it, so nothing overlaps and what
+    // is being measured is the clock rather than the work
+    let handle = Runtime::every(interval, Sleep::sleep(Duration::from_nanos(1), true));
+
+    // The first run goes at once rather than an interval in, so
+    // the clock starts from the end of it
+    take_a_run(&handle);
+
+    let started = Instant::now();
+
+    for _ in 0..runs {
+        take_a_run(&handle);
+    }
+
+    let elapsed = started.elapsed();
+
+    handle.clone().cancel();
+
+    // Four whole periods between the first take and the last,
+    // and a fifth that was already running when the clock
+    // started
+    let floor = interval * (runs - 1);
+
+    println!(
+        "{} runs on a {:?} period took {:?}, floor {:?}",
+        runs, interval, elapsed, floor,
+    );
+
+    // A floor, so a busy pool makes this slower and never
+    // wrong. Runs arriving closer together than the period
+    // would mean the schedule wasn't being kept at all
+    assert!(
+        elapsed >= floor,
+        "{} runs on a {:?} period took only {:?}",
+        runs,
+        interval,
+        elapsed,
+    );
+}
+
+#[test]
+fn every_overlaps_its_runs() {
+    Runtime::init();
+
+    let interval = Duration::from_millis(50);
+    let duration = Duration::from_millis(200);
+    let runs: u32 = 5;
+
+    // Four times the period, so four runs are in flight before
+    // the first one has finished. This is the whole difference
+    // between `every` and the other two, and the only way to
+    // see it from out here is how fast the outputs arrive
+    //
+    // Four rather than the ten a 20ms period would give,
+    // because a sleep this long is a blocking task and takes a
+    // sleep thread for its whole duration. Ten of those held
+    // across this test moves a number the rest of the suite
+    // reads — the pool starts a new thread only when none is
+    // parked, so the threads this leaves behind are threads
+    // another test doesn't start — and four still tells the two
+    // apart by a factor of four
+    let handle = Runtime::every(interval, Sleep::sleep(duration, false));
+
+    // The first output lands a whole duration in whatever
+    // happens, so the clock starts after it
+    take_a_run(&handle);
+
+    let started = Instant::now();
+
+    for _ in 0..runs {
+        take_a_run(&handle);
+    }
+
+    let elapsed = started.elapsed();
+
+    handle.clone().cancel();
+
+    // What it would take if a run had to finish before the next
+    // one could start, which is what `repeating` and
+    // `repeat_every` both promise and this one doesn't
+    let serial = duration * runs;
+    let ceiling = serial / 2;
+
+    println!(
+        "{} runs of {:?} on a {:?} period took {:?}, one at a time would be {:?}",
+        runs, duration, interval, elapsed, serial,
+    );
+
+    // A ceiling rather than a floor, which is the other way
+    // round from every other timing test here — and it holds up
+    // because the thing being ruled out is five times slower
+    // than the thing being measured, not five percent. A pool
+    // busy enough to eat that margin would have to be five
+    // times over
+    assert!(
+        elapsed < ceiling,
+        "{} runs of {:?} took {:?}, so they were running one at a time",
+        runs,
+        duration,
+        elapsed,
+    );
+}
+
+#[test]
+fn every_ends_the_whole_series_on_cancel() {
+    Runtime::init();
+
+    let handle = Runtime::every(
+        Duration::from_millis(5),
+        Sleep::sleep(Duration::from_nanos(1), true),
+    );
+
+    // Several periods in, so the schedule is well established
+    // rather than being cancelled before it ever got going
+    for _ in 0..10 {
+        take_a_run(&handle);
+    }
+
+    handle.clone().cancel();
+
+    assert_eq!(
+        handle.clone().take(),
+        Err(RuntimeError::Cancelled),
+        "a cancelled schedule hands nothing out",
+    );
+
+    // Long enough for a great many more periods to have come
+    // round, and for every run still in flight to have finished
+    // and tried to publish
+    thread::sleep(Duration::from_millis(200));
+
+    assert_eq!(
+        handle.take(),
+        Err(RuntimeError::Cancelled),
+        "the schedule carried on after being cancelled",
+    );
+}
+
+#[test]
 fn cancelling_a_spawned_task_settles_every_listener() {
     Runtime::init();
 
@@ -935,6 +1080,9 @@ fn monolithic() {
     println!("\n== a repeating task holds one slot ==");
     repeating_holds_one_slot();
 
+    println!("\n== a schedule gives its run slots back ==");
+    every_gives_its_run_slots_back();
+
     println!("\n== waiting costs no thread ==");
     waiting_costs_no_thread();
 
@@ -1117,6 +1265,185 @@ fn repeating_holds_one_slot() {
         "{} runs took the live count from {} to {}",
         runs, before.live, after.live,
     );
+}
+
+/// A schedule hands back every slot its runs used
+///
+/// The one thing `every` does that nothing else here does is
+/// allocate. `repeating` and `repeat_every` go round in the
+/// slot they started in, so their accounting is a constant;
+/// a schedule takes a fresh slot for every run it starts and
+/// gives it back when that run finishes, thousands of times
+/// over, while the slot the handle points at stays exactly
+/// where it is
+///
+/// A run that never gave its slot back shows up as the table
+/// climbing by one per run. A run that gave one back twice
+/// would have taken the series down with it long before the
+/// count could be looked at
+///
+/// Run here rather than on its own because it reads counts
+/// across the whole table, which mean nothing while the rest
+/// of the suite is spawning
+fn every_gives_its_run_slots_back() {
+    let schedules = 32;
+    let interval = Duration::from_millis(5);
+    let running = Duration::from_millis(500);
+
+    // Read once nothing is moving rather than the instant this
+    // phase starts. The phase before is still winding down — a
+    // repeating task gives its slot back when its next run
+    // finds it cancelled, not when `cancel` returns — so a
+    // baseline taken straight away is a number still on its way
+    // down, and everything below is measured against it
+    settled_live();
+
+    let before = Runtime::workers();
+
+    // Instant runs on a short period, so the pressure is on how
+    // fast slots come and go rather than on how many can be
+    // held at once
+    let handles: Vec<_> = (0..schedules)
+        .map(|_| Runtime::every(interval, Sleep::sleep(Duration::from_nanos(1), true)))
+        .collect();
+
+    // Counted rather than assumed. A schedule that quietly
+    // stopped would leave every count below looking perfect
+    let mut runs = 0u64;
+
+    let started = Instant::now();
+
+    while started.elapsed() < running {
+        for handle in &handles {
+            // Taken rather than read, so each one counted is a
+            // run that happened. A clone read the same output
+            // over and over would count the polling instead
+            if handle.clone().take().is_ok() {
+                runs += 1;
+            }
+        }
+
+        thread::yield_now();
+    }
+
+    report("schedules running");
+
+    let peak = Runtime::workers();
+
+    for handle in handles {
+        handle.cancel();
+    }
+
+    // Waited out rather than timed. A schedule under load can
+    // have hundreds of runs outstanding at the moment it is
+    // cancelled — the interval comes round whether the pool is
+    // keeping up or not, which is the whole point of it — and
+    // each of those holds a claim on the schedule's slot until
+    // it finishes. A fixed sleep here is a bet on how loaded
+    // the machine was, and the assertion below is exact
+    //
+    // The cap is what keeps this a test rather than a hang. A
+    // schedule that genuinely leaked never reaches the
+    // condition, waits the cap out and fails with the real
+    // numbers
+    let settling = Instant::now();
+
+    while Runtime::workers().live > before.live && settling.elapsed() < Duration::from_secs(10) {
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let after = Runtime::workers();
+    report("schedules cancelled");
+
+    println!(
+        "{} schedules on a {:?} period for {:?}: {} outputs read, \
+         settled in {:?}, live {} -> {} -> {}, slots {} -> {} -> {}",
+        schedules,
+        interval,
+        running,
+        runs,
+        settling.elapsed(),
+        before.live,
+        peak.live,
+        after.live,
+        before.slots,
+        peak.slots,
+        after.slots,
+    );
+
+    assert!(
+        runs > 0,
+        "{} schedules produced nothing at all in {:?}",
+        schedules,
+        running,
+    );
+
+    // Thousands of runs went through, and only ever a handful
+    // alive at a time. The slack covers the schedules
+    // themselves and the runs in flight at the moment the peak
+    // was read, and nothing like a slot per run
+    //
+    // The table's own size says nothing here. It is already at
+    // its high water mark from the phase before, so a run that
+    // never gave its slot back would take one off the free list
+    // rather than growing anything. Live tasks is the count
+    // that still moves
+    assert!(
+        peak.live <= before.live + schedules * 8,
+        "{} schedules took the live count from {} to {} while running",
+        schedules,
+        before.live,
+        peak.live,
+    );
+
+    // Every schedule slot and every run slot back. This is the
+    // one that catches a reference held one too many times,
+    // which is the shape a leak takes when a run outlives the
+    // schedule that started it
+    //
+    // One direction only, and deliberately. Thousands of slots
+    // went out and came back through a count that belongs to
+    // the whole table, so a slot arriving back late from
+    // somewhere else is not this phase's business — a slot that
+    // never comes back is
+    assert!(
+        after.live <= before.live,
+        "{} schedules took the live count from {} to {}",
+        schedules,
+        before.live,
+        after.live,
+    );
+}
+
+/// Waits for the table's live count to stop moving
+///
+/// Counts across the whole table only say anything while
+/// nothing is changing them. Cleanup after a phase is
+/// asynchronous — a cancelled repeating task holds its slot
+/// until the run after the cancel finds it, and a schedule
+/// holds its own until its next tick comes round — so the
+/// moment a phase returns is not the moment it has finished
+///
+/// ## Returns
+/// The count once two reads in a row agreed on it, or whatever
+/// it was when the wait ran out
+fn settled_live() -> usize {
+    let waited = Instant::now();
+    let mut last = Runtime::workers().live;
+
+    while waited.elapsed() < Duration::from_secs(5) {
+        thread::sleep(Duration::from_millis(20));
+
+        let now = Runtime::workers().live;
+
+        if now == last {
+            return now;
+        }
+
+        last = now;
+    }
+
+    last
 }
 
 /// Waiting out an interval costs the pool nothing

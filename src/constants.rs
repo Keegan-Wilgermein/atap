@@ -126,9 +126,11 @@ pub(crate) const LOCAL_QUEUE_MASK: u32 = (LOCAL_QUEUE - 1) as u32;
 /// cap is `WORKER_MULTIPLIER` times the core count, so this
 /// only has to be large enough that no real machine hits it
 /// 
-/// 1024 so a CPU with 256 cores will be viable. More
-/// for future proofing than anything
-pub(crate) const MAX_WORKERS: usize = 1024;
+/// 512 so a CPU with 128 cores will be able to make use of all
+/// of it's cores without using too much memory
+/// 
+/// More for future proofing than anything
+pub(crate) const MAX_WORKERS: usize = 512;
 
 /// Live workers allowed per core
 ///

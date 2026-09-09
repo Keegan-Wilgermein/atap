@@ -14,10 +14,12 @@ use std::time::Duration;
 /// How a task should be scheduled
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskSetup {
-    /// Whether it runs once, forever, or forever with a gap
+    /// Whether it runs once, forever, forever with a gap, or
+    /// on a schedule of its own
     pub(crate) kind: TaskKind,
 
-    /// The gap, which only `RepeatEvery` reads
+    /// The gap between runs, read by `RepeatEvery`, or the
+    /// period between them, read by `Series`
     pub(crate) interval: Duration,
 
     /// The class it is served at
@@ -57,6 +59,17 @@ impl TaskSetup {
     pub(crate) fn every(priority: u8, interval: Duration) -> Self {
         Self {
             kind: TaskKind::RepeatEvery,
+            interval,
+            priority,
+            blocking: false,
+        }
+    }
+
+    /// A schedule that starts a run on the interval whether
+    /// the last one has finished or not
+    pub(crate) fn series(priority: u8, interval: Duration) -> Self {
+        Self {
+            kind: TaskKind::Series,
             interval,
             priority,
             blocking: false,

@@ -10,11 +10,9 @@
 /// How a slot behaves once its run has finished
 ///
 /// #### Note
-/// An enum rather than a flag because there are more of these
-/// coming. `repeat_every` waits an interval between runs and
-/// `every` starts them on a schedule whether the last one
-/// finished or not, and both are decided in the same place
-/// this one is
+/// An enum rather than a flag because there turned out to be
+/// four of these. Three of them are one task going round in
+/// its own slot, and the fourth isn't a task at all
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum TaskKind {
@@ -36,6 +34,17 @@ pub(crate) enum TaskKind {
     /// and a timer on the manager's queue puts it back on the
     /// worker queue when the interval is up
     RepeatEvery = 2,
+
+    /// Starts a fresh run on the interval whatever the last
+    /// one is doing, until it is cancelled
+    ///
+    /// The odd one out. Its slot holds no task and is never
+    /// queued or run — what it holds is the prototype every
+    /// run is cloned from, and a place for whichever run
+    /// finished most recently to leave its output. The runs
+    /// themselves are ordinary one shot tasks in slots of
+    /// their own, which is what lets them overlap at all
+    Series = 3,
 }
 
 impl TaskKind {
@@ -50,11 +59,17 @@ impl TaskKind {
         match raw {
             1 => Self::Repeating,
             2 => Self::RepeatEvery,
+            3 => Self::Series,
             _ => Self::Once,
         }
     }
 
     /// Whether a run of this should be followed by another
+    ///
+    /// Which is also what makes `Ready` and `Taken` transient
+    /// rather than the end of the story, so it is asked
+    /// wherever something is about to treat a settled state as
+    /// a finished one
     #[inline(always)]
     pub(crate) fn repeats(self) -> bool {
         self != Self::Once
@@ -67,5 +82,15 @@ impl TaskKind {
     #[inline(always)]
     pub(crate) fn waits(self) -> bool {
         self == Self::RepeatEvery
+    }
+
+    /// Whether this is a schedule rather than a task
+    ///
+    /// A `Series` slot never reaches a worker, so everything
+    /// that walks a queue or claims a task can ignore it. What
+    /// it does instead is answered entirely by the manager
+    #[inline(always)]
+    pub(crate) fn schedules(self) -> bool {
+        self == Self::Series
     }
 }

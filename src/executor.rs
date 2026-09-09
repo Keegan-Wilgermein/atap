@@ -36,6 +36,7 @@ use crate::{
         event_desc::EventDesc,
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
+        series::SeriesTask,
         task_data::TaskData,
         task_handle::TaskHandle,
         task_setup::TaskSetup,
@@ -131,27 +132,46 @@ impl Executor {
     where
         F: Task,
     {
-        // Asked here, where the task is still itself, rather
-        // than by the worker that picks it up. A re-arm has no
-        // concrete type left to ask, so the answer is kept
-        let setup = setup.blocking(task.blocking());
+        create(task, setup).0
+    }
 
-        let boxed: Box<dyn ErasedTask> = Box::new(task);
-        let erased = Box::into_raw(Box::new(boxed)).cast::<c_void>();
+    /// Adds a schedule that starts a fresh copy of a task on
+    /// the interval, whether the last one has finished or not
+    ///
+    /// ## Behaviour
+    /// The slot this makes is not a task. It holds no
+    /// `ErasedTask`, is never queued and is never run — what it
+    /// holds is the prototype the runs are cloned from, and a
+    /// place for whichever run finished most recently to leave
+    /// its output. The handle points at it for the life of the
+    /// series, which is what makes one handle mean the whole
+    /// schedule rather than one run of it
+    ///
+    /// The first run goes now rather than an interval from now,
+    /// the same way every other spawn starts as soon as it can.
+    /// It is launched from this thread, before the timer exists
+    /// at all, so the prototype is handed over to the manager
+    /// rather than shared with it
+    pub(crate) fn new_series<F>(task: F, setup: TaskSetup) -> TaskHandle<F::Output>
+    where
+        F: Task + Clone,
+    {
+        let boxed: Box<dyn SeriesTask> = Box::new(task);
+        let prototype = Box::into_raw(Box::new(boxed)).cast::<c_void>();
 
         let Some(id) = DATA.alloc() else {
-            return failed(erased);
+            return abandoned(prototype);
         };
 
         let Some(entry) = DATA.slot(id) else {
             DATA.free(id);
-            return failed(erased);
+            return abandoned(prototype);
         };
 
         let ready = unsafe {
             TaskData::init::<F::Output>(
                 entry as *const TaskData as *mut TaskData,
-                erased,
+                ptr::null_mut(),
                 TaskState::Pending,
                 setup,
                 SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -160,25 +180,28 @@ impl Executor {
 
         if !ready {
             DATA.free(id);
-            return failed(erased);
+            return abandoned(prototype);
         }
+
+        // After `init`, which writes the whole header over the
+        // top of everything, and before anything else can reach
+        // the slot. No timer is armed and no handle exists yet,
+        // so this thread is still alone with it
+        entry.set_prototype(prototype);
 
         let handle = TaskHandle::new(id);
 
-        // Queued and somebody will come for it, which is every
-        // case but a pool that is gone and won't restart
-        if queue(id, setup.blocking) {
+        if launch(id, entry) && schedule(id, setup.interval.as_nanos() as u64) {
             return handle;
         }
 
-        // Nothing is ever going to pick this up, so it is
-        // settled here rather than left for a listener to block
-        // on forever, and the reference every task holds for
-        // the `Executor` is given back by the run that will
-        // never happen
-        if let Some(published) = slot(id) {
-            published.set_state(TaskState::Failed);
-            wake(published);
+        // Either nothing could run it or the kernel wouldn't
+        // take the schedule, and a series with no schedule is a
+        // slot that will never do anything again
+        unschedule(id);
+
+        if entry.try_state(TaskState::Pending, TaskState::Failed) {
+            wake(entry);
         }
 
         release(id);
@@ -409,6 +432,134 @@ impl Executor {
             }
         }
     }
+}
+
+/// Puts a task in the table and hands it to the pool
+///
+/// ## Returns
+/// The handle, and whether anything is ever going to pick the
+/// task up. A `false` is a task already settled `Failed` with
+/// its slot given back, so the handle reads an error rather
+/// than blocking on a result that isn't coming
+///
+/// #### Note
+/// Split out from `new_task` rather than folded into it because
+/// a series has to know whether its run actually got away. The
+/// handle alone can't say: a run that finished and failed on
+/// its own reads exactly like one that was never queued
+fn create<F>(task: F, setup: TaskSetup) -> (TaskHandle<F::Output>, bool)
+where
+    F: Task,
+{
+    // Asked here, where the task is still itself, rather
+    // than by the worker that picks it up. A re-arm has no
+    // concrete type left to ask, so the answer is kept
+    let setup = setup.blocking(task.blocking());
+
+    let boxed: Box<dyn ErasedTask> = Box::new(task);
+    let erased = Box::into_raw(Box::new(boxed)).cast::<c_void>();
+
+    let Some(id) = DATA.alloc() else {
+        return (failed(erased), false);
+    };
+
+    let Some(entry) = DATA.slot(id) else {
+        DATA.free(id);
+        return (failed(erased), false);
+    };
+
+    let ready = unsafe {
+        TaskData::init::<F::Output>(
+            entry as *const TaskData as *mut TaskData,
+            erased,
+            TaskState::Pending,
+            setup,
+            SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        )
+    };
+
+    if !ready {
+        DATA.free(id);
+        return (failed(erased), false);
+    }
+
+    let handle = TaskHandle::new(id);
+
+    // Queued and somebody will come for it, which is every
+    // case but a pool that is gone and won't restart
+    if queue(id, setup.blocking) {
+        return (handle, true);
+    }
+
+    // Nothing is ever going to pick this up, so it is
+    // settled here rather than left for a listener to block
+    // on forever, and the reference every task holds for
+    // the `Executor` is given back by the run that will
+    // never happen
+    if let Some(published) = slot(id) {
+        published.set_state(TaskState::Failed);
+        wake(published);
+    }
+
+    release(id);
+
+    (handle, false)
+}
+
+/// Spawns one run of a series
+///
+/// The handle is dropped on the way out, because a run has
+/// nobody waiting on it — whatever it produces goes to the
+/// series slot rather than to a listener. The `Executor`'s own
+/// reference is what keeps the run's slot alive until it
+/// finishes, exactly as it does for any other task
+///
+/// ## Returns
+/// Whether a run is on its way
+pub(crate) fn spawn_run<F>(task: F, priority: u8) -> bool
+where
+    F: Task,
+{
+    create(task, TaskSetup::once(priority)).1
+}
+
+/// Leaves an output in a series slot for its listeners
+///
+/// ## Behaviour
+/// The same ending `run` gives an ordinary task, from the other
+/// side of the erasure. Winning the move into `Running` is what
+/// stops any further read from starting, which is what makes it
+/// safe to throw the last run's output away and write this one
+/// over the top of it
+///
+/// A value that can't be published is dropped here. That covers
+/// a cancelled series, which has nothing left to publish into,
+/// and two runs finishing together, where the one that loses
+/// the race is simply a run whose output nobody sees. Runs of a
+/// series overlap by design, so which of them is "latest" was
+/// never going to be more precise than this
+pub(crate) fn publish<T>(id: usize, value: T) {
+    let Some(data) = slot(id) else {
+        return;
+    };
+
+    if !data.begin() {
+        return;
+    }
+
+    debug_assert_eq!(data.size(), mem::size_of::<T>());
+
+    unsafe { data.payload().cast::<T>().write(value) };
+    data.fill();
+
+    // Cancelled part way through the write, so the value is
+    // left for the last listener out to drop rather than
+    // published to listeners that have already given up
+    if !data.try_state(TaskState::Running, TaskState::Ready) {
+        return;
+    }
+
+    wake(data);
 }
 
 /// The slot for an id, if there is a task in it
@@ -642,10 +793,15 @@ fn wait_out(id: usize, interval: u64) -> bool {
 /// Puts a task whose interval is up back on the queue
 ///
 /// ## Behaviour
-/// Nothing is checked here. A series cancelled while it waited
-/// still comes back through this, and `run` turns it away the
-/// same way it turns away anything else that was cancelled
-/// before it started — which is one path rather than two
+/// Nothing is checked for a repeating task. A series cancelled
+/// while it waited still comes back through this, and `run`
+/// turns it away the same way it turns away anything else that
+/// was cancelled before it started — which is one path rather
+/// than two
+///
+/// A schedule is the other thing that lands here, and it is the
+/// opposite case: its own slot never goes anywhere near a
+/// worker, so what the tick does is start a run of it
 fn fire(ident: usize) {
     let Some(id) = ident.checked_sub(SCHEDULE_IDENT_BASE) else {
         return;
@@ -654,6 +810,12 @@ fn fire(ident: usize) {
     let Some(data) = slot(id) else {
         return;
     };
+
+    if data.kind().schedules() {
+        tick(id, data);
+
+        return;
+    }
 
     if queue(id, data.blocking()) {
         return;
@@ -666,6 +828,127 @@ fn fire(ident: usize) {
     }
 
     release(id);
+}
+
+/// Starts the next run of a series, or clears the series up
+///
+/// ## Behaviour
+/// A schedule is taken off the queue here rather than at the
+/// moment somebody cancels it. The manager is the only thread
+/// that touches this queue's timers, so doing it from in here
+/// is the difference between one thread owning them and a
+/// canceller racing a tick for the same ident
+///
+/// The cost of that is a slot held until the next tick would
+/// have come round anyway, which is the same deal `repeat_every`
+/// makes and worth knowing about for a long interval
+///
+/// #### Note
+/// A run failing to get away ends the schedule. It means the
+/// table had no slot to give or nothing is left to run
+/// anything, and a schedule that can't produce runs is a slot
+/// waking the manager forever to do nothing
+fn tick(id: usize, data: &TaskData) {
+    if !over(data.state()) && launch(id, data) {
+        return;
+    }
+
+    unschedule(id);
+
+    // Left alone if it has already settled, so a cancelled
+    // series stays cancelled and one that published a last
+    // output keeps it readable. Only a series that never got
+    // anywhere is written off
+    if !data.state().terminal() {
+        data.set_state(TaskState::Failed);
+        wake(data);
+    }
+
+    release(id);
+}
+
+/// Whether a series has come to an end
+///
+/// `Ready` and `Taken` are not endings here. They are what a
+/// series looks like between runs, which is most of its life
+#[inline(always)]
+fn over(state: TaskState) -> bool {
+    matches!(state, TaskState::Cancelled | TaskState::Failed)
+}
+
+/// Spawns one run of the series in a slot
+///
+/// ## Returns
+/// Whether a run is on its way. A slot with no prototype in it
+/// is not a series at all, and says no
+fn launch(id: usize, data: &TaskData) -> bool {
+    let prototype = data.prototype();
+
+    if prototype.is_null() {
+        return false;
+    }
+
+    // Only ever the manager, or the thread that made the series
+    // before the manager could see it, so the prototype is
+    // never actually shared with anybody
+    let task = unsafe { &**prototype.cast::<Box<dyn SeriesTask>>() };
+
+    task.launch(id, data.priority_class())
+}
+
+/// Puts a series on the clock
+///
+/// A repeating timer rather than a chain of one shots, so the
+/// kernel keeps the cadence itself and a run that takes longer
+/// than the interval costs the schedule nothing. Re-arming from
+/// userspace would add the cost of getting the manager onto a
+/// thread to every single period
+///
+/// ## Returns
+/// Whether the kernel took it
+fn schedule(id: usize, interval: u64) -> bool {
+    let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
+
+    if manager == DEAD_KQUEUE_ID {
+        return false;
+    }
+
+    unsafe {
+        KEvent::register(
+            manager,
+            id + SCHEDULE_IDENT_BASE,
+            interval as libc::intptr_t,
+            ptr::null_mut(),
+            EventDesc::new_interval(),
+        )
+    }
+    .check()
+    .is_ok()
+}
+
+/// Takes a series back off the clock
+///
+/// Unlike a one shot, a repeating timer stays armed until it is
+/// asked to go, so a series that ended without this would carry
+/// on waking the manager for an id that has been handed to
+/// somebody else
+fn unschedule(id: usize) {
+    let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
+
+    if manager == DEAD_KQUEUE_ID {
+        return;
+    }
+
+    let _ = unsafe {
+        KEvent::register(
+            manager,
+            id + SCHEDULE_IDENT_BASE,
+            0,
+            ptr::null_mut(),
+            EventDesc::new_timer_delete(),
+        )
+    }
+    .check();
 }
 
 /// Says this thread is now sitting in a wait on `queue`
@@ -838,14 +1121,46 @@ fn failed<T>(erased: *mut c_void) -> TaskHandle<T> {
     TaskHandle::new(MAX_TASK_ID)
 }
 
+/// A handle for a series that never made it into the table
+///
+/// The same dead end `failed` is, for the other kind of task a
+/// slot can hold. The prototype is dropped here rather than
+/// kept, since nothing is ever going to make a copy of it
+fn abandoned<T>(prototype: *mut c_void) -> TaskHandle<T> {
+    drop(unsafe { Box::from_raw(prototype.cast::<Box<dyn SeriesTask>>()) });
+
+    TaskHandle::new(MAX_TASK_ID)
+}
+
 /// Gives up the `Executor`'s reference on a task
 ///
 /// Taken at creation and held until the task is finished
 /// with, so that a handle dropped the instant it is handed
 /// out can't free the slot underneath the thread that is
 /// about to run it
+///
+/// ## Behaviour
+/// Idempotent, and that is the point of it. Several things can
+/// each have a fair claim to be the last to finish with a task
+/// — the run that ends it, the tick that finds its series
+/// cancelled, the sweep after a dead worker, the teardown that
+/// writes off what nothing is left to run — and which of them
+/// gets there is not knowable from any one of their positions
+///
+/// The first one to arrive gives the reference back and the
+/// rest do nothing, so none of them has to know about the
+/// others. A second release would take the listener count below
+/// zero and free a slot with a live task in it
 #[inline(always)]
 fn release(id: usize) {
+    let Some(data) = slot(id) else {
+        return;
+    };
+
+    if !data.claim_release() {
+        return;
+    }
+
     Executor::drop_listener(id);
 }
 
@@ -973,25 +1288,48 @@ fn shutdown(id: i32) {
         fail(task);
     }
 
-    // Only tasks nothing has started. A `Running` task has a
-    // thread inside it that will give the reference back
-    // itself, and one whose thread died was already settled by
-    // the sweep above, so failing either here would give the
-    // same reference back twice
+    // Everything the runtime is still holding a reference on,
+    // which is no longer only the tasks nothing has started
+    //
+    // A repeating task holds its slot for the life of the
+    // series rather than the life of a run, and both of the
+    // timed ones wait for a timer on the queue that was just
+    // closed. Between runs they sit in `Ready` or `Taken` with
+    // nothing anywhere that will ever look at them again, so a
+    // sweep that only wrote off `Pending` left every schedule
+    // in the process holding a slot for good
     for task in 0..DATA.high_water() {
         let Some(data) = slot(task) else {
             continue;
         };
 
-        if data.state() != TaskState::Pending {
+        let state = data.state();
+
+        // A thread is inside this one and will give the
+        // reference back itself on the way out. Both re-arm
+        // paths fail against a closed queue and a stopped pool,
+        // so a repeating task in here ends its series rather
+        // than going round again
+        //
+        // A series is the exception, because the thread inside
+        // one is a run publishing into it rather than the
+        // series itself, and a run gives back its own claim and
+        // never the `Executor`'s. Reaching in is safe precisely
+        // because that run is holding a claim of its own, so
+        // the count can't reach zero while it is still writing
+        if state == TaskState::Running && !data.kind().schedules() {
             continue;
         }
 
-        data.set_state(TaskState::Failed);
-        wake(data);
+        if !state.terminal() {
+            data.set_state(TaskState::Failed);
+            wake(data);
+        }
 
         // The reference the `Executor` took at creation, which
-        // nothing is going to be around to give back otherwise
+        // nothing is going to be around to give back otherwise.
+        // A one shot that already finished gave it back on its
+        // own, and this is why that is now safe to say twice
         release(task);
     }
 }
