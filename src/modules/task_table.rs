@@ -265,7 +265,7 @@ impl TaskTable {
             return Err(RuntimeError::StillInUse);
         }
 
-        let taken = self.drain_free();
+        let taken = self.drain_free(floor);
 
         if taken.is_empty() {
             return Err(RuntimeError::StillInUse);
@@ -339,12 +339,26 @@ impl TaskTable {
         }
     }
 
-    /// Takes the whole free list in one go
+    /// Takes the free list, keeping only what is worth keeping
+    ///
+    /// ## Behaviour
+    /// Anything below the floor can't be part of what gets
+    /// given back, so it goes straight back on the list as the
+    /// walk passes it rather than being held for the length of
+    /// it. That matters: while the list is empty every spawn
+    /// has to grow the table instead of reusing an id, so a
+    /// trim that held the lot would inflate the very thing it
+    /// is trying to shrink
+    ///
+    /// The window isn't gone, only made small. The list is
+    /// still empty between being taken and the first id going
+    /// back, and a spawn landing exactly there still grows the
+    /// table by one
     ///
     /// The tag is bumped rather than thrown away, so a thread
     /// part way through a pop still fails its exchange against
     /// the head this leaves behind
-    fn drain_free(&self) -> Vec<usize> {
+    fn drain_free(&self, floor: usize) -> Vec<usize> {
         let mut cursor = loop {
             let head = self.free.load(Ordering::Acquire);
             let index = head & INDEX_MASK;
@@ -378,7 +392,16 @@ impl TaskTable {
                 break;
             };
 
+            // Read before anything writes to it, since putting
+            // this slot back overwrites the very link being
+            // followed
             cursor = slot.next();
+
+            if id < floor {
+                self.push_free(id, slot);
+                continue;
+            }
+
             taken.push(id);
         }
 

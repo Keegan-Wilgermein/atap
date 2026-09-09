@@ -17,7 +17,18 @@ pub(crate) trait ErasedTask: Send {
     /// `payload` must point at least `size_of::<Output>()`
     /// writable, uninitialised bytes, aligned for the output
     /// type. The slot's payload offset guarantees both
-    unsafe fn run(self: Box<Self>, reactor_id: i32, task_id: usize, payload: *mut u8);
+    ///
+    /// Whatever was in the payload before must already have
+    /// been dropped. This writes over it without looking, and
+    /// has no way of knowing whether there was a value there
+    ///
+    /// #### Note
+    /// Borrows rather than consuming, so the same task can be
+    /// run again out of the box it is already in. That is the
+    /// whole of what makes a repeating task possible: nothing
+    /// has to be cloned, because `Task::execute` only ever
+    /// wanted a reference
+    unsafe fn run(&mut self, reactor_id: i32, task_id: usize, payload: *mut u8);
 }
 
 impl<F> ErasedTask for F
@@ -25,7 +36,7 @@ where
     F: Task,
 {
     #[inline(always)]
-    unsafe fn run(mut self: Box<Self>, reactor_id: i32, task_id: usize, payload: *mut u8) {
+    unsafe fn run(&mut self, reactor_id: i32, task_id: usize, payload: *mut u8) {
         // Blocking calls prepare on the calling thread, so
         // spawned ones prepare here, on the thread that is
         // actually about to run them

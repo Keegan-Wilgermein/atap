@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep};
+use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
 use std::{
     sync::{Arc, Barrier},
     thread,
@@ -283,6 +283,84 @@ fn join_with_timeout_gives_up_without_giving_up_the_handle() {
 }
 
 #[test]
+fn repeating_runs_until_cancelled() {
+    Runtime::init();
+
+    let wanted = 20;
+    let handle = Runtime::repeating(Sleep::sleep(Duration::from_millis(5), false));
+
+    // Taking a run is what counts one. The slot goes back to
+    // holding nothing, and the next run fills it again, so a
+    // take that succeeds is a run that happened
+    for _ in 0..wanted {
+        take_a_run(&handle);
+    }
+
+    handle.clone().cancel();
+
+    assert_eq!(
+        handle.clone().take(),
+        Err(RuntimeError::Cancelled),
+        "a cancelled series hands nothing out",
+    );
+
+    // Long enough for several more runs, had any been coming
+    thread::sleep(Duration::from_millis(100));
+
+    assert_eq!(
+        handle.take(),
+        Err(RuntimeError::Cancelled),
+        "the series carried on after being cancelled",
+    );
+
+    println!("{} runs through one handle, then cancelled", wanted);
+}
+
+#[test]
+fn repeating_finishes_a_run_before_the_next() {
+    Runtime::init();
+
+    let duration = Duration::from_millis(50);
+    let runs: u32 = 5;
+
+    let handle = Runtime::repeating(Sleep::sleep(duration, false));
+
+    // One on its own first, so the timing below starts from the
+    // end of a run rather than part way through one
+    take_a_run(&handle);
+
+    let started = Instant::now();
+
+    for _ in 0..runs {
+        take_a_run(&handle);
+    }
+
+    let elapsed = started.elapsed();
+
+    handle.clone().cancel();
+
+    // Between the first take and the last there are four whole
+    // runs, and a fifth that was already under way when the
+    // clock started. Four is what can be insisted on
+    let floor = duration * (runs - 1);
+
+    println!("{} runs of {:?} took {:?}, floor {:?}", runs, duration, elapsed, floor);
+
+    // A floor rather than a ceiling, which is what makes this
+    // say something on a loaded machine. Runs held up by a busy
+    // pool make it slower and never wrong; runs that overlapped
+    // would fit into less time than they are long, and there is
+    // nothing that can make that happen except overlapping
+    assert!(
+        elapsed >= floor,
+        "{} runs of {:?} took {:?}, so they were overlapping",
+        runs,
+        duration,
+        elapsed,
+    );
+}
+
+#[test]
 fn cancelling_a_spawned_task_settles_every_listener() {
     Runtime::init();
 
@@ -479,7 +557,7 @@ fn many_concurrent_tasks() {
 
     // Slots come out of shared blocks, so a live task costs
     // SLOT_SIZE and its share of the block holding it, which
-    // is around 134MB across a million of them. The handles
+    // is around 256MB across a million of them. The handles
     // and the boxed tasks waiting to be run add to that, so
     // the threshold sits well clear of it
     //
@@ -807,6 +885,9 @@ fn monolithic() {
     println!("\n== a peak of live tasks ==");
     holds_a_peak_of_live_tasks();
 
+    println!("\n== a repeating task holds one slot ==");
+    repeating_holds_one_slot();
+
     println!("\n== the table gives its pages back ==");
     gives_the_table_back();
 
@@ -896,6 +977,93 @@ fn gives_the_table_back() {
     println!("200000 tasks ran through the trimmed table");
 }
 
+/// Waits for the next run of a repeating task and takes it
+///
+/// A take that lands is a run that happened, and it empties the
+/// slot so the run after it can be counted the same way
+fn take_a_run(handle: &TaskHandle<Duration>) -> Duration {
+    let mut polls = 0u64;
+
+    loop {
+        match handle.clone().take() {
+            Ok(slept) => return slept,
+
+            // The last run's output has already been taken and
+            // the next one hasn't landed yet
+            Err(RuntimeError::AlreadyTaken) => {}
+
+            Err(error) => panic!(
+                "a repeating task came back with {:?} after {} polls, pool {:?}",
+                error,
+                polls,
+                Runtime::workers(),
+            ),
+        }
+
+        polls += 1;
+
+        // Paused rather than spun. A bare loop turns the gap
+        // between runs into millions of clones of the same
+        // handle, which says nothing about repeating and a
+        // great deal about how hard the reference count can be
+        // hammered
+        thread::sleep(Duration::from_micros(100));
+    }
+}
+
+/// A repeating task lives in one slot however long it runs
+///
+/// The whole design rests on this. A series that allocated a
+/// slot per run, or that gave the `Executor`'s reference back
+/// at the end of each one, looks identical from the outside
+/// until you count what the table is holding
+///
+/// Run here rather than on its own because the table is shared
+/// by everything in the process
+fn repeating_holds_one_slot() {
+    let runs = 20_000;
+
+    let handle = Runtime::repeating(Sleep::sleep(Duration::from_nanos(1), true));
+
+    // The first one, so the series is properly under way before
+    // anything is measured
+    take_a_run(&handle);
+
+    let before = Runtime::workers();
+
+    for _ in 1..runs {
+        take_a_run(&handle);
+    }
+
+    let after = Runtime::workers();
+
+    handle.clone().cancel();
+
+    println!(
+        "{} runs through one handle: {} -> {} slots, {} -> {} live",
+        runs, before.slots, after.slots, before.live, after.live,
+    );
+
+    // A slot per run would be twenty thousand of them. The
+    // slack is there for the rest of the runtime, not for this
+    assert!(
+        after.slots <= before.slots + 100,
+        "{} runs grew the table from {} slots to {}",
+        runs,
+        before.slots,
+        after.slots,
+    );
+
+    // One task, held for the life of the series and given back
+    // once. Anything else is a reference counted wrong, in one
+    // direction or the other
+    assert_eq!(
+        after.live, before.live,
+        "{} runs took the live count from {} to {}",
+        runs, before.live, after.live,
+    );
+}
+
 /// A line of what the pool is doing at this moment
 fn report(at: &str) {
     let stats = Runtime::workers();
@@ -976,11 +1144,24 @@ fn recycles_ids_forever() {
         waves, per_wave, settled, after,
     );
 
-    assert_eq!(
-        after, settled,
-        "{} tasks through a table that only ever held {} at once grew it to {}",
+    // Not exactly equal, because the runtime trims the table
+    // by itself and a trim briefly takes the free list out of
+    // circulation to walk it. A spawn landing in that window
+    // has nothing to reuse and grows the table by one, which is
+    // self correcting and nothing to do with recycling
+    //
+    // The slack is a fraction of a single wave. A free list
+    // that genuinely failed to give ids back would grow the
+    // table by every task that ever ran, which is two orders of
+    // magnitude past this
+    let slack = per_wave / 10;
+
+    assert!(
+        after <= settled + slack,
+        "{} tasks through a table that only ever held {} at once grew it from {} to {}",
         waves * per_wave,
         per_wave,
+        settled,
         after,
     );
 }
@@ -1321,7 +1502,7 @@ fn cancelling_hands_the_thread_back() {
 /// that says what a task actually costs, and the only one that
 /// pushes the table into its higher blocks
 fn holds_a_peak_of_live_tasks() {
-    let tasks = 24_000_000;
+    let tasks = 12_000_000;
 
     let baseline = max_rss();
 

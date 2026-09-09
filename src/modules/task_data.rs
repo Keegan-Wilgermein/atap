@@ -24,12 +24,12 @@ use crate::{
         CANCELLING, INLINE_PAYLOAD, NOT_WAITING, PAYLOAD_OFFSET, PRIORITY_BAND_SHIFT,
         PRIORITY_CLASS_SHIFT, PRIORITY_SEQUENCE_MASK,
     },
-    modules::{erased_task::ErasedTask, mapping, task_state::TaskState},
+    modules::{erased_task::ErasedTask, mapping, task_kind::TaskKind, task_state::TaskState},
 };
 use libc::c_void;
 use std::{
     mem, ptr,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering},
     thread,
 };
 
@@ -100,6 +100,22 @@ pub(crate) struct TaskData {
     /// from under a listener that is reading it
     filled: AtomicBool,
 
+    /// What happens when a run of this finishes
+    ///
+    /// Read once, at the end of a run. Everything up to that
+    /// moment is the same whether a task runs once or forever,
+    /// which is why they share a slot and a handle at all
+    kind: AtomicU8,
+
+    /// Whether this task wants a thread it can block
+    ///
+    /// Asked of the task itself at spawn, where the concrete
+    /// type is still in hand, and kept because a re-arm has
+    /// nothing left to ask. A stored answer rather than a
+    /// question put to the task again, so the worker's path is
+    /// still a load rather than a walk through the erasure
+    blocking: AtomicBool,
+
     /// The kqueue this task is sitting in a wait on, or
     /// `NOT_WAITING`
     ///
@@ -160,6 +176,8 @@ impl TaskData {
         data: *mut Self,
         task: *mut c_void,
         state: TaskState,
+        kind: TaskKind,
+        blocking: bool,
         class: u8,
         sequence: u64,
     ) -> bool {
@@ -189,6 +207,8 @@ impl TaskData {
                 next: AtomicU32::new(0),
                 queue_next: AtomicU32::new(0),
                 filled: AtomicBool::new(false),
+                kind: AtomicU8::new(kind as u8),
+                blocking: AtomicBool::new(blocking),
                 waiting: AtomicI32::new(NOT_WAITING),
                 priority: AtomicU64::new(0),
                 task: AtomicPtr::new(task),
@@ -450,6 +470,83 @@ impl TaskData {
     #[inline(always)]
     pub(crate) fn release_waiting(&self) {
         self.waiting.store(NOT_WAITING, Ordering::Release);
+    }
+
+    /// What happens when a run of this finishes
+    #[inline(always)]
+    pub(crate) fn kind(&self) -> TaskKind {
+        TaskKind::from_u8(self.kind.load(Ordering::Acquire))
+    }
+
+    /// Whether this task wants a thread it can block
+    #[inline(always)]
+    pub(crate) fn blocking(&self) -> bool {
+        self.blocking.load(Ordering::Acquire)
+    }
+
+    /// Takes the slot for a run
+    ///
+    /// ## Returns
+    /// Whether the caller may go ahead and run the task. A
+    /// `false` means somebody cancelled it, or it failed, or a
+    /// second caller got here first, and in every case there is
+    /// nothing to run
+    ///
+    /// ## Behaviour
+    /// A task that runs once only ever comes here waiting to
+    /// start. A repeating one comes back round holding the
+    /// output of its last run, or holding nothing if a listener
+    /// took it, so those are starting points too
+    ///
+    /// Winning the move into `Running` is what stops any
+    /// further read from beginning, which is what makes it safe
+    /// to throw the last output away and write another
+    pub(crate) fn begin(&self) -> bool {
+        if self.try_state(TaskState::Pending, TaskState::Running) {
+            return true;
+        }
+
+        if !self.kind().repeats() {
+            return false;
+        }
+
+        for from in [TaskState::Ready, TaskState::Taken] {
+            if self.try_state(from, TaskState::Running) {
+                self.recycle();
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Throws away the output of the run before this one
+    ///
+    /// ## Safety
+    /// Only the caller that won the move into `Running` may do
+    /// this, which is why it is private and why `begin` is the
+    /// only thing that calls it. That move is what stopped any
+    /// further read from starting, and the wait below is what
+    /// sees out the reads that had already started. Dropping
+    /// without both is dropping a value from underneath a
+    /// listener part way through cloning it
+    fn recycle(&self) {
+        while self.readers.load(Ordering::SeqCst) > 0 {
+            thread::yield_now();
+        }
+
+        if self.filled.swap(false, Ordering::AcqRel) {
+            unsafe { (self.drop_glue)(self.payload()) };
+        }
+    }
+
+    /// Puts a task back for another run
+    ///
+    /// The same box that came out, so a repeating task costs no
+    /// allocation for going round again
+    #[inline(always)]
+    pub(crate) fn rearm(&self, task: *mut c_void) {
+        self.task.store(task, Ordering::Release);
     }
 
     /// Records that the payload now holds a value

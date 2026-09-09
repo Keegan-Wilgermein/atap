@@ -64,11 +64,7 @@ where
     where
         T: Clone,
     {
-        if !self.ready() {
-            return Err(RuntimeError::NotReady);
-        }
-
-        Executor::clone_result(self.id)
+        Executor::poll_result(self.id)
     }
 
     /// Waits a while for the output, and gives up if it

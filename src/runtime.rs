@@ -9,7 +9,8 @@ use crate::{
     executor::{self, Executor},
     futures::task::Task,
     modules::{
-        int_check::IntCheck, pool_stats::PoolStats, task_handle::TaskHandle, worker_pool::POOL,
+        int_check::IntCheck, pool_stats::PoolStats, task_handle::TaskHandle,
+        task_kind::TaskKind, worker_pool::POOL,
     },
     reactor::Reactor,
 };
@@ -87,7 +88,7 @@ impl Runtime {
     /// don't mind waiting for it
     ///
     /// Blocking calls can't be cancelled
-    /// by other threads
+    /// by any means
     #[inline(always)]
     pub fn block<F>(mut task: F) -> F::Output
     where
@@ -120,7 +121,7 @@ impl Runtime {
     where
         F: Task,
     {
-        Executor::new_task(task, DEFAULT_PRIORITY)
+        Executor::new_task(task, DEFAULT_PRIORITY, TaskKind::Once)
     }
 
     /// Spawns a task at a priority of your choosing
@@ -151,7 +152,44 @@ impl Runtime {
     where
         F: Task,
     {
-        Executor::new_task(task, priority)
+        Executor::new_task(task, priority, TaskKind::Once)
+    }
+
+    /// Spawns a task that keeps running until it is cancelled
+    ///
+    /// ## Behaviour
+    /// A run finishes before the next one starts, always. There
+    /// is no interval and no clock: the moment a run publishes
+    /// its output the task goes back on the queue, behind
+    /// whatever else is waiting, so it takes a share of the
+    /// pool rather than a thread of it
+    ///
+    /// ## The handle
+    /// The same handle as any other task, meaning the same
+    /// things. `ready` is true when a result is waiting,
+    /// `join` gives the most recent one, and `take` moves one
+    /// out — after which the next run publishes another, so a
+    /// later read succeeds where on a one shot it would stay
+    /// `AlreadyTaken`
+    ///
+    /// `cancel` ends the series rather than one run of it. The
+    /// run in flight finishes and its output is dropped, and
+    /// there is no run after it
+    ///
+    /// #### Note
+    /// It never settles on its own, so `join` waits for the
+    /// next output rather than for the task to be finished.
+    /// Waiting for that would be waiting forever
+    ///
+    /// A task that panics ends the series. It came apart part
+    /// way through, and running it again isn't a way of finding
+    /// out whether it would do the same twice
+    #[inline(always)]
+    pub fn repeating<F>(task: F) -> TaskHandle<F::Output>
+    where
+        F: Task,
+    {
+        Executor::new_task(task, DEFAULT_PRIORITY, TaskKind::Repeating)
     }
 
     /// Gives back the memory behind the unused part of the

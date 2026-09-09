@@ -31,10 +31,16 @@ pub(crate) const DEAD_KQUEUE_ID: i32 = -1;
 ///
 /// Doubles as the budget for a slot's header, which an assert
 /// in `TaskData::init` holds it to. Slots sit at multiples of
-/// `SLOT_SIZE` inside a page aligned block, so an offset of 64
+/// `SLOT_SIZE` inside a page aligned block, so an offset of 128
 /// also aligns the payload for any output type that doesn't
-/// ask for more than 64 byte alignment
-pub(crate) const PAYLOAD_OFFSET: usize = 64;
+/// ask for more than 128 byte alignment
+///
+/// #### Note
+/// Raised from 64 once the header had been exactly full for
+/// long enough that every new field was going into padding.
+/// The room is deliberate headroom rather than space anything
+/// currently needs
+pub(crate) const PAYLOAD_OFFSET: usize = 128;
 
 /// Bytes one task slot takes up in a table block
 ///
@@ -43,12 +49,18 @@ pub(crate) const PAYLOAD_OFFSET: usize = 64;
 /// output fits beside its header. Sized so a slot lands on
 /// its own cache line, which keeps two tasks from sharing the
 /// word their listeners are blocked on
-pub(crate) const SLOT_SIZE: usize = 128;
+pub(crate) const SLOT_SIZE: usize = 256;
 
 /// Bytes of output a slot can hold beside its header
 ///
 /// Anything larger gets a mapping of its own and the header
 /// points at it, which nothing realistic ever needs
+///
+/// #### Note
+/// A real cliff rather than a gentle one. An output a byte
+/// over this costs a whole page instead of the bytes it
+/// actually needs, so the difference between just under and
+/// just over is two orders of magnitude
 pub(crate) const INLINE_PAYLOAD: usize = SLOT_SIZE - PAYLOAD_OFFSET;
 
 /// Slots in the first block of the task table
@@ -113,7 +125,10 @@ pub(crate) const LOCAL_QUEUE_MASK: u32 = (LOCAL_QUEUE - 1) as u32;
 /// The bound on the array, not the number that run. The live
 /// cap is `WORKER_MULTIPLIER` times the core count, so this
 /// only has to be large enough that no real machine hits it
-pub(crate) const MAX_WORKERS: usize = 256;
+/// 
+/// 1024 so a CPU with 256 cores will be viable. More
+/// for future proofing than anything
+pub(crate) const MAX_WORKERS: usize = 1024;
 
 /// Live workers allowed per core
 ///
@@ -172,7 +187,7 @@ pub(crate) const PRIORITY_SEQUENCE_MASK: u64 = (1 << PRIORITY_CLASS_SHIFT) - 1;
 ///
 /// Halfway up on purpose, so a caller has as much room to
 /// drop a task below the default as to lift one above it
-pub(crate) const DEFAULT_PRIORITY: u8 = 128;
+pub const DEFAULT_PRIORITY: u8 = 128;
 
 /// Slots kept spare above the live count when trimming
 ///

@@ -18,6 +18,7 @@ mod modules {
     pub mod pool_stats;
     pub(crate) mod sleep_thread;
     pub(crate) mod task_data;
+    pub(crate) mod task_kind;
     pub(crate) mod task_handle;
     pub(crate) mod task_state;
     pub(crate) mod task_table;
@@ -44,4 +45,5 @@ pub use modules::event_desc::EventDesc;
 pub use modules::pool_stats::PoolStats;
 pub use modules::task_handle::TaskHandle;
 pub use modules::worker_stats::WorkerStats;
+pub use constants::DEFAULT_PRIORITY;
 pub use runtime::Runtime;

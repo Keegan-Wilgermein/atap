@@ -38,6 +38,7 @@ use crate::{
         kevent::{KEvent, eventlist},
         task_data::TaskData,
         task_handle::TaskHandle,
+        task_kind::TaskKind,
         task_state::TaskState,
         task_table::TaskTable,
         worker_pool::POOL,
@@ -126,7 +127,7 @@ impl Executor {
     /// can be looking the id up the moment it is queued, so the
     /// task has to be findable before anything is told to go
     /// looking for it
-    pub(crate) fn new_task<F>(task: F, priority: u8) -> TaskHandle<F::Output>
+    pub(crate) fn new_task<F>(task: F, priority: u8, kind: TaskKind) -> TaskHandle<F::Output>
     where
         F: Task,
     {
@@ -155,6 +156,8 @@ impl Executor {
                 entry as *const TaskData as *mut TaskData,
                 erased,
                 TaskState::Pending,
+                kind,
+                blocking,
                 priority,
                 SEQUENCE.fetch_add(1, Ordering::Relaxed),
             )
@@ -169,12 +172,7 @@ impl Executor {
 
         // Queued and somebody will come for it, which is every
         // case but a pool that is gone and won't restart
-        let queued = match blocking {
-            true => POOL.offload(id),
-            false => POOL.submit(id),
-        };
-
-        if queued {
+        if queue(id, blocking) {
             return handle;
         }
 
@@ -268,16 +266,55 @@ impl Executor {
     where
         T: Clone,
     {
-        let state = Self::wait(id)?;
-        settled(state)?;
-
         let Some(data) = slot(id) else {
             return Err(RuntimeError::ExecutorDead);
         };
 
-        // Held for as long as the clone takes, so that a
-        // `take` on another thread waits rather than moving
-        // the output away part way through reading it
+        loop {
+            settled(Self::wait(id)?)?;
+
+            // Held for as long as the clone takes, so that a
+            // `take` on another thread waits rather than moving
+            // the output away part way through reading it
+            if data.enter_read() {
+                break;
+            }
+
+            // A repeating task can have started, finished, and
+            // published all over again between the wait and
+            // here, so `terminal` is the wrong question — being
+            // settled isn't the same as being over. `lost`
+            // knows the difference: everything it calls
+            // `NotReady` is a race worth going back round for
+            let error = lost(data.state());
+
+            if error != RuntimeError::NotReady {
+                return Err(error);
+            }
+        }
+
+        debug_assert_eq!(data.size(), mem::size_of::<T>());
+
+        let value = unsafe { (*data.payload().cast::<T>()).clone() };
+        data.leave_read();
+
+        Ok(value)
+    }
+
+    /// Reads the output if it is there, without waiting
+    ///
+    /// The same read `clone_result` does, minus the waiting. A
+    /// task that hasn't settled says so rather than blocking,
+    /// which is the whole difference between polling a handle
+    /// and joining one
+    pub(crate) fn poll_result<T>(id: usize) -> Result<T, RuntimeError>
+    where
+        T: Clone,
+    {
+        let Some(data) = slot(id) else {
+            return Err(RuntimeError::ExecutorDead);
+        };
+
         if !data.enter_read() {
             return Err(lost(data.state()));
         }
@@ -297,17 +334,23 @@ impl Executor {
     /// later read fail rather than hand out a second owner of
     /// the same value
     pub(crate) fn take_result<T>(id: usize) -> Result<T, RuntimeError> {
-        let state = Self::wait(id)?;
-        settled(state)?;
-
         let Some(data) = slot(id) else {
             return Err(RuntimeError::ExecutorDead);
         };
 
-        // Losing this means another listener got there first,
-        // or a cancel landed between the wait and the move
-        if !data.claim_result() {
-            return Err(lost(data.state()));
+        loop {
+            settled(Self::wait(id)?)?;
+
+            if data.claim_result() {
+                break;
+            }
+
+            // Same race as `clone_result`, and the same answer
+            let error = lost(data.state());
+
+            if error != RuntimeError::NotReady {
+                return Err(error);
+            }
         }
 
         debug_assert_eq!(data.size(), mem::size_of::<T>());
@@ -326,6 +369,10 @@ impl Executor {
     /// a timer nobody is interested in any more. Either way its
     /// output is dropped instead of published
     ///
+    /// A repeating task ends the whole series. The run in
+    /// flight finishes and its output goes nowhere, and there
+    /// is no run after it
+    ///
     /// #### Note
     /// Only spawned tasks. `Runtime::block` runs on the
     /// caller's own thread and has no id to be cancelled
@@ -341,11 +388,22 @@ impl Executor {
             return;
         };
 
+        let repeats = data.kind().repeats();
+
         loop {
             let state = data.state();
 
-            if state.terminal() && state != TaskState::Ready {
-                return;
+            match state {
+                // Over already, one way or another
+                TaskState::Cancelled | TaskState::Failed | TaskState::Free => return,
+
+                // A one shot whose output has been moved out is
+                // finished and has nothing left to abandon. A
+                // repeating one in the same state is only
+                // between runs, and the series is still going
+                TaskState::Taken if !repeats => return,
+
+                _ => {}
             }
 
             if data.try_state(state, TaskState::Cancelled) {
@@ -430,23 +488,23 @@ pub(crate) fn run(id: usize) {
         return;
     };
 
-    let task = data.claim();
+    let raw = data.claim();
 
-    if task.is_null() {
+    if raw.is_null() {
         return;
     }
 
-    let task = unsafe { Box::from_raw(task.cast::<Box<dyn ErasedTask>>()) };
+    let mut task = unsafe { Box::from_raw(raw.cast::<Box<dyn ErasedTask>>()) };
 
-    // Cancelled before it ever got going, so it is dropped
-    // rather than run and nothing is ever published
-    if !data.try_state(TaskState::Pending, TaskState::Running) {
+    // Cancelled, failed, or already taken by somebody else, so
+    // it is dropped rather than run and nothing is published
+    if !data.begin() {
         drop(task);
         release(id);
+
         return;
     }
 
-    let task: Box<dyn ErasedTask> = *task;
     let reactor = Runtime::reactor_id();
     let payload = data.payload();
 
@@ -455,10 +513,10 @@ pub(crate) fn run(id: usize) {
     // carries on with the next one, and nothing has to be
     // recovered, replaced or spawned to make up for it
     //
-    // `AssertUnwindSafe` because there is nothing left to
-    // observe. The slot is settled below and its output is
-    // never read, and the task itself is consumed by the call
-    // and dropped as the panic goes past
+    // `AssertUnwindSafe` because nothing survives to see a
+    // half finished task. The slot is settled below, its output
+    // is never read, and the box is dropped on the way out
+    // without ever being run again
     CURRENT.with(|current| current.set(id));
 
     let finished = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
@@ -473,6 +531,12 @@ pub(crate) fn run(id: usize) {
         // a panic means it was never written and there is no
         // value in the payload to drop. `filled` stays false
         // and the last listener out leaves it alone
+        //
+        // A series ends here too. Whatever the task was, it
+        // came apart part way through, and running it again is
+        // not a way of finding out whether it would do it twice
+        drop(task);
+
         if data.try_state(TaskState::Running, TaskState::Failed) {
             wake(data);
         }
@@ -487,11 +551,52 @@ pub(crate) fn run(id: usize) {
     // A listener that cancelled part way through isn't coming
     // back for this, so the output is left for the last one
     // out to drop rather than published
-    if data.try_state(TaskState::Running, TaskState::Ready) {
+    if !data.try_state(TaskState::Running, TaskState::Ready) {
+        drop(task);
+        release(id);
+
+        return;
+    }
+
+    wake(data);
+
+    if !data.kind().repeats() {
+        drop(task);
+        release(id);
+
+        return;
+    }
+
+    // Round again, in the same slot, with the same box. The
+    // state is left at `Ready` so listeners can read the run
+    // that just finished while the next one is queued, and the
+    // `Executor`'s reference is held rather than given back,
+    // because it stands for the series and not for one run
+    data.rearm(Box::into_raw(task).cast::<c_void>());
+
+    if queue(id, data.blocking()) {
+        return;
+    }
+
+    // Nothing is left to run it again, so the series ends the
+    // way a task spawned onto a dead pool does
+    if data.try_state(TaskState::Ready, TaskState::Failed) {
         wake(data);
     }
 
     release(id);
+}
+
+/// Hands a task to whichever half of the pool should have it
+///
+/// ## Returns
+/// Whether anything will come for it
+#[inline(always)]
+fn queue(id: usize, blocking: bool) -> bool {
+    match blocking {
+        true => POOL.offload(id),
+        false => POOL.submit(id),
+    }
 }
 
 /// Says this thread is now sitting in a wait on `queue`
@@ -574,10 +679,9 @@ fn interrupt(data: &TaskData, id: usize) {
         return;
     };
 
-    let _ = unsafe {
-        KEvent::register(queue, id, 0, ptr::null_mut(), EventDesc::new_timer_delete())
-    }
-    .check();
+    let _ =
+        unsafe { KEvent::register(queue, id, 0, ptr::null_mut(), EventDesc::new_timer_delete()) }
+            .check();
 
     let _ = unsafe {
         KEvent::register(
@@ -634,7 +738,17 @@ fn lost(state: TaskState) -> RuntimeError {
         TaskState::Taken => RuntimeError::AlreadyTaken,
         TaskState::Cancelled => RuntimeError::Cancelled,
         TaskState::Failed => RuntimeError::TaskFailed,
-        _ => RuntimeError::ExecutorDead,
+
+        // Not an answer, just a race lost. A repeating task is
+        // the only thing that gets here: it started its next run
+        // while somebody was reading the last one, or finished
+        // another one before they looked again. Either way there
+        // is an output coming and trying again finds it
+        TaskState::Pending | TaskState::Running | TaskState::Ready => RuntimeError::NotReady,
+
+        // The slot is empty, so whatever id reached here belongs
+        // to nothing at all
+        TaskState::Free => RuntimeError::ExecutorDead,
     }
 }
 
