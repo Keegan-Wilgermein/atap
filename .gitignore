@@ -1,3 +1,4 @@
 /target
 .DS_Store
 /tests/files
+crashes.txt

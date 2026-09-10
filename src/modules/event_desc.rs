@@ -161,4 +161,59 @@ impl EventDesc {
             fflags: 0,
         }
     }
+
+    /// Returns the `kevent` flags required to watch a
+    /// descriptor for room to write
+    ///
+    /// ## Behaviour
+    /// Level triggered, the same as `new_read`, and for half
+    /// the same reason: the kernel reports the descriptor ready
+    /// for as long as it has any room at all, so a wake means
+    /// the next piece has somewhere to go
+    ///
+    /// What does *not* carry over is what the waiter may do
+    /// about it. A read after a wake can be an ordinary
+    /// blocking one, because a descriptor with something on it
+    /// gives it up. A write after a wake cannot: the room may
+    /// be one byte, and a blocking write doesn't return until
+    /// it has placed every byte it was offered — so it would
+    /// sit there holding the rest against a reader that is
+    /// itself waiting on this thread
+    ///
+    /// #### Note
+    /// Which makes the descriptor under this filter the one
+    /// place in the crate that is `O_NONBLOCK`. A short write
+    /// is carried rather than waited out, and `EAGAIN` means
+    /// only "back to the wait"
+    pub(crate) fn new_write() -> Self {
+        Self {
+            filter: libc::EVFILT_WRITE,
+            flags: libc::EV_ADD,
+            fflags: 0,
+        }
+    }
+
+    /// Returns the `kevent` flags required to take a write
+    /// watch back off a queue
+    ///
+    /// #### Note
+    /// Not optional, for the reason `new_read_delete` isn't. A
+    /// pipe with room in it is *writable* to a level triggered
+    /// filter every time it is asked, so an end nobody is
+    /// writing to any more turns a loop still waiting on a read
+    /// into a spin
+    ///
+    /// Unlike a read, this one comes off *before* its
+    /// descriptor is closed rather than after. Closing drops
+    /// the registration on its own, but it also hands the
+    /// number straight back out, and a later registration at
+    /// the same number would be racing a knote the kernel is
+    /// still taking down
+    pub(crate) fn new_write_delete() -> Self {
+        Self {
+            filter: libc::EVFILT_WRITE,
+            flags: libc::EV_DELETE,
+            fflags: 0,
+        }
+    }
 }

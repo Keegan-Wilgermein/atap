@@ -125,6 +125,49 @@ pub enum RuntimeError {
     /// a message saying it was would send a reader looking at
     /// the wrong half of the call
     BadArgument,
+
+    /// An environment variable could not be handed to the
+    /// kernel
+    ///
+    /// The kernel takes an environment as `NAME=VALUE` entries,
+    /// each ending at its first zero byte and split at its
+    /// first equals sign. So there are three ways to write one
+    /// that can't be passed on faithfully: a zero byte in
+    /// either half, an equals sign in the *name*, which would
+    /// have the kernel split it somewhere else and hand the
+    /// child a variable nobody asked for, and an empty name,
+    /// which names nothing at all
+    ///
+    /// An equals sign in the **value** is fine. Only the first
+    /// one is the split
+    ///
+    /// #### Note
+    /// Its own variant rather than a `BadArgument`, on exactly
+    /// the grounds `BadArgument` is its own rather than a
+    /// `BadPath`. An environment is not an argument list, and a
+    /// caller sent looking through its arguments for a fault in
+    /// its environment is a caller looking in the wrong place
+    BadVariable,
+
+    /// A working directory could not be used
+    ///
+    /// Covers the two ways one is refused before anything runs:
+    /// a zero byte in it, which would leave the kernel reading
+    /// a different directory than the one that was named, and a
+    /// relative path, which names a different directory
+    /// depending on which thread is asking
+    ///
+    /// #### Note
+    /// Not a `BadPath`. A directory with a zero byte in it is
+    /// exactly that fault, but a *relative* one is refused for
+    /// a reason that has nothing to do with what is written in
+    /// it, and one variant answering both would be a message
+    /// that is only half true half the time
+    ///
+    /// A directory that simply isn't there is not this one.
+    /// That one the kernel goes looking for, and it comes back
+    /// as the `ENOENT` it is
+    BadDirectory,
 }
 
 impl fmt::Display for RuntimeError {
@@ -154,6 +197,12 @@ impl fmt::Display for RuntimeError {
             Self::StillInUse => write!(formatter, "too much of the task table is in use to trim"),
             Self::BadPath => write!(formatter, "the path contains a zero byte"),
             Self::BadArgument => write!(formatter, "an argument contains a zero byte"),
+            Self::BadVariable => {
+                write!(formatter, "an environment variable cannot be passed on as written")
+            }
+            Self::BadDirectory => {
+                write!(formatter, "the working directory is not an absolute path without zero bytes")
+            }
         }
     }
 }

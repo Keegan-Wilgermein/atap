@@ -10,16 +10,20 @@
 //! their own
 //!
 //! #### Note
-//! There is no way to set a working directory or an
-//! environment yet, and that is a decision rather than a gap.
-//! They are two independent axes, so adding them as
-//! constructors would mean four more of them on a facade that
-//! currently has two — the combinatorial spread `File` avoided
-//! by keeping its axes few. A builder would be the answer, but
-//! `TaskBuilder` is the one chain in this crate and everything
-//! else is a plain constructor, so a second one would be a new
-//! shape rather than a new feature. Both slot in later without
-//! changing either task type
+//! Input, a working directory and an environment are set on the
+//! task rather than chosen at a constructor. Three axes that
+//! compose would be eight constructors on a facade that has two
+//! — the combinatorial spread `File` avoided by keeping its
+//! axes few — and they are three methods instead
+//!
+//! That leaves two kinds of chaining in the crate, which is
+//! worth being precise about rather than apologising for.
+//! `TaskBuilder` is the only chain that *schedules*: when a
+//! task runs, how often, and under what bound. The setters here
+//! *configure*, and configuration belongs to the task because
+//! it is part of what the task is. Both being method chains no
+//! more makes them the same shape than `as_millis` makes a
+//! `Duration` a builder
 
 pub mod exit_status;
 pub mod process;

@@ -443,3 +443,537 @@ fn a_run_child_still_has_somewhere_to_write() {
         to_stdout.code()
     );
 }
+
+// -- Input, working directory and environment --------------
+
+/// The bytes reach the child
+#[test]
+fn input_reaches_the_child() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/bin/cat", Process::NO_ARGS).input(b"hello\n".as_slice()),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("cat must settle")
+        .expect("cat must run");
+
+    assert_eq!(
+        found.stdout(),
+        b"hello\n",
+        "cat gave back {:?}",
+        String::from_utf8_lossy(found.stdout())
+    );
+}
+
+/// A child fed more than a pipe holds finishes
+///
+/// ## Behaviour
+/// The headline test for the input side. `cat` echoes as it
+/// reads, so both directions are live at once and four
+/// megabytes is sixty times what either pipe can hold
+///
+/// Fails at about 64 KiB for every version of the mistake:
+/// writing it all before draining, draining before writing, or
+/// following an `EVFILT_WRITE` wake with an ordinary blocking
+/// write — which is the subtle one, since a wake there means
+/// there is *room*, possibly one byte, and a blocking write
+/// does not come back until it has placed everything
+#[test]
+fn a_child_fed_more_than_a_pipe_holds_does_not_deadlock() {
+    Runtime::init();
+
+    const FLOOD: usize = 4 * 1024 * 1024;
+
+    let fed = vec![b'z'; FLOOD];
+
+    println!("feeding cat {FLOOD} bytes while reading it back");
+
+    let handle =
+        Runtime::task(Process::output("/bin/cat", Process::NO_ARGS).input(fed.as_slice())).spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("a flooded child must settle rather than deadlock")
+        .expect("cat must run");
+
+    assert_eq!(found.stdout().len(), FLOOD, "cat gave back the wrong amount");
+    assert!(found.status().success(), "cat must finish happily");
+}
+
+/// The child is told when its input has ended
+///
+/// `wc` reads until end of file and then reports. If the write
+/// end is never closed there is no end of file, and it waits
+/// for one forever — so this settling at all is half the
+/// assertion and the count is the other half
+#[test]
+fn input_ends_so_the_child_sees_its_end() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/usr/bin/wc", ["-c"]).input(b"12345".as_slice()),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("wc must reach the end of its input")
+        .expect("wc must run");
+
+    let counted = String::from_utf8_lossy(found.stdout()).trim().to_string();
+
+    assert_eq!(counted, "5", "wc counted {counted:?}");
+}
+
+/// A child that never reads its input still finishes
+///
+/// The parent is left holding four megabytes nobody wants. A
+/// write loop with no way out would sit on them forever
+#[test]
+fn a_child_that_ignores_its_input_finishes() {
+    Runtime::init();
+
+    let fed = vec![b'z'; 4 * 1024 * 1024];
+
+    let handle = Runtime::task(
+        Process::output("/bin/sh", ["-c", "echo done"]).input(fed.as_slice()),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("a child that ignores its input must still finish")
+        .expect("sh must run");
+
+    assert_eq!(found.stdout(), b"done\n", "the child ran to its own end");
+    assert!(found.status().success(), "and was not treated as a failure");
+}
+
+/// A child that takes part of its input still finishes
+///
+/// The `sigpipe_is_reset` test seen from the other end of the
+/// pipe. `head` stops reading after ten bytes and the parent is
+/// left with the rest — which is a choice the child is allowed
+/// to make, not an error to report
+#[test]
+fn a_child_that_takes_part_of_its_input_finishes() {
+    Runtime::init();
+
+    let fed = vec![b'z'; 4 * 1024 * 1024];
+
+    let handle = Runtime::task(
+        Process::output("/usr/bin/head", ["-c", "10"]).input(fed.as_slice()),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("a child that stops reading must not hang its parent")
+        .expect("head must run");
+
+    assert_eq!(found.stdout().len(), 10, "head takes exactly what it asked for");
+    assert!(
+        found.status().success(),
+        "a child stopping early is not a failure, exited {:?}",
+        found.status().code()
+    );
+}
+
+/// Input reaches a run child too
+///
+/// No capture here, so the exit code is the whole evidence —
+/// `grep -q` succeeds only if it actually read the line
+#[test]
+fn input_reaches_a_run_child() {
+    Runtime::init();
+
+    let found = Runtime::block(
+        Process::run("/usr/bin/grep", ["-q", "ping"]).input(b"ping\n".as_slice()),
+    )
+    .expect("grep must run");
+
+    assert!(found.success(), "grep must find what it was fed");
+
+    let missing = Runtime::block(
+        Process::run("/usr/bin/grep", ["-q", "ping"]).input(b"pong\n".as_slice()),
+    )
+    .expect("grep must run");
+
+    assert_eq!(
+        missing.code(),
+        Some(1),
+        "grep must not find what it was not fed"
+    );
+}
+
+/// A run blocked on input can still be cancelled
+///
+/// ## Behaviour
+/// The test that justifies waiting on a queue rather than
+/// simply writing. `sleep` holds its standard input open and
+/// never reads a byte, so there is no broken pipe to end the
+/// write — a plain blocking `write` would wedge here for thirty
+/// seconds with the cancel unable to reach the thread
+///
+/// The child says whether it is alive by holding the pool. What
+/// this actually watches is the task settling at all
+#[test]
+fn a_run_blocked_on_input_can_still_be_cancelled() {
+    Runtime::init();
+
+    let fed = vec![b'z'; 4 * 1024 * 1024];
+
+    let handle =
+        Runtime::task(Process::run("/bin/sleep", ["30"]).input(fed.as_slice())).spawn();
+
+    // Long enough that the write has filled the pipe and the
+    // thread is inside its wait, since a cancel before that is a
+    // different path and not the one under test
+    thread::sleep(Duration::from_millis(500));
+
+    println!("cancelling a run wedged on a child that never reads");
+    let started = Instant::now();
+
+    handle.clone().cancel();
+    let _ = handle.wait();
+
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "a cancel must reach a task waiting on room to write, took {:?}",
+        started.elapsed()
+    );
+
+    assert!(
+        handle.is_cancelled(),
+        "the task must settle cancelled, was {:?}",
+        handle.state()
+    );
+}
+
+/// An empty input is the same as none at all
+///
+/// Both are an immediate end of file from the child's side, so
+/// the cheaper of the two is used for each
+#[test]
+fn an_empty_input_is_the_same_as_none() {
+    Runtime::init();
+
+    let handle =
+        Runtime::task(Process::output("/bin/cat", Process::NO_ARGS).input(b"".as_slice())).spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("an empty input must still end")
+        .expect("cat must run");
+
+    assert!(found.stdout().is_empty(), "there was nothing to give it");
+    assert!(found.status().success(), "cat must finish happily");
+}
+
+/// The child starts where it was told to
+///
+/// `/usr` rather than `/tmp`, which is a symlink to
+/// `/private/tmp` — `pwd` reports the physical path and the
+/// test would be comparing against the wrong one
+#[test]
+fn in_dir_changes_where_the_child_starts() {
+    Runtime::init();
+
+    let handle =
+        Runtime::task(Process::output("/bin/pwd", Process::NO_ARGS).in_dir("/usr")).spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("pwd must settle")
+        .expect("pwd must run");
+
+    let where_it_ran = String::from_utf8_lossy(found.stdout()).trim().to_string();
+
+    assert_eq!(where_it_ran, "/usr", "the child started in {where_it_ran:?}");
+}
+
+/// A relative program runs once, in the new directory
+///
+/// ## Behaviour
+/// The macOS bug this design exists to route around: a relative
+/// program spawned alongside a directory change is *launched*
+/// and then reported as `ENOENT` anyway, which would leave a
+/// child running that nothing has a pid for
+///
+/// Two assertions, and the second is the important one. Success
+/// says the spawn was not wrongly reported as a failure; the
+/// byte count says the program ran **once**, which is what
+/// would break if the `PATH` walk retried after a bogus error
+#[test]
+fn a_relative_program_runs_once_in_the_new_directory() {
+    Runtime::init();
+
+    let scratch = std::env::temp_dir().join(format!("atap-relative-{}.txt", std::process::id()));
+    let _ = fs::remove_file(&scratch);
+
+    let script = format!("echo x >> {}", scratch.display());
+
+    let found = Runtime::block(Process::run("./sh", ["-c", &script]).in_dir("/bin"))
+        .expect("a relative program must run rather than report a phantom ENOENT");
+
+    assert!(found.success(), "the shell itself must succeed");
+
+    let wrote = fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0);
+    let _ = fs::remove_file(&scratch);
+
+    assert_eq!(wrote, 2, "the program must run exactly once, wrote {wrote} bytes");
+}
+
+/// A directory that isn't there is reported
+///
+/// The failure this guards against is the worst one available:
+/// a directory quietly ignored, so the program runs somewhere
+/// nobody asked for and succeeds
+#[test]
+fn a_directory_that_is_not_there_is_reported() {
+    Runtime::init();
+
+    let found = Runtime::block(Process::run("/bin/pwd", Process::NO_ARGS).in_dir("/no/such/dir"));
+
+    assert!(
+        found.is_err(),
+        "a missing directory must not be silently ignored, got {found:?}"
+    );
+}
+
+/// A directory that can't be used is refused before anything
+/// runs
+#[test]
+fn a_relative_directory_is_refused() {
+    Runtime::init();
+
+    let relative = Runtime::block(Process::run("/bin/pwd", Process::NO_ARGS).in_dir("build"));
+
+    assert_eq!(
+        relative,
+        Err(RuntimeError::BadDirectory),
+        "a relative directory must be refused, got {relative:?}"
+    );
+
+    let holed = Runtime::block(Process::run("/bin/pwd", Process::NO_ARGS).in_dir("/a\0b"));
+
+    assert_eq!(
+        holed,
+        Err(RuntimeError::BadDirectory),
+        "a zero byte must be refused, got {holed:?}"
+    );
+}
+
+/// A variable reaches the child
+#[test]
+fn env_puts_a_variable_in_the_child() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/bin/sh", ["-c", "printf %s \"$ATAP_TEST\""])
+            .env([("ATAP_TEST", "yes")]),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("sh must settle")
+        .expect("sh must run");
+
+    assert_eq!(found.stdout(), b"yes", "the variable did not arrive");
+}
+
+/// An overlay leaves the rest of the environment alone
+#[test]
+fn env_leaves_the_rest_of_the_environment_alone() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/bin/sh", ["-c", "printf %s \"$PATH\""]).env([("ATAP_TEST", "yes")]),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("sh must settle")
+        .expect("sh must run");
+
+    assert!(
+        !found.stdout().is_empty(),
+        "an overlay must not replace the whole environment"
+    );
+}
+
+/// An overlay replaces a variable rather than adding it twice
+///
+/// ## Behaviour
+/// The test that separates a real merge from a concatenation.
+/// Appending and trusting the child to read the first of two
+/// entries is unsound as a contract — POSIX leaves duplicates
+/// unspecified, and a program walking the array itself sees
+/// both
+#[test]
+fn env_replaces_a_variable_rather_than_adding_it_twice() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/bin/sh", ["-c", "env | grep -c '^HOME='"]).env([("HOME", "/atap")]),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("sh must settle")
+        .expect("sh must run");
+
+    let seen = String::from_utf8_lossy(found.stdout()).trim().to_string();
+
+    assert_eq!(seen, "1", "HOME appeared {seen} times, not once");
+
+    let value = Runtime::task(
+        Process::output("/bin/sh", ["-c", "printf %s \"$HOME\""]).env([("HOME", "/atap")]),
+    )
+    .spawn();
+
+    let found = settled(&value, PATIENCE)
+        .expect("sh must settle")
+        .expect("sh must run");
+
+    assert_eq!(found.stdout(), b"/atap", "and the overlay's value is the one kept");
+}
+
+/// A replaced environment gives the child nothing else
+///
+/// An absolute program, so nothing here depends on whether the
+/// `PATH` lookup reads the parent's environment or the child's
+#[test]
+fn env_only_gives_the_child_nothing_else() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/usr/bin/env", Process::NO_ARGS).env_only([("ONLY", "1")]),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("env must settle")
+        .expect("env must run");
+
+    assert_eq!(
+        found.stdout(),
+        b"ONLY=1\n",
+        "the child kept more than it was given: {:?}",
+        String::from_utf8_lossy(found.stdout())
+    );
+}
+
+/// A variable that can't be passed on is refused
+#[test]
+fn a_bad_variable_is_refused() {
+    Runtime::init();
+
+    for (name, value, why) in [
+        ("A\0B", "x", "a zero byte in the name"),
+        ("A", "x\0y", "a zero byte in the value"),
+        ("A=B", "x", "an equals sign in the name"),
+        ("", "x", "an empty name"),
+    ] {
+        let found = Runtime::block(
+            Process::run("/usr/bin/true", Process::NO_ARGS).env([(name, value)]),
+        );
+
+        assert_eq!(
+            found,
+            Err(RuntimeError::BadVariable),
+            "{why} must be refused, got {found:?}"
+        );
+    }
+}
+
+/// A repeat feeds every run
+///
+/// ## Behaviour
+/// Answers from outside the question the design answers from
+/// inside: the write cursor is a local of the run rather than a
+/// field on the task. A design that kept it on the task, or
+/// that consumed the input, would give `hi` once and then
+/// nothing twice
+#[test]
+fn a_repeat_feeds_every_run() {
+    Runtime::init();
+
+    let handle = Runtime::task(Process::output("/bin/cat", Process::NO_ARGS).input(b"hi".as_slice()))
+        .repeat()
+        .every(Duration::from_millis(30))
+        .count(3)
+        .spawn();
+
+    let mut runs = 0;
+
+    while let Some(found) = next_run(&handle, PATIENCE) {
+        assert_eq!(
+            found.expect("cat must run").stdout(),
+            b"hi",
+            "run {runs} was not fed"
+        );
+
+        runs += 1;
+    }
+
+    println!("saw {runs} fed runs against a count of 3");
+
+    assert!(handle.is_finished(), "the series never reported finishing");
+    assert_eq!(runs, 3, "saw {runs} runs, not 3");
+}
+
+/// Every setting survives a repeat
+///
+/// The whole `Clone` story in one: a repeat clones the task per
+/// run, and a setting that did not come across would show up on
+/// the second run rather than the first
+#[test]
+fn every_setting_survives_a_repeat() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/bin/sh", ["-c", "pwd; printf %s \"$V\""])
+            .in_dir("/usr")
+            .env([("V", "set")]),
+    )
+    .repeat()
+    .every(Duration::from_millis(30))
+    .count(2)
+    .spawn();
+
+    let mut runs = 0;
+
+    while let Some(found) = next_run(&handle, PATIENCE) {
+        let said = String::from_utf8_lossy(found.expect("sh must run").stdout()).to_string();
+
+        assert_eq!(said, "/usr\nset", "run {runs} lost a setting, said {said:?}");
+
+        runs += 1;
+    }
+
+    assert_eq!(runs, 2, "saw {runs} runs, not 2");
+}
+
+/// All three settings at once
+///
+/// Chiefly a test of the file action ordering in the spawn —
+/// the axes interfering with each other would show up here and
+/// nowhere else
+#[test]
+fn all_three_at_once() {
+    Runtime::init();
+
+    let handle = Runtime::task(
+        Process::output("/bin/sh", ["-c", "cat; pwd; printf %s \"$V\""])
+            .input(b"fed\n".as_slice())
+            .in_dir("/usr")
+            .env([("V", "set")]),
+    )
+    .spawn();
+
+    let found = settled(&handle, PATIENCE)
+        .expect("sh must settle")
+        .expect("sh must run");
+
+    let said = String::from_utf8_lossy(found.stdout()).to_string();
+
+    assert_eq!(said, "fed\n/usr\nset", "the three settings interfered: {said:?}");
+}

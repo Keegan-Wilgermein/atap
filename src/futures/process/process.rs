@@ -25,6 +25,25 @@ use std::ffi::OsStr;
 /// of children larger than that queues rather than running at
 /// once — which is a throughput ceiling, not a deadlock
 ///
+/// ## Settings
+/// What a child is given beyond its program and arguments is
+/// set on the task rather than picked at a constructor:
+/// `input` feeds its standard input, `in_dir` starts it
+/// somewhere else, and `env` or `env_only` decide what
+/// environment it gets. Each returns the task, so they read in
+/// the middle of a call, and each keeps the last value it was
+/// given
+///
+/// ```ignore
+/// Runtime::task(
+///     Process::output("/bin/sh", ["-c", "cat; pwd"])
+///         .input(b"fed\n".as_slice())
+///         .in_dir("/usr")
+///         .env([("V", "set")]),
+/// )
+/// .spawn();
+/// ```
+///
 /// ## Cancellation
 /// A cancelled task kills its child — the whole process group,
 /// so a shell takes what it started with it — reaps it, and
@@ -71,11 +90,12 @@ impl Process {
     /// program's own output goes. Nothing is captured and
     /// nothing is read, which is what makes this the cheap one
     ///
-    /// Its standard input is `/dev/null` rather than inherited.
-    /// A child reading a terminal this process is also reading
-    /// would be taking input meant for the program that spawned
-    /// it, and one reading a terminal that isn't there would
-    /// simply never finish
+    /// Its standard input is `/dev/null` unless
+    /// [`StatusTask::input`] gave it something, and never
+    /// inherited either way. A child reading a terminal this
+    /// process is also reading would be taking input meant for
+    /// the program that spawned it, and one reading a terminal
+    /// that isn't there would simply never finish
     ///
     /// The program is looked up in `PATH` when it has no slash
     /// in it, the same as a shell would, so both `"ls"` and
@@ -116,7 +136,11 @@ impl Process {
     /// The two streams are also read together rather than one
     /// after the other, for the same reason in miniature.
     /// Reading stdout to its end while stderr fills up deadlocks
-    /// exactly as thoroughly
+    /// exactly as thoroughly — and anything
+    /// [`OutputTask::input`] gave the child goes down a third
+    /// descriptor in the same loop, because feeding a child and
+    /// then reading it wedges on the first answer that outgrows
+    /// a pipe
     ///
     /// ## Returns
     /// Both streams and how the child ended. The bytes are
