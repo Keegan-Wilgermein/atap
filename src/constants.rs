@@ -163,7 +163,8 @@ pub(crate) const SHUTDOWN_POLL: Duration = Duration::from_millis(1);
 /// How long a worker sits idle before it is reaped
 pub(crate) const IDLE_REAP: Duration = Duration::from_millis(500);
 
-/// How much of a file one read or write syscall asks for
+/// How much of a file or a pipe one read or write
+/// syscall asks for
 ///
 /// A file task can't be taken out of the kernel the way a sleep
 /// can, so the loop between chunks is the only place a cancel
@@ -174,7 +175,29 @@ pub(crate) const IDLE_REAP: Duration = Duration::from_millis(500);
 /// #### Note
 /// Small enough that a cancel isn't left waiting on a slow
 /// mount, large enough that a big file isn't a syscall per page
+///
+/// Shared with the process tasks draining a child's output
+/// rather than given a constant of its own. The same number is
+/// right there for a second reason — it is what a pipe holds —
+/// so a read this size empties a full one in a single call
 pub(crate) const FILE_CHUNK: usize = 64 * 1024;
+
+/// How long a process task waits before looking at
+/// a child again, when it has no queue to wait on
+///
+/// ## Behaviour
+/// Only reached when the kernel wouldn't give this thread a
+/// kqueue, which takes it running out of descriptors. The
+/// ordinary path waits on an event and this one doesn't wait on
+/// anything, so it has to come round often enough that a cancel
+/// isn't left sitting behind a child that runs for hours
+///
+/// #### Note
+/// A cancellation granularity, the same as `FILE_CHUNK`, and
+/// picked the same way: short enough that a cancelled child is
+/// killed promptly, long enough that a degraded path isn't also
+/// a busy one
+pub(crate) const PROCESS_POLL: Duration = Duration::from_millis(50);
 
 /// Tasks that may overtake a queued one before it counts
 /// as starving

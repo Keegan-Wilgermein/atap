@@ -110,6 +110,21 @@ pub enum RuntimeError {
     /// set, and dressing this up as one would put a number in
     /// the message that the kernel never said
     BadPath,
+
+    /// An argument could not be handed to the kernel
+    ///
+    /// The kernel takes an argument as bytes ending at the
+    /// first zero, the same way it takes a path, so an entry
+    /// with a zero of its own inside it has no faithful form to
+    /// be passed in — the program would run with the part
+    /// before it, which is a different argument
+    ///
+    /// #### Note
+    /// Its own variant rather than a `BadPath`. The two fail
+    /// for the same reason, but an argument is not a path, and
+    /// a message saying it was would send a reader looking at
+    /// the wrong half of the call
+    BadArgument,
 }
 
 impl fmt::Display for RuntimeError {
@@ -138,6 +153,7 @@ impl fmt::Display for RuntimeError {
             Self::NotReady => write!(formatter, "the task has not settled yet"),
             Self::StillInUse => write!(formatter, "too much of the task table is in use to trim"),
             Self::BadPath => write!(formatter, "the path contains a zero byte"),
+            Self::BadArgument => write!(formatter, "an argument contains a zero byte"),
         }
     }
 }
