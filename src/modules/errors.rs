@@ -71,6 +71,24 @@ pub enum RuntimeError {
     ///
     /// One that doesn't exist is reported as `ENOENT` instead
     BadDirectory,
+
+    /// A socket task's timeout ran out before it finished
+    ///
+    /// A receive that times out puts back what it had read, so the
+    /// connection can still be read from
+    TimedOut,
+
+    /// An address didn't parse, or a name lookup found nothing for
+    /// it
+    BadAddress,
+
+    /// The other side closed the connection before a receive had
+    /// everything it was waiting for
+    Closed,
+
+    /// A `recv_until` read as much as it was allowed without
+    /// finding its delimiter
+    TooLong,
 }
 
 impl fmt::Display for RuntimeError {
@@ -99,6 +117,10 @@ impl fmt::Display for RuntimeError {
             Self::BadDirectory => {
                 write!(formatter, "the working directory is not an absolute path without zero bytes")
             }
+            Self::TimedOut => write!(formatter, "the task ran out of time"),
+            Self::BadAddress => write!(formatter, "the address could not be parsed or found"),
+            Self::Closed => write!(formatter, "the other side closed the connection"),
+            Self::TooLong => write!(formatter, "the delimiter was not found within the limit"),
         }
     }
 }

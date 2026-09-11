@@ -1,6 +1,8 @@
 //! # Event Descriptor
 //! Describes events for creating `kevent` calls
 
+use crate::constants::EV_UDATA_SPECIFIC;
+
 /// A `kevent` description
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EventDesc {
@@ -132,6 +134,49 @@ impl EventDesc {
     pub(crate) fn new_write_delete() -> Self {
         Self {
             filter: libc::EVFILT_WRITE,
+            flags: libc::EV_DELETE,
+            fflags: 0,
+        }
+    }
+
+    /// Returns the `kevent` flags required to wake a parked task
+    /// once, when its socket is ready for `filter`
+    ///
+    /// Unique to the task, so another task parked on the same
+    /// socket keeps its own watch
+    pub(crate) fn new_park(filter: i16) -> Self {
+        Self {
+            filter,
+            flags: libc::EV_ADD | libc::EV_ONESHOT | EV_UDATA_SPECIFIC,
+            fflags: 0,
+        }
+    }
+
+    /// Returns the `kevent` flags required to take one task's park
+    /// back off, leaving any other task's alone
+    pub(crate) fn new_park_delete(filter: i16) -> Self {
+        Self {
+            filter,
+            flags: libc::EV_DELETE | EV_UDATA_SPECIFIC,
+            fflags: 0,
+        }
+    }
+
+    /// Returns the `kevent` flags required to wait once for a
+    /// socket to be ready for `filter`, on a thread's own queue
+    pub(crate) fn new_ready(filter: i16) -> Self {
+        Self {
+            filter,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: 0,
+        }
+    }
+
+    /// Returns the `kevent` flags required to take a readiness
+    /// wait back off a thread's own queue
+    pub(crate) fn new_ready_delete(filter: i16) -> Self {
+        Self {
+            filter,
             flags: libc::EV_DELETE,
             fflags: 0,
         }

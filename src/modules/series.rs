@@ -7,7 +7,10 @@
 
 use crate::{
     executor::{self, Executor},
-    futures::task::{Task, sealed},
+    futures::task::{
+        Task,
+        sealed::{self, Step},
+    },
 };
 
 /// A task a schedule can make more of
@@ -90,5 +93,20 @@ where
     #[inline(always)]
     fn blocking(&self) -> bool {
         self.inner.blocking()
+    }
+
+    /// Steps this copy, so a run that waits on a socket parks like
+    /// any other, and publishes once it is done
+    #[inline(always)]
+    fn step(&mut self, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
+        match self.inner.step(reactor_id, task_id) {
+            Step::Done(out) => {
+                executor::publish(self.series, out);
+
+                Step::Done(())
+            }
+
+            Step::Park(park) => Step::Park(park),
+        }
     }
 }

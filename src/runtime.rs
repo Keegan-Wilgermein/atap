@@ -283,8 +283,8 @@ impl Runtime {
     ///
     /// Blocks until the pool has nothing left to do and every
     /// thread it started has gone. Anything the drain can't
-    /// reach, like a repeat between runs, is failed so its
-    /// listeners get an answer
+    /// reach, like a repeat between runs or a socket task waiting
+    /// on the network, is failed so its listeners get an answer
     ///
     /// `block` still works during and after a shutdown
     ///

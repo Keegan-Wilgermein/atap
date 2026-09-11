@@ -6,8 +6,33 @@
 /// `Task` has to be public for the signatures that name it, so
 /// sealing is what keeps it closed
 pub(crate) mod sealed {
+    use std::time::Instant;
+
     /// Implemented for every type this crate allows as a task
     pub trait Sealed {}
+
+    /// How far one step of a task got
+    pub enum Step<T> {
+        /// The run is over, and this is its output
+        Done(T),
+
+        /// The run is waiting on a socket, and can give its thread
+        /// back until the socket is ready
+        Park(Park),
+    }
+
+    /// The socket a parked task is waiting on
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Park {
+        /// The descriptor to watch
+        pub fd: libc::c_int,
+
+        /// `EVFILT_READ` or `EVFILT_WRITE`
+        pub filter: i16,
+
+        /// When to wake it anyway, so it can give up
+        pub deadline: Option<Instant>,
+    }
 }
 
 /// Implemented by everything the runtime can run
@@ -15,7 +40,7 @@ pub(crate) mod sealed {
 /// ## Behaviour
 /// `execute` is called once, on one thread, and runs to
 /// completion. What it returns is the output
-#[allow(private_bounds)]
+#[allow(private_bounds, private_interfaces)]
 pub trait Task: sealed::Sealed + Send + 'static {
     /// The final output type
     type Output: Send + 'static;
@@ -36,5 +61,18 @@ pub trait Task: sealed::Sealed + Send + 'static {
     #[inline(always)]
     fn blocking(&self) -> bool {
         false
+    }
+
+    /// Runs as much of the task as can be done without waiting
+    ///
+    /// ## Behaviour
+    /// What a spawned run calls instead of `execute`. A task that
+    /// waits on a socket parks instead, and is stepped again once
+    /// the socket is ready, without `prepare` in between. Anything
+    /// else finishes in one step
+    #[doc(hidden)]
+    #[inline(always)]
+    fn step(&mut self, reactor_id: i32, task_id: usize) -> sealed::Step<Self::Output> {
+        sealed::Step::Done(self.execute(reactor_id, task_id))
     }
 }

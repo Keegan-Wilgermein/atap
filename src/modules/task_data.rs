@@ -84,8 +84,28 @@ pub(crate) struct TaskData {
     /// arrive for one wait, the task is queued once
     armed: AtomicBool,
 
+    /// Whether this task is parked on a socket, holding no thread
+    ///
+    /// Separate from `armed`, so a wake left over from a parked task
+    /// that has gone can never start a delayed task early in its
+    /// place
+    parked: AtomicBool,
+
+    /// Whether the park is waiting for room to write rather than
+    /// something to read
+    park_write: AtomicBool,
+
+    /// Whether the park has a deadline timer beside its watch
+    park_timed: AtomicBool,
+
     /// Runs still allowed, or `u32::MAX` for no limit
     runs_left: AtomicU32,
+
+    /// The descriptor a parked task is watching
+    ///
+    /// Written before `parked` is set, and only read by whoever
+    /// claims the park
+    park_fd: AtomicI32,
 
     /// The moment this stops repeating, if it does
     ///
@@ -186,7 +206,11 @@ impl TaskData {
                 blocking: AtomicBool::new(setup.blocking),
                 held: AtomicBool::new(true),
                 armed: AtomicBool::new(false),
+                parked: AtomicBool::new(false),
+                park_write: AtomicBool::new(false),
+                park_timed: AtomicBool::new(false),
                 runs_left: AtomicU32::new(setup.runs),
+                park_fd: AtomicI32::new(-1),
                 until: setup.until(),
                 start_delay: AtomicU64::new(setup.start_delay.as_nanos() as u64),
                 interval: AtomicU64::new(setup.interval.as_nanos() as u64),
@@ -605,6 +629,47 @@ impl TaskData {
         self.armed.swap(false, Ordering::AcqRel)
     }
 
+    /// Says this task is parked on `fd`, with its task back in the
+    /// slot
+    ///
+    /// Set before anything is registered, so every wake can find
+    /// it
+    #[inline(always)]
+    pub(crate) fn park(&self, fd: i32, write: bool, timed: bool) {
+        self.park_fd.store(fd, Ordering::Relaxed);
+        self.park_write.store(write, Ordering::Relaxed);
+        self.park_timed.store(timed, Ordering::Relaxed);
+
+        // Publishes the three above to whoever claims it
+        self.parked.store(true, Ordering::Release);
+    }
+
+    /// Whether this task is parked
+    #[inline(always)]
+    pub(crate) fn parked(&self) -> bool {
+        self.parked.load(Ordering::Acquire)
+    }
+
+    /// Takes the park, and with it the job of doing something with
+    /// the task
+    ///
+    /// ## Returns
+    /// What it was parked on, as the descriptor, whether it wanted
+    /// to write, and whether it has a timer. Only one caller ever
+    /// gets `Some` per park
+    #[inline(always)]
+    pub(crate) fn claim_parked(&self) -> Option<(i32, bool, bool)> {
+        if !self.parked.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+
+        Some((
+            self.park_fd.load(Ordering::Relaxed),
+            self.park_write.load(Ordering::Relaxed),
+            self.park_timed.load(Ordering::Relaxed),
+        ))
+    }
+
     /// Takes the slot for a run
     ///
     /// ## Returns
@@ -724,6 +789,7 @@ impl TaskData {
 
         self.waiting.store(NOT_WAITING, Ordering::Release);
         self.select.store(NO_SELECT, Ordering::Release);
+        self.parked.store(false, Ordering::Release);
 
         // Cleared, so the next task given this id doesn't inherit a
         // link

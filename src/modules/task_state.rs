@@ -15,6 +15,9 @@ pub enum TaskState {
     Pending = 1,
 
     /// Claimed, and running right now
+    ///
+    /// Also a socket task waiting on the network, which holds no
+    /// thread while it waits but hasn't finished its run
     Running = 2,
 
     /// The output is written and safe to read

@@ -10,10 +10,10 @@ use crate::{
     Runtime, RuntimeError,
     constants::{
         DEAD_KQUEUE_ID, MANAGER_TICK, MANAGER_TICK_IDENT, MAX_TASK_ID, NO_SELECT, NO_TASK,
-        RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE, SELECT_IDENT,
-        SELECT_POLL, SHUTDOWN_POLL, WAKE_IDENT,
+        PARK_TIMER, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE,
+        SELECT_IDENT, SELECT_POLL, SHUTDOWN_POLL, WAKE_IDENT,
     },
-    futures::task::Task,
+    futures::task::{Task, sealed::Park},
     modules::{
         address_lock,
         erased_task::ErasedTask,
@@ -197,6 +197,14 @@ pub(crate) fn shutdown_now() {
         // Its timer went with the manager's queue, and the next
         // manager would otherwise arm it again
         data.disarm();
+
+        // Waiting on the network holds no thread, so nothing would
+        // ever give this one's reference back. Written off, like a
+        // delay still waiting
+        if data.parked() {
+            unpark(task, data);
+            continue;
+        }
 
         let state = data.state();
 
@@ -654,6 +662,10 @@ impl Executor {
                 wake(data);
                 interrupt(data, id);
 
+                // A parked task has no thread to notice, so it comes
+                // down here rather than waiting on its socket
+                unpark(id, data);
+
                 return;
             }
         }
@@ -843,13 +855,23 @@ pub(crate) fn run(id: usize) {
 
     let mut task = unsafe { Box::from_raw(raw.cast::<Box<dyn ErasedTask>>()) };
 
-    // Cancelled or failed, so it is dropped unrun
-    if !data.begin() {
-        drop(task);
-        release(id);
+    let resumed = match data.begin() {
+        true => false,
 
-        return;
-    }
+        // Only a task coming back from a park is turned away while
+        // still `Running`, with its task in the slot. It carries on
+        // where it was. Asked only once `begin` has refused, so a run
+        // that begins pays nothing for it
+        false if data.state() == TaskState::Running => true,
+
+        // Cancelled or failed, so it is dropped unrun
+        false => {
+            drop(task);
+            release(id);
+
+            return;
+        }
+    };
 
     // Cleared on every run, so a restarted manager knows the wait
     // it re-arms is a gap, not a start delay
@@ -863,12 +885,23 @@ pub(crate) fn run(id: usize) {
     // is never read
     CURRENT.with(|current| current.set(id));
 
-    let finished = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
-        task.run(reactor, id, payload)
-    }))
-    .is_ok();
+    let stepped = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
+        task.run(reactor, id, payload, resumed)
+    }));
 
     CURRENT.with(|current| current.set(NO_TASK));
+
+    let finished = match stepped {
+        // Waiting on a socket, so the thread goes back to the pool
+        Ok(Some(park)) => {
+            park_task(id, data, task, park);
+
+            return;
+        }
+
+        Ok(None) => true,
+        Err(_) => false,
+    };
 
     if !finished {
         // A panic means the output was never written, so there is
@@ -951,6 +984,207 @@ fn queue(id: usize, blocking: bool) -> bool {
         true => POOL.offload(id),
         false => POOL.submit(id),
     }
+}
+
+/// Which half of a park went off, and so took itself down
+///
+/// Both halves are one shot, so only the other one is left for
+/// whoever claims the park to take off the queue
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fired {
+    /// The socket became ready
+    Socket,
+
+    /// The deadline came
+    Deadline,
+
+    /// Neither, because a cancel, a restart or a shutdown claimed
+    /// the park
+    Neither,
+}
+
+/// Puts a task down until its socket is ready, giving its thread
+/// back to the pool
+///
+/// ## Behaviour
+/// The task goes back in its slot and is marked parked before
+/// anything is registered, so every wake can find it. The watch
+/// and the deadline go on the manager's queue, and whichever
+/// fires first queues the task again
+///
+/// A listener is held across the registration, so a cancel that
+/// takes the park down meanwhile can't free the slot under it
+fn park_task(id: usize, data: &TaskData, task: Box<Box<dyn ErasedTask>>, park: Park) {
+    data.add_listener();
+
+    data.rearm(Box::into_raw(task).cast::<c_void>());
+    data.park(
+        park.fd,
+        park.filter == libc::EVFILT_WRITE,
+        park.deadline.is_some(),
+    );
+
+    let watched = watch_park(id, park);
+
+    // Nothing will ever wake it, or a cancel landed before the park
+    // was there for it to find. Whoever else may have claimed the
+    // park meanwhile deals with it instead
+    if !watched || data.state() != TaskState::Running {
+        unpark(id, data);
+    }
+
+    Executor::drop_listener(id);
+}
+
+/// Puts a parked task's deadline and watch on the manager's
+/// queue
+///
+/// ## Returns
+/// Whether both went on. `false` means the manager has gone or
+/// the kernel refused one
+fn watch_park(id: usize, park: Park) -> bool {
+    let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
+
+    if manager == DEAD_KQUEUE_ID {
+        return false;
+    }
+
+    // First, so a watch that fires at once finds the timer already
+    // there to take down
+    if let Some(deadline) = park.deadline {
+        // A timer of zero is not one the kernel fires
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .as_nanos()
+            .clamp(1, libc::intptr_t::MAX as u128);
+
+        let timed = unsafe {
+            KEvent::register(
+                manager,
+                id + SCHEDULE_IDENT_BASE,
+                left as libc::intptr_t,
+                PARK_TIMER as *mut c_void,
+                EventDesc::new_timer(),
+            )
+        }
+        .check();
+
+        if timed.is_err() {
+            return false;
+        }
+    }
+
+    unsafe {
+        KEvent::register(
+            manager,
+            park.fd as usize,
+            0,
+            id as *mut c_void,
+            EventDesc::new_park(park.filter),
+        )
+    }
+    .check()
+    .is_ok()
+}
+
+/// Takes whatever is left of a park off the manager's queue
+///
+/// `parked` is what `claim_parked` gave back. Nothing is taken off
+/// once the manager has gone, since its queue went with it
+fn unwatch_park(id: usize, parked: (i32, bool, bool), fired: Fired) {
+    let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
+
+    if manager == DEAD_KQUEUE_ID {
+        return;
+    }
+
+    let (fd, write, timed) = parked;
+
+    if timed && fired != Fired::Deadline {
+        let _ = unsafe {
+            KEvent::register(
+                manager,
+                id + SCHEDULE_IDENT_BASE,
+                0,
+                ptr::null_mut(),
+                EventDesc::new_timer_delete(),
+            )
+        }
+        .check();
+    }
+
+    if fired != Fired::Socket {
+        let filter = match write {
+            true => libc::EVFILT_WRITE,
+            false => libc::EVFILT_READ,
+        };
+
+        let _ = unsafe {
+            KEvent::register(
+                manager,
+                fd as usize,
+                0,
+                id as *mut c_void,
+                EventDesc::new_park_delete(filter),
+            )
+        }
+        .check();
+    }
+}
+
+/// Queues a parked task again, because its socket is ready or
+/// its deadline has come
+///
+/// A wake for a task that is no longer parked is left over from
+/// an earlier park, and does nothing. One for a task parked since
+/// only costs it a look at its socket
+fn wake_parked(id: usize, fired: Fired) {
+    let Some(data) = slot(id) else {
+        return;
+    };
+
+    let Some(parked) = data.claim_parked() else {
+        return;
+    };
+
+    unwatch_park(id, parked, fired);
+
+    if queue(id, data.blocking()) {
+        return;
+    }
+
+    // Nothing is left to run it
+    take_down(id, data);
+}
+
+/// Takes a parked task down without running it again, if nobody
+/// else has claimed it first
+fn unpark(id: usize, data: &TaskData) {
+    let Some(parked) = data.claim_parked() else {
+        return;
+    };
+
+    unwatch_park(id, parked, Fired::Neither);
+    take_down(id, data);
+}
+
+/// Drops a task whose park has been claimed, and gives its
+/// reference back
+///
+/// A task still `Running` settles `Failed`. A cancelled one keeps
+/// its state
+fn take_down(id: usize, data: &TaskData) {
+    let raw = data.claim();
+
+    if !raw.is_null() {
+        drop(unsafe { Box::from_raw(raw.cast::<Box<dyn ErasedTask>>()) });
+    }
+
+    if data.try_state(TaskState::Running, TaskState::Failed) {
+        wake(data);
+    }
+
+    release(id);
 }
 
 /// Puts a task down until its interval is up
@@ -1576,14 +1810,34 @@ fn executor_loop(id: i32) {
             panic!("injected manager fault");
         }
 
-        // The tick carries nothing. Everything else is a task whose
-        // interval is up
         for event in events.iter().take(count) {
-            if event.flags & libc::EV_ERROR != 0 || event.ident == MANAGER_TICK_IDENT {
+            if event.flags & libc::EV_ERROR != 0 {
                 continue;
             }
 
-            fire(event.ident);
+            match event.filter {
+                // A parked task's socket is ready
+                libc::EVFILT_READ | libc::EVFILT_WRITE => {
+                    wake_parked(event.udata as usize, Fired::Socket);
+                }
+
+                // The tick carries nothing
+                libc::EVFILT_TIMER if event.ident == MANAGER_TICK_IDENT => {}
+
+                // A parked task's deadline
+                libc::EVFILT_TIMER if event.udata as usize == PARK_TIMER => {
+                    if let Some(id) = event.ident.checked_sub(SCHEDULE_IDENT_BASE) {
+                        wake_parked(id, Fired::Deadline);
+                    }
+                }
+
+                // A task whose interval is up
+                libc::EVFILT_TIMER => fire(event.ident),
+
+                // The wake a shutdown sends, which the check above the
+                // loop deals with
+                _ => {}
+            }
         }
     }
 }
@@ -1599,6 +1853,12 @@ fn orphaned() {
         let Some(data) = slot(task) else {
             continue;
         };
+
+        // Its watch went with the queue, and nothing else will wake it
+        if data.parked() {
+            unpark(task, data);
+            continue;
+        }
 
         let kind = data.kind();
 
@@ -1641,6 +1901,18 @@ fn recover_waits() {
         let Some(data) = slot(task) else {
             continue;
         };
+
+        // A park's wake can be lost the same way. Queued again, the task
+        // looks at its socket and parks again if it still has to
+        if let Some(parked) = data.claim_parked() {
+            unwatch_park(task, parked, Fired::Neither);
+
+            if !queue(task, data.blocking()) {
+                take_down(task, data);
+            }
+
+            continue;
+        }
 
         // Armed means a timer is owed on the manager's queue, whatever
         // the task's kind
@@ -1782,6 +2054,36 @@ mod tests {
             cores * 2,
             cores,
         );
+    }
+
+    /// A wake left over from a parked task that has gone can't
+    /// start a delayed task that has since taken its id
+    #[test]
+    fn a_stale_park_wake_cannot_start_a_delayed_task() {
+        crate::Runtime::init();
+
+        let handle = crate::Runtime::task(Sleep::sleep(Duration::from_micros(1), true))
+            .after(Duration::from_millis(300))
+            .spawn();
+
+        // Both kinds of park wake, aimed at a task that isn't parked
+        wake_parked(handle.id(), Fired::Socket);
+        wake_parked(handle.id(), Fired::Deadline);
+
+        thread::sleep(Duration::from_millis(50));
+
+        assert!(
+            handle.is_pending(),
+            "a stale park wake started a delayed task early, which is now {:?}",
+            handle.state(),
+        );
+
+        assert!(
+            slot(handle.id()).is_some_and(|data| data.armed()),
+            "a stale park wake took the delay's own wake",
+        );
+
+        handle.join().expect("the delayed task still runs at its own time");
     }
 
     /// A task that panics fails alone, and everything queued

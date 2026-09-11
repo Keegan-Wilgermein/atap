@@ -8,9 +8,12 @@ use whenever::{Runtime, Sleep};
 fn main() {
     Runtime::init();
 
-    let task: SleepTask = Sleep::sleep(Duration::from_secs(5)); // Inert on creation
+    let task: SleepTask = Sleep::sleep(
+        Duration::from_secs(5),
+        true,
+    ); // Inert on creation
     
-    let _ = Runtime::block_on(
+    let _ = Runtime::block(
         task // Starts execution
     );
 }

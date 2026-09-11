@@ -189,3 +189,26 @@ pub(crate) const SCHEDULE_IDENT_BASE: usize = 2;
 
 /// The `kevent` ident the manager's own tick arrives on
 pub(crate) const MANAGER_TICK_IDENT: usize = 1;
+
+/// Makes a `kevent` registration unique to its user data as
+/// well as its ident and filter
+///
+/// Lets two tasks park on one descriptor without replacing
+/// each other's watch. Not in `libc`'s bindings for this
+/// platform
+pub(crate) const EV_UDATA_SPECIFIC: u16 = 0x0100;
+
+/// The user data a parked task's deadline timer carries, which
+/// tells it apart from a delay or a gap at the same ident
+pub(crate) const PARK_TIMER: usize = 1;
+
+/// Bytes one step of a socket task moves before it parks and
+/// lets the rest of the pool have the thread
+///
+/// Readiness is level triggered, so a socket with more to give
+/// wakes the task again at once
+pub(crate) const STEP_BUDGET: usize = 1024 * 1024;
+
+/// How long a blocking socket call waits before looking again,
+/// when its thread has no queue to wait on
+pub(crate) const READY_POLL: Duration = Duration::from_millis(10);

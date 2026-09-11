@@ -17,6 +17,7 @@ mod modules {
     pub(crate) mod kevent;
     pub(crate) mod kqueue;
     pub(crate) mod mapping;
+    pub(crate) mod park;
     pub mod pool_stats;
     pub mod runtime_status;
     pub(crate) mod series;
@@ -42,6 +43,7 @@ mod futures {
     pub mod sleep;
     pub(crate) mod sleep_task;
     pub(crate) mod task;
+    pub mod tcp;
 }
 
 // Re-exports
@@ -52,6 +54,10 @@ pub use futures::process::{ExitStatus, OutputTask, Process, ProcessOutput, Statu
 pub use futures::sleep::Sleep;
 pub use futures::sleep_task::SleepTask;
 pub use futures::task::Task;
+pub use futures::tcp::{
+    AcceptTask, ConnectTask, Connection, ListenTask, Listener, RecvTask, RequestTask, SendTask,
+    Tcp, TcpAddress,
+};
 pub use modules::errors::RuntimeError;
 pub use modules::join_policy::JoinPolicy;
 pub use modules::event_desc::EventDesc;
