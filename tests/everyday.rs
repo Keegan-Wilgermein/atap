@@ -1,20 +1,8 @@
 //! A program, rather than a test of one
 //!
-//! Nothing here is trying to break anything. It is the other
-//! shape of coverage from `stress` — a runtime doing ordinary
-//! work at an ordinary pace for half a minute, mixing spawned
-//! tasks with blocking ones the way real code does, because it
-//! happens to want both and not because either is being
-//! examined
-//!
-//! The point is what it would catch: a leak, a drift, a
-//! schedule that quietly stops after a few minutes, a slot
-//! count that only climbs. None of those show up in a test that
-//! runs for a tenth of a second and asserts on one number
-//!
-//! So there is very little asserted at the end, and what there
-//! is says the program got through its work rather than that
-//! any particular call did what it was told
+//! Ordinary work at an ordinary pace for half a minute, mixing
+//! spawned tasks with blocking ones, to catch leaks, drift and
+//! schedules that quietly stop
 
 use atap::{DEFAULT_PRIORITY, File, Runtime, RuntimeError, Sleep};
 use std::{
@@ -31,9 +19,6 @@ const RUNNING: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(25);
 
 /// Where its files live
-///
-/// `tests/files` is ignored whole, and git doesn't track
-/// directories, so an ignored one doesn't survive a clone
 fn workspace() -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/files");
 
@@ -42,6 +27,8 @@ fn workspace() -> PathBuf {
     root
 }
 
+/// Half a minute of ordinary work gets done, and the runtime
+/// still works afterwards
 #[test]
 fn a_program_that_just_runs() {
     Runtime::init();
@@ -61,23 +48,19 @@ fn a_program_that_just_runs() {
     let line: Arc<[u8]> = Arc::from(b"tick\n".as_slice());
 
     // Watches the config the way a program that reloads on
-    // change would. Nothing here ever changes it, which is the
-    // ordinary case — a watcher mostly finds the same bytes it
-    // found last time
+    // change would
     let watcher = Runtime::task(File::read(&config))
         .repeat()
         .every(Duration::from_millis(500))
         .spawn();
 
-    // A heartbeat in the log. Appends rather than writes, so
-    // it can't lose what came before it
+    // A heartbeat in the log
     let heartbeat = Runtime::task(File::append(&log, Arc::clone(&line)))
         .repeat()
         .every(Duration::from_secs(1))
         .spawn();
 
-    // The sort of thing a program does once, a moment after
-    // starting, when it doesn't want to do it during startup
+    // Something a program does once, a moment after starting
     let warmup = Runtime::task(Sleep::sleep(Duration::from_millis(5), false))
         .after(Duration::from_millis(250))
         .spawn();
@@ -98,9 +81,7 @@ fn a_program_that_just_runs() {
 
         ticks += 1;
 
-        // A batch of work, one item of which matters more than
-        // the rest. Exactly the reason priorities exist, and
-        // exactly how little ceremony asking for one takes
+        // A batch of work, one item of which matters more than the rest
         let batch: Vec<_> = (0..8u64)
             .map(|index| {
                 let priority = match index {
@@ -119,18 +100,14 @@ fn a_program_that_just_runs() {
             .filter(|result| result.is_ok())
             .count() as u64;
 
-        // Pick up a config reload if the watcher has one ready.
-        // Between runs it has nothing, which is not a problem
-        // and not worth a branch of its own
+        // Pick up a config reload if the watcher has one ready
         if let Ok(Ok(bytes)) = watcher.maybe_take() {
             assert!(!bytes.is_empty(), "the config came back empty");
 
             reloads += 1;
         }
 
-        // Housekeeping, about once a second. Slower work, and
-        // blocking rather than spawned, because there is nothing
-        // else this thread wants to be doing while it happens
+        // Housekeeping, about once a second, blocking
         if ticks % 40 == 0 {
             sweeps += 1;
 
@@ -142,8 +119,7 @@ fn a_program_that_just_runs() {
 
             assert!(!listing.is_empty(), "the directory came back empty");
 
-            // Written every sweep rather than appended, so it
-            // is a snapshot rather than a history
+            // A snapshot rather than a history
             let snapshot = format!(
                 "tick {}, served {}, reloads {}, log {} bytes\n",
                 ticks,
@@ -156,8 +132,7 @@ fn a_program_that_just_runs() {
                 .expect("could not write the report");
         }
 
-        // A retry-shaped job, now and then. Bounded, so nothing
-        // has to remember to stop it
+        // A bounded retry job, now and then
         if ticks % 200 == 0 {
             let retries = Runtime::task(Sleep::sleep(Duration::from_millis(2), false))
                 .repeat()
@@ -165,9 +140,7 @@ fn a_program_that_just_runs() {
                 .count(3)
                 .spawn();
 
-            // Left to run itself out rather than waited on. The
-            // program has other things to do, and a bounded job
-            // that nobody reads still ends
+            // Left to run itself out
             drop(retries);
 
             println!(
@@ -180,8 +153,7 @@ fn a_program_that_just_runs() {
             );
         }
 
-        // Wait out the rest of the tick, the way a loop with
-        // nothing left to do this time round would
+        // Wait out the rest of the tick
         if let Some(left) = TICK.checked_sub(tick_began.elapsed()) {
             Runtime::sleep(left);
         }
@@ -192,9 +164,7 @@ fn a_program_that_just_runs() {
     watcher.cancel();
     heartbeat.cancel();
 
-    // Started before the loop and long since done, so this is
-    // the ordinary case of joining something you set going and
-    // then forgot about
+    // Started before the loop and long since done
     let warmed = warmup.join();
 
     assert!(warmed.is_ok(), "the warmup never landed: {:?}", warmed);
@@ -221,8 +191,7 @@ fn a_program_that_just_runs() {
 
     assert_eq!(served, ticks * 8, "{} of {} batches came back short", ticks * 8 - served, ticks * 8);
 
-    // The two schedules did their jobs for the whole run rather
-    // than for the first second of it
+    // The two schedules ran for the whole run
     assert!(reloads > 10, "the config watcher only ran {} times", reloads);
 
     assert!(

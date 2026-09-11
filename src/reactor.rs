@@ -1,6 +1,6 @@
 //! # Reactor
-//! Reacts to kevents from the kernal
-//! and propogates them back to the caller
+//! Reacts to kevents from the kernel and passes them back to
+//! whoever is waiting on them
 
 use crate::{
     EventDesc, RuntimeError,
@@ -42,13 +42,10 @@ fn reactor_loop(id: i32, tx: Sender<i32>) {
                 }
 
                 match WakeTarget::decode(event.udata) {
-                    // Nobody registered a way back, so there
-                    // is nobody to tell about it
+                    // Nobody to wake
                     WakeTarget::None => continue,
 
-                    // The waiter is sitting in a `kevent` call
-                    // on a queue of its own, and one trigger
-                    // both registers and fires
+                    // The waiter is blocked in `kevent` on its own queue
                     WakeTarget::Queue(queue) => {
                         let _ = unsafe {
                             KEvent::register(
@@ -62,14 +59,8 @@ fn reactor_loop(id: i32, tx: Sender<i32>) {
                         .check();
                     }
 
-                    // The waiter is parked. Its flag goes up
-                    // before the unpark, so it finds the event
-                    // however it came out of `park`
-                    //
-                    // The pointer is borrowed from the waiting
-                    // thread's own stack, which is live for as
-                    // long as it is waiting, so nothing here
-                    // owns it or frees it
+                    // The pointer is into the waiting thread's stack, which stays
+                    // live until it has been woken
                     WakeTarget::Parked(waiter) => unsafe { (*waiter).wake() },
                 }
             }

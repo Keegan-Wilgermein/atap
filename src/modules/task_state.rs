@@ -1,31 +1,14 @@
 //! # Task State
-//! Where a spawned task is in its life, from the moment
-//! the `Executor` is handed it to the moment its slot
-//! goes back on the free list
+//! Where a spawned task is in its life
 
 /// The lifecycle of one spawned task
-///
-/// Held in a `TaskData` as an `AtomicU32` rather than
-/// anything richer because it doubles as the address
-/// listeners block on, and `os_sync_wait_on_address` only
-/// watches words of 4 or 8 bytes
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TaskState {
     /// No task in this slot
     ///
-    /// Zero on purpose. Table blocks come back from the
-    /// kernel zeroed, so a block that has never been touched
-    /// already reads as a run of empty slots with nothing
-    /// needing to be written to it first
-    ///
-    /// #### Note
-    /// A `TaskHandle` never sees this. The `Executor` filters
-    /// an empty slot out before anything can read one and
-    /// answers `Failed` in its place, so this is bookkeeping
-    /// that happens to be visible rather than a state a task
-    /// can be found in. It is public only because matching on
-    /// the rest of the enum has to account for it
+    /// A `TaskHandle` never reports this. An empty slot reads as
+    /// `Failed` through a handle
     Free = 0,
 
     /// Waiting for the `Executor` to claim it
@@ -49,20 +32,15 @@ pub enum TaskState {
 
     /// Nothing is going to produce an output for this task
     ///
-    /// Covers every way that can happen: the task panicked,
-    /// the thread running it died holding it, there was
-    /// nothing left to run it, or a repeat could not be put
-    /// back on the clock. What they have in common is that
-    /// waiting longer won't help
+    /// The task panicked, the thread running it died, or nothing
+    /// was left to run it
     Failed = 6,
 }
 
 impl TaskState {
     /// Rebuilds a state from the raw value in the atomic
     ///
-    /// Anything unrecognised is treated as `Failed`, since a
-    /// state this crate didn't write means the slot can't be
-    /// trusted and a listener waiting on it should be let go
+    /// Anything unrecognised reads as `Failed`
     #[inline(always)]
     pub(crate) fn from_u32(raw: u32) -> Self {
         match raw {
@@ -76,16 +54,11 @@ impl TaskState {
         }
     }
 
-    /// Whether the state can still change
-    ///
-    /// Terminal states are the ones worth waking a listener
-    /// for, and the point past which a read won't block
+    /// Whether a read on this state returns without waiting
     ///
     /// #### Note
-    /// Settled is not the same as having an output. A
-    /// cancelled task, a failed one and one whose output has
-    /// already been taken have all settled, and none of them
-    /// has anything to hand out
+    /// Doesn't mean there is an output. A cancelled, failed or
+    /// taken task has settled with nothing to hand out
     #[inline(always)]
     pub fn terminal(self) -> bool {
         !matches!(self, Self::Pending | Self::Running)

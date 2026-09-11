@@ -8,42 +8,96 @@ use std::fmt;
 /// A snapshot of the pool
 ///
 /// #### Note
-/// A snapshot and not a lock, for the same reason `WorkerStats`
-/// is. The pool grows, shrinks and moves work around while this
-/// is being read, so treat it as a look at the pool rather than
-/// a statement about it
+/// A snapshot, not a lock. The pool carries on while this is
+/// read, so treat the numbers as approximate
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolStats {
-    /// Tasks holding a slot in the table right now, whether
-    /// queued, running or waiting to be read
-    pub live: usize,
-
-    /// Tasks waiting in the shared queue, behind every
-    /// worker's own
-    pub queued: usize,
-
-    /// Tasks that said they would block, waiting for a sleep
-    /// thread to be free
-    pub blocking_queued: usize,
-
-    /// Every worker that was running when this was taken
-    pub workers: Vec<WorkerStats>,
-
-    /// Threads currently held open for blocking tasks
-    pub sleep_threads: usize,
-
-    /// How many of those were inside a task
-    pub sleep_busy: usize,
-
-    /// Task slots the table has ever handed out
-    ///
-    /// Only ever climbs, and only when no retired slot could
-    /// be reused, so it is the peak number of tasks that have
-    /// been alive at once rather than the number ever spawned
-    pub slots: usize,
+    live: usize,
+    queued: usize,
+    blocking_queued: usize,
+    workers: Vec<WorkerStats>,
+    sleep_threads: usize,
+    sleep_busy: usize,
+    slots: usize,
+    peak_slots: usize,
 }
 
 impl PoolStats {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        live: usize,
+        queued: usize,
+        blocking_queued: usize,
+        workers: Vec<WorkerStats>,
+        sleep_threads: usize,
+        sleep_busy: usize,
+        slots: usize,
+        peak_slots: usize,
+    ) -> Self {
+        Self {
+            live,
+            queued,
+            blocking_queued,
+            workers,
+            sleep_threads,
+            sleep_busy,
+            slots,
+            peak_slots,
+        }
+    }
+
+    /// Tasks holding a slot in the table right now, whether
+    /// queued, running or waiting to be read
+    pub fn live(&self) -> usize {
+        self.live
+    }
+
+    /// Tasks waiting in the shared queue
+    pub fn queued(&self) -> usize {
+        self.queued
+    }
+
+    /// Blocking tasks waiting for a sleep thread
+    pub fn blocking_queued(&self) -> usize {
+        self.blocking_queued
+    }
+
+    /// Every worker that was running when this was taken
+    pub fn workers(&self) -> &[WorkerStats] {
+        &self.workers
+    }
+
+    /// Threads currently held open for blocking tasks
+    pub fn sleep_threads(&self) -> usize {
+        self.sleep_threads
+    }
+
+    /// How many of those were inside a task
+    pub fn sleep_busy(&self) -> usize {
+        self.sleep_busy
+    }
+
+    /// Task slots the table spans right now
+    ///
+    /// ## Behaviour
+    /// Grows when a spawn finds no free slot to reuse, and shrinks
+    /// when the table is trimmed. The runtime trims itself when it
+    /// has been idle for a while, so this can fall without anything
+    /// being asked of it
+    pub fn slots(&self) -> usize {
+        self.slots
+    }
+
+    /// The most task slots the table has ever spanned at once
+    ///
+    /// ## Behaviour
+    /// Never comes down, not even when the table is trimmed. It is
+    /// the peak number of tasks alive at once, not the number ever
+    /// spawned
+    pub fn peak_slots(&self) -> usize {
+        self.peak_slots
+    }
+
     /// Workers running when this was taken
     pub fn len(&self) -> usize {
         self.workers.len()
@@ -56,50 +110,30 @@ impl PoolStats {
 
     /// Workers that were inside a task
     pub fn busy(&self) -> usize {
-        self.workers.iter().filter(|worker| worker.busy).count()
+        self.workers.iter().filter(|worker| worker.busy()).count()
     }
 
-    /// Everything waiting anywhere, shared queue and worker
-    /// queues and sleep threads alike
+    /// Everything waiting anywhere: the shared queue, the blocking
+    /// queue and every worker's own
     pub fn backlog(&self) -> usize {
-        let workers: usize = self.workers.iter().map(|worker| worker.backlog).sum();
+        let workers: usize = self.workers.iter().map(|worker| worker.backlog()).sum();
 
         self.queued + self.blocking_queued + workers
     }
 
     /// Whether the pool had anything at all to do
     ///
-    /// Covers both halves of running and both halves of
-    /// waiting: a task on a worker, a task on a sleep thread,
-    /// and anything queued in front of either of them
-    ///
     /// #### Note
-    /// `false` says the pool had nothing left at the moment
-    /// this was taken, not that nothing is coming. A task
-    /// spawned a moment later is still a task, so this answers
-    /// what the pool was doing rather than whether it is
-    /// finished
+    /// Says the pool was idle when this was taken, not that nothing
+    /// is coming
     pub fn has_any_task(&self) -> bool {
         self.busy() > 0 || self.sleep_busy > 0 || self.backlog() > 0
     }
 }
 
 impl fmt::Display for PoolStats {
-    /// The whole pool, with its workers listed out
-    ///
-    /// Three parts, in the order the work moves through them.
-    /// The threads that exist come first, then what is waiting
-    /// for them, then a line for every worker, and last the
-    /// table underneath the lot — so reading down it goes from
-    /// the pool, through the queue, to where the tasks
-    /// themselves live
-    ///
-    /// #### Note
-    /// Several lines rather than one, which is unusual for a
-    /// `Display`. A pool with thirty two workers has thirty two
-    /// things to say and saying them on one line says none of
-    /// them. Use the `Debug` form where a single line is what
-    /// is wanted
+    /// The whole pool over several lines: its threads, what is
+    /// queued, one line per worker, then the table
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             formatter,
@@ -118,11 +152,6 @@ impl fmt::Display for PoolStats {
             self.backlog(),
         )?;
 
-        // Numbered to the width of the highest, so the names
-        // line up and the columns after them do too. A pool of
-        // ten reads as `worker 9` and one of a hundred as
-        // `worker  9`, rather than the list stepping sideways
-        // as it passes each power of ten
         let width = match self.workers.len() {
             0 => 1,
             count => (count - 1).to_string().len(),
@@ -132,6 +161,10 @@ impl fmt::Display for PoolStats {
             writeln!(formatter, "  worker {index:>width$}: {worker}")?;
         }
 
-        write!(formatter, "{} live, {} slots", self.live, self.slots)
+        write!(
+            formatter,
+            "{} live, {} slots in the table, {} at its peak",
+            self.live, self.slots, self.peak_slots,
+        )
     }
 }

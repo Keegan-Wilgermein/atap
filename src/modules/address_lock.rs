@@ -2,18 +2,10 @@
 //! Blocking a thread on the value of a word, and waking
 //! everything blocked on one
 //!
-//! Wrapped rather than called directly because three different
-//! things in the crate wait this way — a listener on a task's
-//! state, a worker on its own, and a sleep thread on its own —
-//! and the retry rules are fiddly enough to be worth writing
-//! down once
-//!
 //! #### Note
-//! `os_sync_wait_on_address` sleeps only while the word still
-//! reads the value it was given. A wake that lands between the
-//! caller's read and its wait is therefore not lost, it simply
-//! makes the wait return immediately. That property is what
-//! every park in this crate leans on
+//! A wait only sleeps while the word still reads the value it
+//! was given, so a wake landing between the caller's read and
+//! its wait is never lost
 
 use crate::RuntimeError;
 use libc::c_void;
@@ -41,8 +33,7 @@ pub(crate) fn wait(address: *mut c_void, value: u32) -> Result<(), RuntimeError>
 
     let error = Error::last_os_error().raw_os_error();
 
-    // A signal, or a value that moved between the read and the
-    // wait, both just mean go round again
+    // A signal, or a value that moved, both mean look again
     if error == Some(libc::EINTR) || error == Some(libc::EAGAIN) {
         return Ok(());
     }
@@ -50,26 +41,15 @@ pub(crate) fn wait(address: *mut c_void, value: u32) -> Result<(), RuntimeError>
     Err(RuntimeError::AddressLock)
 }
 
-/// Blocks while a word still reads `value`, giving up if it
-/// stays that way for `timeout`
+/// Blocks while a word still reads `value`, for at most
+/// `timeout`
 ///
 /// ## Returns
-/// `Ok(true)` when the word may have changed and the caller
-/// should look again, `Ok(false)` when the timeout ran out
-/// first, and an error only when the kernel refused in a way
-/// that going round again won't fix
+/// `Ok(true)` when the word may have changed, `Ok(false)` when
+/// the timeout ran out, and an error only when the kernel
+/// refused in a way that going round again won't fix
 ///
-/// ## Behaviour
-/// The clock is `OS_CLOCK_MACH_ABSOLUTE_TIME`, which is
-/// monotonic. A timeout is therefore the duration that was
-/// asked for rather than a point on a calendar, and doesn't
-/// move if the wall clock is set underneath the wait
-///
-/// #### Note
-/// A zero timeout is the caller saying its patience has already
-/// run out, so the kernel isn't asked at all. Passing it
-/// through would be asking to wait for no time, which the
-/// caller can answer for itself
+/// A zero timeout returns `Ok(false)` without waiting
 pub(crate) fn wait_until(
     address: *mut c_void,
     value: u32,
@@ -88,11 +68,7 @@ pub(crate) fn wait_until(
             mem::size_of::<u32>(),              // A single word, whatever it holds
             libc::OS_SYNC_WAIT_ON_ADDRESS_NONE, // Single process waiting
             libc::OS_CLOCK_MACH_ABSOLUTE_TIME,  // Monotonic, so setting the clock can't move it
-            // Saturating rather than wrapping, because a
-            // `Duration` holds more nanoseconds than a `u64`
-            // does and a truncated one would come back
-            // immediately instead of waiting the age it asked
-            // for
+            // Saturated, so a huge timeout can't wrap to a tiny one
             nanos.min(u64::MAX as u128) as u64,
         )
     };
@@ -103,14 +79,12 @@ pub(crate) fn wait_until(
 
     let error = Error::last_os_error().raw_os_error();
 
-    // The answer this call exists to give: the word never moved
-    // and the time ran out
+    // The time ran out
     if error == Some(libc::ETIMEDOUT) {
         return Ok(false);
     }
 
-    // A signal, or a value that moved between the read and the
-    // wait, both just mean go round again
+    // A signal, or a value that moved, both mean look again
     if error == Some(libc::EINTR) || error == Some(libc::EAGAIN) {
         return Ok(true);
     }

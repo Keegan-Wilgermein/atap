@@ -1,32 +1,21 @@
 //! # Worker State
-//! Where a worker is, from the moment its slot in the pool is
-//! claimed to the moment the slot is given back
+//! Where a worker is, from its slot being claimed to the slot
+//! being given back
 //!
-//! Doubles as the address the worker parks on, so it is a
-//! `u32` for the same reason `TaskState` is: the kernel's
+//! A `u32` because workers park on it, and the kernel's
 //! address wait only watches words of 4 or 8 bytes
 
 /// The lifecycle of one worker
-///
-/// #### Note
-/// `Empty` and `Dead` are not the same thing and the
-/// difference is what makes recovery work. `Empty` is a slot
-/// nobody is using, `Dead` is a slot whose thread went down
-/// with a task and a queue still in it. One is free to claim,
-/// the other has to be cleaned up first
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum WorkerState {
     /// No worker in this slot
-    ///
-    /// Zero on purpose, so the whole pool starts out empty
-    /// with nothing needing to be written to it first
     Empty = 0,
 
-    /// The slot is claimed but its thread isn't up yet
+    /// Claimed, but its thread isn't up yet
     ///
-    /// Claiming before spawning is what stops two threads
-    /// starting a worker into the same slot
+    /// Claiming before spawning stops two threads starting a
+    /// worker into the same slot
     Starting = 1,
 
     /// Awake and looking for something to do
@@ -44,19 +33,21 @@ pub(crate) enum WorkerState {
 
     /// The thread went down without being asked to
     ///
-    /// Its ring still holds every task it hadn't got to, and
-    /// those are redelegated rather than lost. Only the one
-    /// task it had already claimed is beyond saving
+    /// Its queue goes back to the pool. Only the task it was
+    /// running is lost
     Dead = 6,
+
+    /// A `Dead` slot somebody is already clearing up
+    ///
+    /// Stops two threads recovering the same slot
+    Recovering = 7,
 }
 
 impl WorkerState {
     /// Rebuilds a state from the raw value in the atomic
     ///
-    /// Anything unrecognised is treated as `Dead`, since a
-    /// state this crate didn't write means the worker can't
-    /// be trusted and the safe reading is that it needs
-    /// cleaning up
+    /// Anything unrecognised reads as `Dead`, so it gets cleaned
+    /// up
     #[inline(always)]
     pub(crate) fn from_u32(raw: u32) -> Self {
         match raw {
@@ -66,14 +57,12 @@ impl WorkerState {
             3 => Self::Running,
             4 => Self::Parked,
             5 => Self::Stopping,
+            7 => Self::Recovering,
             _ => Self::Dead,
         }
     }
 
     /// Whether a thread is meant to be behind this slot
-    ///
-    /// `Dead` says one was and isn't any more, which is a
-    /// different question and the one `needs_recovery` asks
     #[inline(always)]
     pub(crate) fn alive(self) -> bool {
         matches!(
@@ -88,7 +77,7 @@ impl WorkerState {
         self == Self::Running
     }
 
-    /// Whether this slot has a thread's mess left in it
+    /// Whether a dead thread's slot needs clearing up
     #[inline(always)]
     pub(crate) fn needs_recovery(self) -> bool {
         self == Self::Dead

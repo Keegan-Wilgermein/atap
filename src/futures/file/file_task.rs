@@ -1,11 +1,6 @@
 //! # File task
 //! The tasks the `File` constructors return, and everything
 //! they do once a thread picks them up
-//!
-//! Five types rather than one per operation, grouped by what
-//! they hand back. A caller reading a file gets a `Vec<u8>` or
-//! an error and nothing else to match on, which is the whole
-//! reason these aren't one task with an output enum
 
 use crate::{
     RuntimeError,
@@ -24,9 +19,7 @@ use std::{
     sync::Arc,
 };
 
-// The whole reason `Metadata` is a hand written struct rather
-// than a `libc::stat`. Crossing this line doesn't cost an
-// allocation, it costs a page mapping per task
+// Anything larger costs a page mapping per task
 const _: () = assert!(mem::size_of::<Result<Vec<u8>, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<usize, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<Metadata, RuntimeError>>() <= INLINE_PAYLOAD);
@@ -48,6 +41,10 @@ enum Extent {
 #[derive(Debug, Clone, Copy)]
 enum WriteMode {
     /// Over whatever was there, from the start
+    ///
+    /// #### Note
+    /// Truncates at the open, before the first place a cancel
+    /// can land
     Truncate,
 
     /// On the end of whatever was there
@@ -75,18 +72,9 @@ enum PathOp {
 
 /// An open descriptor that closes itself
 ///
-/// ## Behaviour
-/// Every file task has several ways out — an error part way
-/// through, a cancel between chunks, or a panic unwinding
-/// through `catch_unwind` — and a descriptor leaked from a
-/// sleep thread is leaked for the life of the process
-///
 /// #### Note
-/// Closing in `Drop` rather than by hand is also what keeps
-/// errno intact. `check` reads the errno the last call set, so
-/// a `close` between a failed read and its check would report
-/// the close's success instead of the read's failure. A guard
-/// drops after the error value has already been built
+/// Closing in `Drop` also keeps errno intact, since the guard
+/// drops after the error value has been built
 struct Fd(libc::c_int);
 
 impl Drop for Fd {
@@ -96,9 +84,6 @@ impl Drop for Fd {
 }
 
 /// An open directory stream that closes itself
-///
-/// The same bargain as `Fd`, for the one operation that gets a
-/// `DIR *` rather than a descriptor
 struct Dir(*mut libc::DIR);
 
 impl Drop for Dir {
@@ -109,21 +94,15 @@ impl Drop for Dir {
 
 /// Reads a file, or a range of one
 ///
-/// ## Behaviour
-/// Opens, reads to the end or to the length asked for, and
-/// closes, all inside one run. Reading is done in
-/// `FILE_CHUNK` pieces with a cancellation check between them
-///
 /// ## Returns
 /// The bytes read. A range that starts past the end of the file
-/// comes back empty rather than as an error, the same as the
-/// syscall underneath it
+/// comes back empty rather than as an error
 #[derive(Debug, Clone)]
 pub struct ReadTask {
     /// The file to read, already in the form the kernel takes
     ///
-    /// `None` when the path had a zero byte in it and could not
-    /// be converted, which is reported when the task runs
+    /// `None` when the path had a zero byte in it, which is
+    /// reported when the task runs
     path: Option<CString>,
 
     /// How much of it to read
@@ -131,12 +110,6 @@ pub struct ReadTask {
 }
 
 /// Writes bytes to a file
-///
-/// ## Behaviour
-/// Creates the file if it isn't there, writes in `FILE_CHUNK`
-/// pieces with a cancellation check between them, and closes.
-/// A short write is looped rather than reported, so the count
-/// that comes back is the whole buffer or an error
 ///
 /// ## Returns
 /// The number of bytes written, which is the length of the
@@ -148,10 +121,7 @@ pub struct WriteTask {
 
     /// The bytes to put in it
     ///
-    /// #### Note
-    /// `Arc<[u8]>` rather than `Vec<u8>` because `.at_rate()`
-    /// clones the whole task once per run. A `Vec` would copy
-    /// the buffer every period to write the same bytes again
+    /// An `Arc` so `.at_rate()` doesn't copy the buffer every run
     data: Arc<[u8]>,
 
     /// Where they go
@@ -159,10 +129,6 @@ pub struct WriteTask {
 }
 
 /// Asks what a path is
-///
-/// ## Returns
-/// A [`Metadata`], which is the fields of a `stat` worth
-/// keeping rather than the `stat` itself
 #[derive(Debug, Clone)]
 pub struct MetadataTask {
     /// The path to ask about
@@ -186,16 +152,7 @@ pub struct ReadDirTask {
 
 /// One of the operations that is a single syscall and no output
 ///
-/// ## Behaviour
-/// Not cancellable. There is no loop to check in — the call is
-/// made and it either works or it doesn't
-///
-/// #### Note
-/// Spawning one of these costs more than the call it makes.
-/// They earn a place anyway, because on a network mount or a
-/// cold directory the call is not cheap at all, and because a
-/// caller pipelining file work wants all of it going the same
-/// way. `Runtime::block` is usually the better call
+/// Not cancellable once it has started
 #[derive(Debug, Clone)]
 pub struct PathTask {
     /// The path acted on
@@ -330,9 +287,8 @@ impl Task for ReadTask {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
         let fd = open_at(path, libc::O_RDONLY, 0)?;
 
-        // A directory opens for reading and then refuses every
-        // read with a code that says nothing about why. Asking
-        // first turns that into an answer
+        // A directory opens for reading and then refuses every read
+        // with a code that says nothing about why
         if directory(&fd)? {
             return Err(RuntimeError::CheckError(Some(libc::EISDIR)));
         }
@@ -343,8 +299,7 @@ impl Task for ReadTask {
         }
     }
 
-    /// Held for its whole duration, so it goes to a thread that
-    /// exists to be held
+    /// Held for its whole duration, so it goes to a sleep thread
     fn blocking(&self) -> bool {
         true
     }
@@ -356,9 +311,7 @@ impl Task for WriteTask {
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
 
-        // `O_APPEND` moves every write to the end, which is the
-        // one thing a positional write must not do, so the two
-        // are never set together
+        // `O_APPEND` would move a positional write to the end
         let flags = match self.mode {
             WriteMode::Truncate => libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
             WriteMode::Append => libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
@@ -387,12 +340,10 @@ impl Task for MetadataTask {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
         let mut raw: libc::stat = unsafe { mem::zeroed() };
 
-        let asked = match self.follow {
+        retried(|| match self.follow {
             true => unsafe { libc::stat(path.as_ptr(), &mut raw) },
             false => unsafe { libc::lstat(path.as_ptr(), &mut raw) },
-        };
-
-        asked.check()?;
+        })?;
 
         Ok(Metadata::from_stat(&raw))
     }
@@ -410,9 +361,8 @@ impl Task for ReadDirTask {
 
         let raw = unsafe { libc::opendir(path.as_ptr()) };
 
-        // `opendir` reports failure with a null rather than a
-        // negative, so there is no status code for `check` to
-        // look at and the errno has to be read directly
+        // `opendir` reports failure with a null, so the errno has to
+        // be read directly
         if raw.is_null() {
             return Err(RuntimeError::CheckError(
                 Error::last_os_error().raw_os_error(),
@@ -428,14 +378,24 @@ impl Task for ReadDirTask {
                 return Err(RuntimeError::Cancelled);
             }
 
+            // `readdir` reports the end and a failure with the same null,
+            // so errno is cleared first and read back on a null
+            unsafe { *libc::__error() = 0 };
+
             let entry = unsafe { libc::readdir(dir.0) };
 
             if entry.is_null() {
+                let failed = Error::last_os_error().raw_os_error().unwrap_or(0);
+
+                if failed != 0 {
+                    return Err(RuntimeError::CheckError(Some(failed)));
+                }
+
                 break;
             }
 
-            // `d_namlen` rather than looking for the zero, so a
-            // name that fills the array is still measured right
+            // `d_namlen` rather than looking for the zero, so a name that
+            // fills the array is still measured right
             let name = unsafe {
                 slice::from_raw_parts(
                     (*entry).d_name.as_ptr().cast::<u8>(),
@@ -464,18 +424,23 @@ impl Task for PathTask {
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
 
-        let done = match self.op {
+        // Resolved first, so a rename with nowhere to go answers
+        // `BadPath`
+        let to = match self.op {
+            PathOp::Rename => Some(self.other.as_ref().ok_or(RuntimeError::BadPath)?),
+            _ => None,
+        };
+
+        retried(|| match self.op {
             PathOp::Remove => unsafe { libc::unlink(path.as_ptr()) },
             PathOp::RemoveDir => unsafe { libc::rmdir(path.as_ptr()) },
             PathOp::CreateDir => unsafe { libc::mkdir(path.as_ptr(), 0o777) },
-            PathOp::Rename => {
-                let to = self.other.as_ref().ok_or(RuntimeError::BadPath)?;
 
-                unsafe { libc::rename(path.as_ptr(), to.as_ptr()) }
-            }
-        };
-
-        done.check()?;
+            PathOp::Rename => match to {
+                Some(to) => unsafe { libc::rename(path.as_ptr(), to.as_ptr()) },
+                None => -1,
+            },
+        })?;
 
         Ok(())
     }
@@ -488,30 +453,26 @@ impl Task for PathTask {
 /// Turns a path into the form the kernel takes
 ///
 /// ## Returns
-/// `None` when the path has a zero byte in it. The kernel reads
-/// a path as bytes up to the first zero, so a path containing
-/// one has no faithful form to be passed in — and passing the
-/// part before it would act on a different file
-///
-/// #### Note
-/// Done once, here, rather than on every run. A repeat puts the
-/// same task back in the same slot, and converting the same
-/// path again every time it comes round is work with a known
-/// answer
+/// `None` when the path has a zero byte in it, since passing
+/// the part before it would act on a different file
 fn as_c_path(path: impl AsRef<Path>) -> Option<CString> {
     CString::new(path.as_ref().as_os_str().as_bytes()).ok()
 }
 
 /// Opens a path, always closing on exec
 ///
-/// `mode` is only looked at when the flags create the file, but
-/// it is passed either way — `open` is variadic, and leaving an
-/// argument off a variadic call is worse than passing one that
-/// is ignored
+/// `mode` is only used when the flags create the file, but
+/// `open` is variadic so it is always passed
 fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, RuntimeError> {
     loop {
-        // `O_CLOEXEC` on every open, or the descriptor is
-        // inherited by anything the user forks
+        // Nothing registers on a queue, so this and the chunk checks
+        // are the only places a cancel can land. A `FIFO` with no
+        // writer never reaches a chunk
+        if executor::cancelled() {
+            return Err(RuntimeError::Cancelled);
+        }
+
+        // Or the descriptor is inherited by anything the user forks
         let raw = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC, mode) }.check();
 
         match raw {
@@ -522,32 +483,40 @@ fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, 
     }
 }
 
+/// Runs a syscall until it says something other than `EINTR`
+fn retried(mut call: impl FnMut() -> libc::c_int) -> Result<libc::c_int, RuntimeError> {
+    loop {
+        match call().check() {
+            Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
+            other => return other,
+        }
+    }
+}
+
 /// Whether the open descriptor is a directory
 fn directory(fd: &Fd) -> Result<bool, RuntimeError> {
     let mut raw: libc::stat = unsafe { mem::zeroed() };
 
-    unsafe { libc::fstat(fd.0, &mut raw) }.check()?;
+    retried(|| unsafe { libc::fstat(fd.0, &mut raw) })?;
 
     Ok(raw.st_mode & libc::S_IFMT == libc::S_IFDIR)
 }
 
+/// The largest read that still gets its slack handed back
+const SHRINK_CEILING: usize = 64 * FILE_CHUNK;
+
 /// Reads from wherever the descriptor is to the end of the file
 ///
-/// ## Behaviour
-/// One `FILE_CHUNK` at a time, with a cancellation check
-/// between chunks, growing the buffer as it goes
-///
 /// #### Note
-/// The size a `stat` reports is used to reserve and for nothing
-/// else. It is a hint that was true when it was read — files
-/// grow and shrink underneath a reader, and some nodes report
-/// nothing while having plenty. Only a read returning zero ends
-/// this
+/// The size a `stat` reports is only used to reserve. Only a
+/// read returning zero ends this
 fn read_whole(fd: &Fd) -> Result<Vec<u8>, RuntimeError> {
     let mut found = Vec::new();
 
+    // `reserve` aborts on a size the filesystem lied about, which
+    // `catch_unwind` can't contain
     if let Ok(size) = hint(fd) {
-        found.reserve(size);
+        let _ = found.try_reserve(size);
     }
 
     loop {
@@ -573,32 +542,23 @@ fn read_whole(fd: &Fd) -> Result<Vec<u8>, RuntimeError> {
         };
 
         if got == 0 {
-            // The read that reports the end still had to have
-            // somewhere to land, so even a file whose length
-            // was guessed exactly right finishes holding a
-            // chunk of slack. Given back rather than carried,
-            // because this output lives as long as its handle
-            // does and a reader asked for a file, not for room
-            // for one and a half of them
-            if found.capacity() - found.len() >= FILE_CHUNK {
+            // The read that finds the end leaves a chunk of slack, handed
+            // back only while the copy behind a shrink is cheap
+            let spare = found.capacity() - found.len();
+
+            if spare >= FILE_CHUNK && found.len() <= SHRINK_CEILING {
                 found.shrink_to_fit();
             }
 
             return Ok(found);
         }
 
-        // Sound because the kernel just wrote `got` bytes into
-        // the spare capacity that `reserve` guaranteed
+        // The kernel just wrote `got` bytes into the reserved capacity
         unsafe { found.set_len(found.len() + got) };
     }
 }
 
 /// Reads `len` bytes from `offset`, or fewer at the end
-///
-/// ## Behaviour
-/// `pread`, so the descriptor's own offset is never touched and
-/// two runs of the same series can read the same file at once
-/// without moving each other along
 ///
 /// ## Returns
 /// Up to `len` bytes. Short means the file ended, which is an
@@ -632,8 +592,7 @@ fn read_range(fd: &Fd, offset: u64, len: usize) -> Result<Vec<u8>, RuntimeError>
             Err(error) => return Err(error),
         };
 
-        // The end of the file, which is how a range that runs
-        // off the end comes back short rather than failing
+        // The end of the file
         if got == 0 {
             break;
         }
@@ -646,13 +605,8 @@ fn read_range(fd: &Fd, offset: u64, len: usize) -> Result<Vec<u8>, RuntimeError>
 
 /// Writes the whole buffer, however many calls that takes
 ///
-/// ## Behaviour
-/// A write is allowed to take less than it was offered, so the
-/// count is looped until the buffer is spent. Treating one
-/// short write as done is how a file ends up quietly truncated
-///
 /// `at` is `Some` for a positional write and `None` for one
-/// that follows the descriptor, which is what makes append work
+/// that follows the descriptor
 fn write_all(fd: &Fd, data: &[u8], at: Option<u64>) -> Result<usize, RuntimeError> {
     let mut done = 0;
 
@@ -679,10 +633,8 @@ fn write_all(fd: &Fd, data: &[u8], at: Option<u64>) -> Result<usize, RuntimeErro
             Err(error) => return Err(error),
         };
 
-        // Nothing written and nothing said about why. It can't
-        // happen for a regular file and a non empty buffer, and
-        // carrying on would be a loop that never ends, so it is
-        // read as the one thing that would explain it
+        // Can't happen for a regular file and a non empty buffer, and
+        // carrying on would never end
         if put == 0 {
             return Err(RuntimeError::CheckError(Some(libc::ENOSPC)));
         }
@@ -697,21 +649,17 @@ fn write_all(fd: &Fd, data: &[u8], at: Option<u64>) -> Result<usize, RuntimeErro
 /// takes
 ///
 /// ## Returns
-/// `EINVAL`, which is what the syscall itself answers a
-/// negative offset with. Anything past `i64::MAX` would arrive
-/// as exactly that
+/// `EINVAL` for anything past `i64::MAX`, the same as the
+/// syscall answers a negative offset with
 fn seek_to(offset: u64) -> Result<libc::off_t, RuntimeError> {
     libc::off_t::try_from(offset).map_err(|_| RuntimeError::CheckError(Some(libc::EINVAL)))
 }
 
 /// How much to reserve before the first read
-///
-/// Wrong as often as it is right, and only ever used to size an
-/// allocation, never to decide when to stop
 fn hint(fd: &Fd) -> Result<usize, RuntimeError> {
     let mut raw: libc::stat = unsafe { mem::zeroed() };
 
-    unsafe { libc::fstat(fd.0, &mut raw) }.check()?;
+    retried(|| unsafe { libc::fstat(fd.0, &mut raw) })?;
 
     Ok(raw.st_size.max(0) as usize)
 }
@@ -721,19 +669,7 @@ fn hint(fd: &Fd) -> Result<usize, RuntimeError> {
 mod tests {
     use super::*;
 
-    /// Every file task holds its thread for as long as its
-    /// work takes, and has to say so
-    ///
-    /// Asserted here rather than by watching the pool. What the
-    /// `Executor` does with the answer is already covered by
-    /// the blocking sleeps in the suite, and the file specific
-    /// half is only ever this one bool — which a read of a warm
-    /// file finishes far too quickly for any sampling loop to
-    /// catch it in the act
-    ///
-    /// A task that forgot would sit on a worker for the length
-    /// of a syscall, which is exactly what the sleep threads
-    /// exist to prevent
+    /// Every file task says it holds its thread
     #[test]
     fn every_file_task_says_it_blocks() {
         assert!(ReadTask::whole("a").blocking(), "read");
@@ -750,12 +686,7 @@ mod tests {
         assert!(PathTask::rename("a", "b").blocking(), "rename");
     }
 
-    /// A path the kernel can't be given doesn't convert
-    ///
-    /// The failure that matters isn't the refusal, it is what
-    /// would happen without one: the kernel reads a path up to
-    /// its first zero, so passing this through would quietly
-    /// act on a different file
+    /// A path with a zero byte in it doesn't convert
     #[test]
     fn a_path_with_a_zero_byte_does_not_convert() {
         assert!(as_c_path("a\0b").is_none(), "a zero byte must not convert");

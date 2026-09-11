@@ -1,18 +1,6 @@
 //! # Mapping
-//! Anonymous memory taken straight from the kernel
-//!
-//! Task slots and table blocks both need an address that
-//! never moves for as long as they live. A `Vec` can't
-//! promise that, it reallocates the moment it grows, and
-//! the whole design rests on a listener being able to hold
-//! an address and still find its data there later
-//!
-//! The mappings are `MAP_PRIVATE` because every thread in
-//! a process already shares one address space, so a private
-//! anonymous mapping is the same address for all of them.
-//! `MAP_SHARED` would only start to matter across a `fork`,
-//! and it would have to pair with
-//! `OS_SYNC_WAIT_ON_ADDRESS_SHARED` on every wait
+//! Anonymous memory straight from the kernel, at addresses
+//! that never move
 
 use std::{
     ptr,
@@ -20,9 +8,6 @@ use std::{
 };
 
 /// The page size, or 0 before it has been asked for
-///
-/// Cached because every allocation rounds against it and
-/// `sysconf` is a call this crate can just not make twice
 static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 /// The size of a page, asking the kernel on first use
@@ -40,11 +25,7 @@ pub(crate) fn page_size() -> usize {
     size
 }
 
-/// Rounds a length up to the next whole page
-///
-/// `mmap` hands out whole pages whatever is asked for, so
-/// the rounded length is the real length and the one that
-/// has to come back to `free`
+/// Rounds a length up to a whole number of pages
 #[inline(always)]
 pub(crate) fn round_up(len: usize) -> usize {
     let page = page_size();
@@ -56,10 +37,6 @@ pub(crate) fn round_up(len: usize) -> usize {
 ///
 /// ## Returns
 /// The base address, or null if the kernel refuses
-///
-/// #### Note
-/// The pages come back zeroed, which every type stored in
-/// them relies on being a valid empty state
 pub(crate) fn alloc(len: usize) -> *mut u8 {
     let len = round_up(len);
 
@@ -98,23 +75,13 @@ pub(crate) fn free(base: *mut u8, len: usize) {
 /// Whether the kernel took them
 ///
 /// ## Behaviour
-/// The address stays valid and stays mapped, so anything still
-/// holding a pointer into it reads zeros rather than falling
-/// over. That is the whole reason this is used instead of
-/// `free`: a task slot's address is what listeners block on,
-/// and an address that can be taken away isn't one they could
-/// block on safely
+/// The range stays mapped, and reads as zeros once the kernel
+/// has reclaimed it
 ///
 /// ## Safety
-/// Every byte in the range has to be genuinely unused. The
-/// kernel may zero the pages at any point after this, so a live
-/// value anywhere inside is a value that quietly disappears
-///
-/// #### Note
-/// `MADV_FREE` is lazy. A write to the range before the kernel
-/// gets round to it cancels the reclaim for that page, which is
-/// what makes a slot being allocated again safe rather than a
-/// race
+/// Nothing in the range may be in use. The kernel can zero it
+/// at any point after this, though a write before it does
+/// cancels the reclaim for that page
 pub(crate) unsafe fn release(base: *mut u8, len: usize) -> bool {
     if base.is_null() || len == 0 {
         return false;

@@ -1,79 +1,41 @@
 //! # Sleep
-//! The `Sleep` future waits for a set time
-//! then continues
+//! Tasks that wait for a set time
 
 use crate::futures::sleep_task::SleepTask;
 use std::time::Duration;
 
-/// The base struct
+/// Builds sleep tasks
 ///
-/// It doesn't implement `Task`
-/// so it can't be passed into a
-/// runtime function directly
-/// without calling a method on it
-/// that returns something that does
+/// Doesn't implement `Task` itself. `Sleep::sleep` returns one
 pub struct Sleep;
 
 impl Sleep {
-    /// Creates a new task that will be
-    /// executed when passed into a runtime
-    ///
-    /// ## Behaviour
-    /// Checks the length of the `Duration`
-    /// and if it's too short to warrant
-    /// the overhead of a syscall, starts
-    /// a spinlock until the duration is over
-    ///
-    /// When `p_mode` is `false` it will always
-    /// create a new `kevent` even if this means
-    /// waiting longer than the duration specifies
-    ///
-    /// The crossover for this is
-    /// approximately 500 microseconds
+    /// Creates a task that sleeps for `time`
     ///
     /// ## `p_mode`
-    /// Trades cpu time for precision
+    /// Trades CPU time for precision
     ///
-    /// On, the last stretch of the wait is spun
-    /// rather than slept, which burns a core for
-    /// up to the crossover duration on every call
+    /// On, a sleep shorter than about 500 microseconds is spun
+    /// entirely, and a longer one spins its last 500 microseconds.
+    /// Either way a core is busy for up to 500 microseconds
     ///
-    /// Off, every sleep is handed to the kernel
-    /// no matter how short it is, and whatever
-    /// the kernel returns is the answer. No core
-    /// is burnt
-    ///
-    /// #### Note
-    /// A spawned sleep with `p_mode` off, or one
-    /// long enough to pass the crossover either
-    /// way, is handed to a sleep thread rather
-    /// than run on a worker, so it never holds a
-    /// worker up. A spinning sleep stays where it
-    /// is, because it never gives the thread up
+    /// Off, every sleep goes to the kernel however short it is,
+    /// and whatever the kernel returns is the answer. No core is
+    /// burnt
     ///
     /// ## Accuracy
-    /// Measured on apple silicon across
-    /// targets from 400 nanoseconds up to
-    /// 30 seconds
+    /// Measured on Apple silicon, for targets from 400 nanoseconds
+    /// to 30 seconds
     ///
-    /// #### With p_mode
-    /// Around 200 nanoseconds over, at every
-    /// duration in that range
+    /// With `p_mode`, around 200 nanoseconds over at every
+    /// duration — about 5200x more accurate than `thread::sleep()`
     ///
-    /// Measured around 5200x more accurate
-    /// than `thread::sleep()`
-    ///
-    /// #### Without p_mode
-    /// Around 4 microseconds over on short
-    /// waits, and around 60 once the wait is
-    /// a few milliseconds or more
-    ///
-    /// Measured around 37x more accurate
-    /// than `thread::sleep()`
+    /// Without, around 4 microseconds over on short waits and
+    /// around 60 on waits of a few milliseconds or more — about
+    /// 37x more accurate than `thread::sleep()`
     ///
     /// ## Returns
-    /// The total time the function ran for
-    /// from start to finish
+    /// How long it actually took, from start to finish
     pub fn sleep(time: Duration, p_mode: bool) -> SleepTask {
         SleepTask::new(time, p_mode)
     }

@@ -1,26 +1,9 @@
 //! # Task Table
 //! Every live task in the process, addressed by id
 //!
-//! The table is a set of blocks, each twice the size of the
-//! one before it. A block is mapped the first time an id
-//! lands in it and is never given back, so a slot's address
-//! is fixed for the life of the process and finding one is
-//! arithmetic rather than a walk
-//!
-//! The blocks hold the slots themselves rather than pointers
-//! to them, so a task's memory is found by multiplying its id
-//! out rather than by chasing anything. That also means an id
-//! and the memory behind it are recycled by the same act, and
-//! there is one free list rather than two
-//!
-//! Ids are handed out from a free list before the table is
-//! allowed to grow, so the table settles at the peak number
-//! of tasks alive at once rather than the number ever spawned
-//!
-//! There isn't a lock anywhere in here. Growing the table and
-//! taking an id are both a single compare exchange, and both
-//! are safe to lose, so a thread that loses a race simply
-//! looks again
+//! Blocks double in size and are never unmapped, so a slot's
+//! address never moves. Ids are reused from a free list before
+//! the table is allowed to grow. There are no locks
 
 use crate::{
     RuntimeError,
@@ -38,52 +21,39 @@ use std::{
 /// Every task in the process, by id
 pub(crate) struct TaskTable {
     /// The blocks, mapped as they are first needed
-    ///
-    /// Held as bytes because slots sit `SLOT_SIZE` apart
-    /// rather than end to end, so the arithmetic is done in
-    /// bytes and cast at the last moment
     blocks: [AtomicPtr<u8>; TABLE_BLOCKS],
 
-    /// The highest id ever handed out
+    /// One past the highest id the table currently spans
     ///
-    /// Only ever climbs, and only when the free list has
-    /// nothing left to reuse
+    /// A trim lowers it, so on its own it isn't the peak
     next_id: AtomicUsize,
 
-    /// Slots handed out and not yet given back
+    /// The highest `next_id` had been when a trim last lowered it
     ///
-    /// Counted rather than worked out, because trimming needs
-    /// to know how much of the table is genuinely in use and
-    /// walking every slot to find out would cost more than the
-    /// counting does
+    /// `next_id` only climbs between trims, so the larger of the
+    /// two is the exact peak, with no work on the spawn path
+    peak: AtomicUsize,
+
+    /// Slots handed out and not yet given back
     live: AtomicUsize,
 
-    /// Whether a trim is already under way
-    ///
-    /// One at a time, because two would fight over the same
-    /// free list: the first takes it whole to walk it, and the
-    /// second finds nothing there and concludes the table is
-    /// too busy to touch. Waiting costs nothing, since a trim
-    /// is a tidy up and nothing is waiting on the answer
+    /// Whether a trim is already under way, since two would fight
+    /// over the free list
     trimming: AtomicBool,
 
     /// The head of the free list
     ///
-    /// Packed as `tag << TAG_SHIFT | index + 1`, with a
-    /// whole word of zero meaning the list is empty. See
-    /// `alloc` for what the tag is for
+    /// Packed as `tag << TAG_SHIFT | index + 1`, zero meaning empty
     free: AtomicUsize,
 }
 
 impl TaskTable {
     /// An empty table
-    ///
-    /// A `const fn` so the table can be a plain static with
-    /// no lazy initialisation guarding every single access
     pub(crate) const fn new() -> Self {
         Self {
             blocks: [const { AtomicPtr::new(ptr::null_mut()) }; TABLE_BLOCKS],
             next_id: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
             trimming: AtomicBool::new(false),
             free: AtomicUsize::new(0),
@@ -92,10 +62,7 @@ impl TaskTable {
 
     /// The slot for an id, if its block has been mapped
     ///
-    /// #### Note
-    /// Says nothing about whether there is a task in it. A
-    /// slot that has never been used reads as `Free`, which
-    /// is what the `Executor` filters on
+    /// Says nothing about whether a task is in it
     #[inline(always)]
     pub(crate) fn slot(&self, id: usize) -> Option<&'static TaskData> {
         if id >= MAX_TASK_ID {
@@ -110,26 +77,20 @@ impl TaskTable {
             return None;
         }
 
-        // Blocks are never unmapped, so a slot borrowed out
-        // of one is good for as long as the process is
+        // Blocks are never unmapped, so this is good for the life of
+        // the process
         Some(unsafe { &*base.add(offset * SLOT_SIZE).cast::<TaskData>() })
     }
 
     /// Takes an id, reusing a retired one if there is one
     ///
     /// ## Returns
-    /// `None` only if the kernel refuses a block, or if the
-    /// table has somehow run past `TABLE_BLOCKS`
+    /// `None` only if the kernel refuses a block
     ///
     /// #### Note
-    /// The tag in the head is the whole reason this is safe.
-    /// Without it, a thread that reads the head and the id
-    /// behind it, then stalls long enough for that id to be
-    /// popped, used, freed and pushed again, would find the
-    /// head unchanged and swing it to an id that is now live.
-    /// Bumping the tag on every pop means the head it left
-    /// behind can never be mistaken for the head it comes
-    /// back to
+    /// The tag in the head is bumped on every pop, so a thread that
+    /// stalled while this id was popped, used and pushed again
+    /// can't swing the head onto a live id
     pub(crate) fn alloc(&self) -> Option<usize> {
         loop {
             let head = self.free.load(Ordering::Acquire);
@@ -142,9 +103,8 @@ impl TaskTable {
             let id = index - 1;
             let slot = self.slot(id)?;
 
-            // Safe to read because a retired slot is only
-            // written by the thread that retired it, which
-            // finished before it published the head above
+            // Safe to read: only the thread that retired this slot wrote
+            // it, and it did so before publishing the head
             let next = slot.next();
 
             let tag = (head >> TAG_SHIFT).wrapping_add(1);
@@ -164,9 +124,8 @@ impl TaskTable {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.block_for(id)?;
 
-        // Counted here as well as on the reuse path above. Both
-        // hand out an id and both are given back through `free`,
-        // so a count kept on only one of them runs away
+        // Counted on both paths, since both are given back through
+        // `free`
         self.live.fetch_add(1, Ordering::Relaxed);
 
         Some(id)
@@ -174,15 +133,8 @@ impl TaskTable {
 
     /// Hands an id back to be used again
     ///
-    /// Only the thread that freed the task's memory may call
-    /// this, and only once it has, since the id is live again
-    /// the moment it lands on the list
-    ///
-    /// #### Note
-    /// Pushing doesn't need to bump the tag. The slot going
-    /// on the list can't be on it already, so no other thread
-    /// can be reading its link, and the compare exchange is
-    /// enough on its own to prove the head hasn't moved
+    /// Only once the task's memory has been freed, since the id is
+    /// live again the moment it lands on the list
     pub(crate) fn free(&self, id: usize) {
         let Some(slot) = self.slot(id) else {
             return;
@@ -193,10 +145,6 @@ impl TaskTable {
     }
 
     /// Puts an id on the free list without touching the count
-    ///
-    /// Kept apart from `free` so a trim can put back what it
-    /// took without the ids being counted as having become free
-    /// twice over
     fn push_free(&self, id: usize, slot: &TaskData) {
         let index = id + 1;
 
@@ -223,51 +171,46 @@ impl TaskTable {
         self.live.load(Ordering::Acquire)
     }
 
-    /// The highest id the table has ever handed out
+    /// One past the highest id the table currently spans
     ///
-    /// The `Executor` walks this far when it is recovering,
-    /// which is the only time anything needs to look at every
-    /// task at once
+    /// Walking up to here sees every live task, since a trim only
+    /// lowers it past free ids
     #[inline(always)]
     pub(crate) fn high_water(&self) -> usize {
         self.next_id.load(Ordering::Acquire)
     }
 
+    /// The most slots the table has ever spanned at once
+    ///
+    /// #### Note
+    /// `next_id` is read before `peak`. A trim writes `peak` before
+    /// lowering `next_id`, so a read that sees the lowered value
+    /// also sees the record
+    #[inline(always)]
+    pub(crate) fn peak(&self) -> usize {
+        let now = self.next_id.load(Ordering::Acquire);
+
+        now.max(self.peak.load(Ordering::Acquire))
+    }
+
     /// Gives back the pages behind the top of the table
     ///
     /// ## Returns
-    /// Bytes handed back to the kernel, or `StillInUse` when
-    /// the table is too close to what is live in it for any of
-    /// it to be worth taking
+    /// Bytes handed back to the kernel, or `StillInUse` when the
+    /// table is too close to what is live in it
     ///
     /// ## Behaviour
-    /// Pages are released with `madvise` rather than unmapped.
-    /// A slot's address is what its listeners block on, so an
-    /// address that could be taken away isn't one anything
-    /// could safely hold. The mapping stays, the physical pages
-    /// go, and a reclaimed slot reads as zeros, which is
-    /// already what an empty slot reads as
-    ///
-    /// Only whole pages, and only ones where every slot in them
-    /// was on the free list. A page holds many slots and one
-    /// live task in it is enough to keep the lot
+    /// Pages are released with `madvise`, not unmapped, so every
+    /// slot address stays valid. Only whole pages whose every slot
+    /// was free go back
     ///
     /// #### Note
-    /// The order here is the part that has to be right. The
-    /// free list is emptied first, so nothing can be allocated
-    /// out of the range while it is being worked on. The pages
-    /// are released *before* the high water mark comes down,
-    /// because lowering it first would let a fresh task be
-    /// allocated into the range and written, and then have its
-    /// page released out from under it. Doing it the other way
-    /// round means any task allocated afterwards writes to the
-    /// page and cancels the reclaim, which is exactly what
-    /// `MADV_FREE` promises
+    /// The pages go back before the high water mark comes down.
+    /// The other order would let a new task be written into a page
+    /// as it was being released
     pub(crate) fn trim(&self) -> Result<usize, RuntimeError> {
-        // Held for the whole walk, so a second caller turns
-        // straight round rather than emptying the list out from
-        // under the first one and then reporting that the table
-        // is busy — which it would be, with itself
+        // Held for the whole walk, so a second trim turns straight
+        // round
         if self.trimming.swap(true, Ordering::AcqRel) {
             return Err(RuntimeError::StillInUse);
         }
@@ -298,10 +241,8 @@ impl TaskTable {
             return Err(RuntimeError::StillInUse);
         }
 
-        // A slot is only safe to give back if it was on the
-        // free list, which is now entirely in hand. Anything
-        // handed out and not yet given back isn't in here, so
-        // its page is never picked
+        // Only slots taken off the free list are candidates, so a live
+        // slot's page is never picked
         let mut held = vec![0u64; current.div_ceil(u64::BITS as usize)];
 
         for id in taken.iter() {
@@ -329,10 +270,13 @@ impl TaskTable {
 
         let released = self.release_pages(keep, current);
 
-        // Nothing has been handed out since the snapshot, so
-        // nothing is living in the range that was just given
-        // back. A failure here means somebody grew the table
-        // while this was working, and everything goes back
+        // Recorded before `next_id` comes down, so a reader never sees
+        // the lowered value without the peak. Harmless if the exchange
+        // below fails
+        self.peak.fetch_max(current, Ordering::Release);
+
+        // Fails if somebody grew the table meanwhile, and then
+        // everything goes back
         if self
             .next_id
             .compare_exchange(current, keep, Ordering::AcqRel, Ordering::Acquire)
@@ -342,10 +286,8 @@ impl TaskTable {
             return Err(RuntimeError::StillInUse);
         }
 
-        // Everything below the new mark goes back on the list.
-        // Everything above it is reached by the high water mark
-        // climbing again, which costs no write and so leaves the
-        // pages given back
+        // Ids above the new mark come back as `next_id` climbs again,
+        // which leaves their pages given back
         self.restore(&taken, keep);
 
         Ok(released)
@@ -366,25 +308,12 @@ impl TaskTable {
         }
     }
 
-    /// Takes the free list, keeping only what is worth keeping
+    /// Takes the free list, putting back straight away every id
+    /// below the floor
     ///
-    /// ## Behaviour
-    /// Anything below the floor can't be part of what gets
-    /// given back, so it goes straight back on the list as the
-    /// walk passes it rather than being held for the length of
-    /// it. That matters: while the list is empty every spawn
-    /// has to grow the table instead of reusing an id, so a
-    /// trim that held the lot would inflate the very thing it
-    /// is trying to shrink
-    ///
-    /// The window isn't gone, only made small. The list is
-    /// still empty between being taken and the first id going
-    /// back, and a spawn landing exactly there still grows the
-    /// table by one
-    ///
-    /// The tag is bumped rather than thrown away, so a thread
-    /// part way through a pop still fails its exchange against
-    /// the head this leaves behind
+    /// Keeps the window where spawns find no free id, and grow the
+    /// table instead, as short as it can. The tag is bumped so a
+    /// thread part way through a pop fails its exchange
     fn drain_free(&self, floor: usize) -> Vec<usize> {
         let mut cursor = loop {
             let head = self.free.load(Ordering::Acquire);
@@ -419,9 +348,7 @@ impl TaskTable {
                 break;
             };
 
-            // Read before anything writes to it, since putting
-            // this slot back overwrites the very link being
-            // followed
+            // Read first, since putting this slot back overwrites the link
             cursor = slot.next();
 
             if id < floor {
@@ -463,8 +390,7 @@ impl TaskTable {
                 continue;
             }
 
-            // Rounded inward, so a page only goes back when the
-            // whole of it is inside the range
+            // Rounded inward, so only whole pages go back
             let head = (start - first).div_ceil(per_page) * per_page;
             let tail = (end - first) / per_page * per_page;
 
@@ -503,9 +429,7 @@ impl TaskTable {
             return None;
         }
 
-        // The mapping comes back zeroed, and a zeroed slot is
-        // already a valid retired one, so there is nothing to
-        // write before it can be published
+        // A zeroed slot is already a valid retired one
         match self.blocks[block].compare_exchange(
             ptr::null_mut(),
             fresh,
@@ -514,8 +438,7 @@ impl TaskTable {
         ) {
             Ok(_) => Some(fresh),
             Err(won) => {
-                // Another thread mapped this block first, so
-                // this one goes back rather than leaking
+                // Another thread mapped it first
                 mapping::free(fresh, len);
                 Some(won)
             }
@@ -525,13 +448,9 @@ impl TaskTable {
 
 /// Splits an id into the block holding it and its place in it
 ///
-/// Block `b` holds `FIRST_BLOCK << b` slots, so shifting the
-/// id up past the first block turns the block number into the
-/// position of the id's highest set bit. That makes finding a
-/// slot a few instructions rather than a walk down a list, no
-/// matter how far the table has grown
-///
-/// Only valid below `MAX_TASK_ID`, which every caller checks
+/// Block `b` holds `FIRST_BLOCK << b` slots, so the block comes
+/// from the id's highest set bit. Only valid below
+/// `MAX_TASK_ID`
 #[inline(always)]
 fn position(id: usize) -> (usize, usize) {
     let shifted = id + FIRST_BLOCK;

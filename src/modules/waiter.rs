@@ -1,10 +1,6 @@
 //! # Waiter
-//! A parked thread and the flag that says whether the event
-//! it is waiting for has actually arrived
-//!
-//! Only used when a thread can't get a kqueue of its own to
-//! wait on. Everything else waits the cheaper way, in a
-//! `kevent` call the `Reactor` triggers
+//! A parked thread waiting for the `Reactor`, used when a
+//! thread couldn't get a kqueue of its own
 
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -13,22 +9,15 @@ use std::{
 
 /// A thread waiting for the `Reactor` to wake it
 ///
-/// Lives on the waiting thread's own stack rather than in a
-/// box. A waiter is blocked for as long as it is waiting, so
-/// its frame outlives every use the `Reactor` can make of a
-/// pointer to it, and nothing has to be allocated or handed
-/// over to be freed by whoever gets there last
+/// Lives on the waiting thread's stack. The `Reactor` only
+/// holds a pointer to it while the thread is waiting
 pub(crate) struct Waiter {
     /// The thread to unpark
     thread: Thread,
 
     /// Whether the event has arrived
     ///
-    /// `park` is allowed to come back without anyone having
-    /// unparked, so the flag is the only thing that separates
-    /// a real wake from a spurious one. Without it a thread
-    /// takes the first twitch for its event and carries on as
-    /// though the kernel had answered
+    /// Separates a real wake from `park` returning spuriously
     fired: AtomicBool,
 }
 
@@ -50,9 +39,8 @@ impl Waiter {
 
     /// Says the event arrived, and wakes the waiter
     ///
-    /// The flag is set first so that a thread coming out of
-    /// `park` always finds it, whether it was this unpark
-    /// that woke it or something else entirely
+    /// The flag is set before the unpark, so a waiter always
+    /// finds it
     pub(crate) fn wake(&self) {
         self.fired.store(true, Ordering::Release);
         self.thread.unpark();

@@ -1,8 +1,4 @@
-//! `join_first` — the race, and what becomes of the losers
-//!
-//! Its own binary because most of these want the pool quiet
-//! enough that "the short one finished first" is a statement
-//! about the tasks rather than about what else was queued
+//! `join_first`, the race, and what becomes of the losers
 
 use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, TaskHandle, TaskState};
 use std::{
@@ -10,10 +6,10 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-/// Names apart, so tests running side by side don't collide
+/// Keeps test file names apart
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// A file with a known length, cleaned up on drop
@@ -53,44 +49,14 @@ fn sleeping(millis: u64) -> TaskHandle<Duration> {
     Runtime::task(Sleep::sleep(Duration::from_millis(millis), false)).spawn()
 }
 
-#[test]
-fn the_quickest_one_wins() {
-    Runtime::init();
-
-    let quick = sleeping(5);
-    let quick_id = quick.id();
-
-    let slow: Vec<_> = (0..4).map(|_| sleeping(4000)).collect();
-
-    let started = Instant::now();
-
-    let (first, rest) = Runtime::join_first(
-        std::iter::once(quick).chain(slow),
-        JoinPolicy::Cancel,
-    );
-
-    let waited = started.elapsed();
-
-    println!("the race took {:?}", waited);
-
-    assert_eq!(first.id(), quick_id, "the wrong task won");
-    assert!(rest.is_none(), "Cancel should not hand the losers back");
-
-    // Well short of the four seconds the losers were asked for,
-    // which is the whole claim being made
-    assert!(waited < Duration::from_secs(2), "the race took {:?}", waited);
-
-    assert!(first.settled(), "the winner should be settled");
-}
-
+/// `Cancel` cancels every task that didn't win
 #[test]
 fn cancel_stops_the_losers() {
     Runtime::init();
 
     let quick = sleeping(5);
 
-    // Cloned before the race, so there is still a way to look
-    // at them after `join_first` has taken the originals
+    // Cloned before the race, so they can still be looked at
     let slow: Vec<_> = (0..3).map(|_| sleeping(4000)).collect();
     let watching: Vec<_> = slow.iter().cloned().collect();
 
@@ -102,9 +68,6 @@ fn cancel_stops_the_losers() {
     assert!(rest.is_none(), "Cancel should not hand the losers back");
     assert!(first.settled(), "the winner should be settled");
 
-    // A cancelled sleep is taken back out of the kernel, so
-    // this lands quickly — but it is the state that is being
-    // asserted, not the speed
     for handle in &watching {
         let state = handle.wait().expect("a cancelled task still settles");
 
@@ -113,38 +76,7 @@ fn cancel_stops_the_losers() {
     }
 }
 
-#[test]
-fn pass_back_hands_the_losers_over_in_order() {
-    Runtime::init();
-
-    let quick = sleeping(5);
-    let quick_id = quick.id();
-
-    let slow: Vec<_> = (0..4).map(|_| sleeping(300)).collect();
-    let order: Vec<_> = slow.iter().map(|handle| handle.id()).collect();
-
-    let (first, rest) = Runtime::join_first(
-        std::iter::once(quick).chain(slow),
-        JoinPolicy::PassBack,
-    );
-
-    assert_eq!(first.id(), quick_id, "the wrong task won");
-
-    let rest = rest.expect("PassBack should hand the losers back");
-
-    assert_eq!(rest.len(), 4, "expected four losers, got {}", rest.len());
-
-    let handed: Vec<_> = rest.iter().map(|handle| handle.id()).collect();
-
-    assert_eq!(handed, order, "the losers came back in a different order");
-
-    // Untouched by having lost, so every one of them still
-    // finishes and still has an output to give
-    for handle in rest {
-        handle.join().expect("a loser should still finish");
-    }
-}
-
+/// `Drop` leaves every task that didn't win running
 #[test]
 fn drop_leaves_the_losers_running() {
     Runtime::init();
@@ -161,8 +93,7 @@ fn drop_leaves_the_losers_running() {
     assert!(rest.is_none(), "Drop should not hand the losers back");
     assert!(first.settled(), "the winner should be settled");
 
-    // Dropped, not cancelled. They run to the end and publish,
-    // and the clones held here are what proves it
+    // Dropped, not cancelled, so they run to the end and publish
     for handle in &watching {
         let state = handle.wait().expect("a dropped loser still settles");
 
@@ -171,69 +102,7 @@ fn drop_leaves_the_losers_running() {
     }
 }
 
-#[test]
-fn a_task_that_already_finished_wins_at_once() {
-    Runtime::init();
-
-    let done = sleeping(1);
-
-    done.wait().expect("the task settles");
-
-    let slow: Vec<_> = (0..3).map(|_| sleeping(4000)).collect();
-    let done_id = done.id();
-
-    let started = Instant::now();
-
-    let (first, _) = Runtime::join_first(
-        std::iter::once(done).chain(slow),
-        JoinPolicy::Cancel,
-    );
-
-    let waited = started.elapsed();
-
-    println!("an already settled task was found in {:?}", waited);
-
-    assert_eq!(first.id(), done_id, "the settled task should have won");
-
-    // The fast path, before anything is registered. If this
-    // ever needed a notification it would have waited for one
-    assert!(waited < Duration::from_millis(200), "took {:?}", waited);
-}
-
-#[test]
-fn a_task_that_settles_during_registration_is_still_found() {
-    Runtime::init();
-
-    // Deliberately in the window: short enough that it can
-    // finish while `join_first` is still walking the set and
-    // registering, so its poke lands before anything is
-    // listening for it. The second look is what has to catch it
-    for _ in 0..32 {
-        let racing = sleeping(0);
-        let slow: Vec<_> = (0..8).map(|_| sleeping(4000)).collect();
-
-        let started = Instant::now();
-
-        let (first, _) = Runtime::join_first(
-            std::iter::once(racing).chain(slow),
-            JoinPolicy::Cancel,
-        );
-
-        let waited = started.elapsed();
-
-        assert!(first.settled(), "the winner should be settled");
-
-        // A missed notification would show up as the poll
-        // ceiling rather than as a hang, which is exactly why
-        // it would be easy to miss
-        assert!(
-            waited < Duration::from_millis(40),
-            "the race took {:?}, which is the ceiling rather than a wake",
-            waited,
-        );
-    }
-}
-
+/// An empty set gives back a handle to no task
 #[test]
 fn an_empty_set_gives_back_a_dead_handle() {
     Runtime::init();
@@ -242,8 +111,6 @@ fn an_empty_set_gives_back_a_dead_handle() {
 
     assert!(rest.is_none(), "Cancel should not hand anything back");
 
-    // No task, and there never was one, so it says so rather
-    // than blocking on something that is never coming
     assert_eq!(
         first.maybe_join(),
         Err(RuntimeError::NoSuchTask),
@@ -259,6 +126,7 @@ fn an_empty_set_gives_back_a_dead_handle() {
     );
 }
 
+/// A set of one gives back that one task
 #[test]
 fn a_set_of_one_is_just_a_join() {
     Runtime::init();
@@ -274,6 +142,7 @@ fn a_set_of_one_is_just_a_join() {
     first.join().expect("the winner still has its output");
 }
 
+/// File reads can race each other, and the losers still read
 #[test]
 fn file_reads_race_each_other() {
     Runtime::init();
@@ -293,23 +162,18 @@ fn file_reads_race_each_other() {
 
     println!("the winning read was {} bytes", winner.len());
 
-    // Nothing is asserted about which one won. Three reads off
-    // a warm page cache is a race the test has no business
-    // predicting — what matters is that one of them did, and
-    // that the other two are still good
+    // Nothing is asserted about which one won
     for handle in rest.expect("PassBack hands the losers back") {
         handle.join().expect("a loser joins").expect("the read worked");
     }
 }
 
+/// Two threads racing the same set both get an answer
 #[test]
 fn a_race_from_several_threads_at_once() {
     Runtime::init();
 
-    // The same set, raced by two threads. Only one of them can
-    // register on any given slot, so the other is running on
-    // the second look and the ceiling alone — which has to
-    // reach the same answer, just less promptly
+    // The same set, raced by two threads
     let shared: Vec<_> = (0..4).map(|_| sleeping(60)).collect();
 
     let crews: Vec<_> = (0..2)

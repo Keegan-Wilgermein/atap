@@ -1,23 +1,9 @@
 //! # Sleep Thread
-//! The threads that are allowed to sit inside a `kevent` call
-//! for a whole second, so that no worker ever has to
+//! Threads that run blocking tasks, so no worker is ever held
+//! inside a long wait
 //!
-//! A `Task` runs to completion on the thread that starts it.
-//! `execute` is an ordinary function call, so a native stack
-//! can't be put down half way through one and picked up
-//! elsewhere — which means the only way a worker avoids being
-//! held by a long sleep is to not start it. It hands the whole
-//! task over instead, and goes back to the queue
-//!
-//! #### Note
-//! These pull from one shared queue rather than being owned by
-//! a worker each. That distinction is the whole design. A
-//! worker that owned its own sleep thread would put every
-//! blocking task it happened to pop onto that one thread, and
-//! since the first worker awake drains the queue before the
-//! others have woken, one thread would end up running the lot
-//! one after another. A shared queue means the next free
-//! thread takes the next task, whichever worker found it
+//! They all pull from one shared queue, so whichever is free
+//! next takes the next blocking task
 
 use crate::{
     constants::NO_TASK,
@@ -37,9 +23,8 @@ pub(crate) struct SleepThread {
 
     /// The task being run right now, or `NO_TASK`
     ///
-    /// Lives here rather than on the thread's stack, so that a
-    /// thread going down leaves a note saying which task went
-    /// with it
+    /// Kept here so a thread that dies leaves a note of which task
+    /// went with it
     current: AtomicUsize,
 
     /// Tasks finished since the thread started
@@ -105,8 +90,8 @@ impl SleepThread {
     /// Puts a thread behind this slot
     ///
     /// ## Returns
-    /// Whether the thread started. A slot whose thread didn't
-    /// is put straight back, so the next attempt can use it
+    /// Whether the thread started. If it didn't, the slot is freed
+    /// again
     pub(crate) fn start(&'static self) -> bool {
         if thread::Builder::new()
             .name(String::from("atap-sleep"))
@@ -132,34 +117,52 @@ impl SleepThread {
         self.state
             .store(WorkerState::Stopping as u32, Ordering::Release);
 
-        self.wake();
+        let _ = self.wake();
     }
 
     /// Wakes the thread if it is asleep
     ///
-    /// The state is moved off `Parked` before the wake goes
-    /// out, so a thread that had decided to sleep but hadn't
-    /// yet finds its word already changed and doesn't sleep at
-    /// all. Without that the wake lands on nobody and is then
-    /// slept straight through
+    /// The state leaves `Parked` before the wake goes out, so a
+    /// thread about to sleep doesn't
+    ///
+    /// ## Returns
+    /// Whether this caller took the thread out of its park. Only
+    /// one caller can, per park
     #[inline(always)]
-    pub(crate) fn wake(&self) {
-        let _ = self.state.compare_exchange(
-            WorkerState::Parked as u32,
-            WorkerState::Idle as u32,
-            Ordering::SeqCst,
-            Ordering::Relaxed,
-        );
+    pub(crate) fn wake(&self) -> bool {
+        let claimed = self
+            .state
+            .compare_exchange(
+                WorkerState::Parked as u32,
+                WorkerState::Idle as u32,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            )
+            .is_ok();
 
         address_lock::wake(address_lock::address(&self.state));
+
+        claimed
     }
 
-    /// The task this thread went down holding, if any
+    /// Takes responsibility for clearing up after a dead thread
     ///
-    /// There is no queue to give back any more. Everything
-    /// this thread hadn't started is still in the shared queue
-    /// where anybody can reach it, which is the point of the
-    /// queue being shared
+    /// ## Returns
+    /// Whether this caller should do it. Only one caller ever gets
+    /// `true` per death
+    pub(crate) fn claim_recovery(&self) -> bool {
+        self.state
+            .compare_exchange(
+                WorkerState::Dead as u32,
+                WorkerState::Recovering as u32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// Empties the slot, giving back the task it was running, if
+    /// any
     pub(crate) fn recover(&self) -> usize {
         let stranded = self.current.swap(NO_TASK, Ordering::AcqRel);
 
@@ -172,17 +175,16 @@ impl SleepThread {
 
     /// The loop the thread follows
     ///
-    /// The guard is what makes a panic recoverable. It runs on
-    /// the way out either way, so a clean stop empties the slot
-    /// and an unwind marks it dead for somebody else to clear
+    /// The guard marks the slot dead if a panic unwinds through
+    /// here
     fn run(&'static self) {
         let mut guard = Exit {
             thread: self,
             clean: false,
         };
 
-        // Exchanged rather than stored, so a stop that arrived
-        // before the thread was up isn't thrown away
+        // Exchanged, so a stop that arrived before the thread was up
+        // isn't lost
         let _ = self.state.compare_exchange(
             WorkerState::Starting as u32,
             WorkerState::Idle as u32,
@@ -200,16 +202,9 @@ impl SleepThread {
                 continue;
             };
 
-            // Stamped before the task is claimed and cleared
-            // after it is finished, so a thread that dies
-            // inside one leaves a note saying which
             self.current.store(id, Ordering::Release);
 
-            // Exchanged and not stored, for the same reason a
-            // worker's is. Losing it means a stop landed while
-            // this was reaching for the task, so the task goes
-            // back to the shared queue rather than down with a
-            // thread that is leaving
+            // Lost to a stop, so the task goes back to the queue
             if self
                 .state
                 .compare_exchange(
@@ -221,7 +216,10 @@ impl SleepThread {
                 .is_err()
             {
                 self.current.store(NO_TASK, Ordering::Release);
-                POOL.blocking().push(id);
+
+                if !POOL.blocking().push(id) {
+                    executor::fail(id);
+                }
 
                 break;
             }
@@ -242,21 +240,40 @@ impl SleepThread {
         guard.clean = true;
     }
 
-    /// Blocks until there is something to do or somebody says
-    /// to stop
+    /// Blocks until there is something to do or somebody says to
+    /// stop
     ///
-    /// The same store then load in both directions a worker
-    /// parks with: this publishes that it is parking before it
-    /// looks at the queue for the last time, and an offload
-    /// queues before it reads the count of parked threads
+    /// Publishes that it is parking before its last look at the
+    /// queue, and an offload queues before it checks for parked
+    /// threads, so a task can't slip between the two
     fn park(&self) {
         POOL.sleep_parked_in();
 
-        self.state
-            .store(WorkerState::Parked as u32, Ordering::SeqCst);
+        // Exchanged, so a stop that already spent its wake isn't
+        // written over
+        if self
+            .state
+            .compare_exchange(
+                WorkerState::Idle as u32,
+                WorkerState::Parked as u32,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            POOL.sleep_parked_out();
+
+            return;
+        }
 
         if !POOL.blocking().is_empty() {
-            self.state.store(WorkerState::Idle as u32, Ordering::SeqCst);
+            let _ = self.state.compare_exchange(
+                WorkerState::Parked as u32,
+                WorkerState::Idle as u32,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+
             POOL.sleep_parked_out();
 
             return;
@@ -269,8 +286,8 @@ impl SleepThread {
 
         POOL.sleep_parked_out();
 
-        // Only back to idle if nothing asked for something
-        // else while this was asleep
+        // Only back to idle if nothing else changed the state while
+        // it slept
         let _ = self.state.compare_exchange(
             WorkerState::Parked as u32,
             WorkerState::Idle as u32,
@@ -280,12 +297,8 @@ impl SleepThread {
     }
 }
 
-/// Marks the slot on the way out of the loop
-///
-/// A drop guard rather than a line at the end of `run`,
-/// because the whole point is to run when `run` doesn't get to
-/// its end. Rust unwinds a panic through this the same way it
-/// would through any other frame
+/// Marks the slot on the way out of the loop, including when a
+/// panic unwinds through it
 struct Exit {
     /// The thread being left
     thread: &'static SleepThread,

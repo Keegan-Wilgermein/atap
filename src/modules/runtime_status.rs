@@ -6,67 +6,75 @@ use std::fmt;
 
 /// What the runtime looked like at the moment it was asked
 ///
-/// ## Why the parts are separate
-/// The `Reactor` and the manager are supervised independently
-/// and fail independently, and losing one is not the same as
-/// losing the other. A manager that has given up costs the pool
-/// its growing, reaping and rebalancing, and ends every
-/// schedule in the process — a `Reactor` that has given up
-/// costs a task the way back from the kernel. Folding them into
-/// one flag would throw away the difference
-///
 /// #### Note
-/// A snapshot rather than a lock, like `PoolStats`. Every field
-/// was true when it was read
+/// A snapshot, not a lock. Every value was true when it was read
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RuntimeStatus {
-    /// Whether `Runtime::init` has finished
-    ///
-    /// Says initialisation is over rather than that it worked.
-    /// A failed init is a finished one, and the two flags below
-    /// are what say whether anything came of it
-    pub initialised: bool,
-
-    /// Whether the runtime has been shut down
-    ///
-    /// One way. Nothing brings a runtime back after this
-    pub shut_down: bool,
-
-    /// Whether the `Reactor` still has a queue to watch
-    ///
-    /// False once its supervisor has stopped bringing it back
-    pub reactor_alive: bool,
-
-    /// Whether the manager still has a queue to work from
-    ///
-    /// False once its supervisor has given up on it, and once
-    /// the runtime has been shut down
-    ///
-    /// #### Note
-    /// Tasks still run without it. The pool finds its own work,
-    /// reverses its own queue and clears up after its own dead
-    /// whether anything is supervising it or not — what stops
-    /// is the pool *adapting*, and every kind of repeat that
-    /// leans on a timer
-    pub manager_alive: bool,
+    initialised: bool,
+    shut_down: bool,
+    reactor_alive: bool,
+    manager_alive: bool,
 }
 
 impl RuntimeStatus {
+    pub(crate) fn new(
+        initialised: bool,
+        shut_down: bool,
+        reactor_alive: bool,
+        manager_alive: bool,
+    ) -> Self {
+        Self {
+            initialised,
+            shut_down,
+            reactor_alive,
+            manager_alive,
+        }
+    }
+
+    /// Whether `Runtime::init` has finished
+    ///
+    /// Says initialisation is over, not that it worked
+    pub fn initialised(&self) -> bool {
+        self.initialised
+    }
+
+    /// Whether the runtime has been shut down
+    ///
+    /// Once true, it stays true
+    pub fn shut_down(&self) -> bool {
+        self.shut_down
+    }
+
+    /// Whether the `Reactor` is still running
+    ///
+    /// False once its supervisor stops restarting it
+    pub fn reactor_alive(&self) -> bool {
+        self.reactor_alive
+    }
+
+    /// Whether the manager is still running
+    ///
+    /// False once its supervisor gives up on it, or once the
+    /// runtime has been shut down
+    ///
+    /// #### Note
+    /// Spawned tasks still run without it. What stops is the pool
+    /// growing and shrinking, and every repeat driven by a timer
+    pub fn manager_alive(&self) -> bool {
+        self.manager_alive
+    }
+
     /// Whether everything is up and nothing has given up
     ///
     /// #### Note
-    /// `false` is not the same as broken. A runtime with no
-    /// manager still runs everything spawned onto it, so this
-    /// is the question of whether anything has been lost rather
-    /// than whether anything works
+    /// `false` doesn't mean spawned work has stopped running
     pub fn healthy(&self) -> bool {
         self.initialised && !self.shut_down && self.reactor_alive && self.manager_alive
     }
 }
 
 impl fmt::Display for RuntimeStatus {
-    /// One line, saying the state first and what is missing
-    /// after it
+    /// One line: the state, then anything that is down
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.initialised {
             return write!(formatter, "not initialised");
@@ -89,7 +97,6 @@ impl fmt::Display for RuntimeStatus {
     }
 }
 
-/// A flag as the word for it
 #[inline(always)]
 fn alive(alive: bool) -> &'static str {
     match alive {

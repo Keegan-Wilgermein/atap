@@ -31,10 +31,6 @@ impl EventDesc {
 
     /// Returns the `kevent` flags required to take a
     /// timer back off a queue
-    ///
-    /// Used to cancel a sleep that hasn't fired yet. Without
-    /// it the timer stays armed and goes off into a queue
-    /// nobody is waiting on it in any more
     pub(crate) fn new_timer_delete() -> Self {
         Self {
             filter: libc::EVFILT_TIMER,
@@ -45,16 +41,6 @@ impl EventDesc {
 
     /// Returns the `kevent` flags required to make
     /// a timer that keeps firing
-    ///
-    /// Registered once and left alone, unlike `new_timer`,
-    /// which is armed for a single shot and dropped by the
-    /// kernel once it has been delivered
-    ///
-    /// #### Note
-    /// `NOTE_CRITICAL` is deliberately absent. This drives
-    /// the manager's policy pass, which does not care about
-    /// microseconds and has no business asking the kernel to
-    /// treat it as though it does
     pub(crate) fn new_interval() -> Self {
         Self {
             filter: libc::EVFILT_TIMER,
@@ -66,14 +52,7 @@ impl EventDesc {
     /// Returns the `kevent` flags required to
     /// raise a user triggered event
     ///
-    /// `EVFILT_USER` is the filter that exists purely so
-    /// userspace can wake a kqueue on demand, rather than
-    /// waiting on a timer or a descriptor
-    ///
-    /// #### Note
-    /// Carrying `NOTE_TRIGGER` on the `EV_ADD` registers the
-    /// event and fires it in the same syscall, so waking the
-    /// `Executor` costs one call rather than two
+    /// Registers the event and fires it in one syscall
     pub(crate) fn new_user_trigger() -> Self {
         Self {
             filter: libc::EVFILT_USER,
@@ -83,19 +62,7 @@ impl EventDesc {
     }
 
     /// Returns the `kevent` flags required to wait
-    /// for a child process to exit
-    ///
-    /// Registered at the child's pid rather than at a task id,
-    /// because the pid is what the filter identifies a process
-    /// by. Nothing else in the crate registers at an ident it
-    /// didn't choose itself
-    ///
-    /// #### Note
-    /// `NOTE_EXITSTATUS` is deliberately absent. The status has
-    /// to be collected with `waitpid` anyway, since a child
-    /// that is never reaped is a zombie for the life of the
-    /// process, so reading it off the event as well would be a
-    /// second source for something there is already one of
+    /// for a child process to exit, registered at its pid
     pub(crate) fn new_proc_exit() -> Self {
         Self {
             filter: libc::EVFILT_PROC,
@@ -107,12 +74,8 @@ impl EventDesc {
     /// Returns the `kevent` flags required to take a
     /// process watch back off a queue
     ///
-    /// ## Behaviour
-    /// Removes the registration *and* anything it has already
-    /// queued, which is the half that matters. A cancelled task
-    /// leaves an exit note nobody read sitting on a per thread
-    /// queue, and pids are reused — so a later task on the same
-    /// thread could find it and take it for its own child
+    /// Also removes an exit already queued, which a later task on
+    /// the same thread could otherwise take for its own child
     pub(crate) fn new_proc_delete() -> Self {
         Self {
             filter: libc::EVFILT_PROC,
@@ -124,19 +87,8 @@ impl EventDesc {
     /// Returns the `kevent` flags required to watch a
     /// descriptor for something to read
     ///
-    /// ## Behaviour
-    /// Level triggered, which is the whole point. `EV_CLEAR`
-    /// reports the edge and leaves the caller to read until it
-    /// would block, which needs a non blocking descriptor and a
-    /// loop around `EAGAIN`. Without it the kernel reports the
-    /// descriptor ready for as long as it has anything on it,
-    /// so one ordinary blocking `read` per wake is safe and
-    /// nothing has to be `O_NONBLOCK`
-    ///
-    /// #### Note
-    /// The cost of that choice is `new_read_delete`, which
-    /// stops being optional the moment a descriptor hits its
-    /// end. See the note there
+    /// Level triggered, so the descriptor stays ready while it has
+    /// anything on it and one blocking `read` per wake is safe
     pub(crate) fn new_read() -> Self {
         Self {
             filter: libc::EVFILT_READ,
@@ -148,12 +100,8 @@ impl EventDesc {
     /// Returns the `kevent` flags required to take a
     /// read watch back off a queue
     ///
-    /// #### Note
-    /// Not a tidy up. A descriptor at its end is *readable* as
-    /// far as a level triggered filter is concerned — the read
-    /// that returns zero returns immediately, every time — so
-    /// leaving it registered turns a loop still waiting on
-    /// another descriptor into a spin
+    /// A descriptor at its end stays readable forever, so a watch
+    /// left on one turns a wait into a spin
     pub(crate) fn new_read_delete() -> Self {
         Self {
             filter: libc::EVFILT_READ,
@@ -165,26 +113,8 @@ impl EventDesc {
     /// Returns the `kevent` flags required to watch a
     /// descriptor for room to write
     ///
-    /// ## Behaviour
-    /// Level triggered, the same as `new_read`, and for half
-    /// the same reason: the kernel reports the descriptor ready
-    /// for as long as it has any room at all, so a wake means
-    /// the next piece has somewhere to go
-    ///
-    /// What does *not* carry over is what the waiter may do
-    /// about it. A read after a wake can be an ordinary
-    /// blocking one, because a descriptor with something on it
-    /// gives it up. A write after a wake cannot: the room may
-    /// be one byte, and a blocking write doesn't return until
-    /// it has placed every byte it was offered — so it would
-    /// sit there holding the rest against a reader that is
-    /// itself waiting on this thread
-    ///
-    /// #### Note
-    /// Which makes the descriptor under this filter the one
-    /// place in the crate that is `O_NONBLOCK`. A short write
-    /// is carried rather than waited out, and `EAGAIN` means
-    /// only "back to the wait"
+    /// Level triggered, and the room may be a single byte, so the
+    /// descriptor must be `O_NONBLOCK`
     pub(crate) fn new_write() -> Self {
         Self {
             filter: libc::EVFILT_WRITE,
@@ -196,19 +126,9 @@ impl EventDesc {
     /// Returns the `kevent` flags required to take a write
     /// watch back off a queue
     ///
-    /// #### Note
-    /// Not optional, for the reason `new_read_delete` isn't. A
-    /// pipe with room in it is *writable* to a level triggered
-    /// filter every time it is asked, so an end nobody is
-    /// writing to any more turns a loop still waiting on a read
-    /// into a spin
-    ///
-    /// Unlike a read, this one comes off *before* its
-    /// descriptor is closed rather than after. Closing drops
-    /// the registration on its own, but it also hands the
-    /// number straight back out, and a later registration at
-    /// the same number would be racing a knote the kernel is
-    /// still taking down
+    /// Comes off before the descriptor is closed. Closing frees the
+    /// number for reuse while the kernel is still taking the watch
+    /// down
     pub(crate) fn new_write_delete() -> Self {
         Self {
             filter: libc::EVFILT_WRITE,

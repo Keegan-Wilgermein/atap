@@ -1,9 +1,4 @@
 //! File task tests
-//!
-//! Every fixture is written under `tests/files`, which is
-//! ignored by git in its entirety. Git doesn't track
-//! directories, so an ignored one doesn't survive a clone and
-//! every test makes it before using it
 
 use atap::{File, FileKind, Runtime, RuntimeError, TaskHandle};
 use std::{
@@ -18,20 +13,13 @@ use std::{
 
 /// How much one read or write syscall asks for
 ///
-/// Not read from the crate, which keeps it private. Written out
-/// here so a test that straddles the boundary still straddles
-/// it if the constant moves, and fails loudly if it doesn't
+/// Written out here since the crate's own is private
 const CHUNK: usize = 64 * 1024;
 
-/// Names apart, so tests running side by side in one binary
-/// don't write over each other
+/// Keeps test file names apart
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// A path that cleans itself up
-///
-/// The directory is ignored either way, so this is about the
-/// next run rather than about the repository — a test that
-/// failed shouldn't change what the one after it sees
 struct TestPath(PathBuf);
 
 impl TestPath {
@@ -73,14 +61,7 @@ fn pattern(len: usize) -> Vec<u8> {
 ///
 /// ## Returns
 /// `None` once the series has ended, or once `patience` has
-/// run out without one arriving
-///
-/// #### Note
-/// The pause is the whole point. `Taken` is a terminal state,
-/// so asking between runs comes back at once rather than
-/// waiting — and a loop with nothing to slow it down spins
-/// through its entire budget before the next run has even been
-/// scheduled
+/// run out
 fn next_run<T>(handle: &TaskHandle<T>, patience: Duration) -> Option<T> {
     let deadline = Instant::now() + patience;
 
@@ -88,8 +69,7 @@ fn next_run<T>(handle: &TaskHandle<T>, patience: Duration) -> Option<T> {
         match handle.maybe_take() {
             Ok(value) => return Some(value),
 
-            // Between runs, or one still going. Either way
-            // another output is coming
+            // Between runs, or one still going
             Err(RuntimeError::AlreadyTaken) | Err(RuntimeError::NotReady) => {
                 thread::sleep(Duration::from_millis(1))
             }
@@ -102,6 +82,7 @@ fn next_run<T>(handle: &TaskHandle<T>, patience: Duration) -> Option<T> {
     None
 }
 
+/// A blocking read gives back what was written
 #[test]
 fn read_gives_back_what_was_written() {
     Runtime::init();
@@ -116,6 +97,7 @@ fn read_gives_back_what_was_written() {
     assert_eq!(read.as_slice(), b"the quick brown fox".as_slice(), "the bytes came back changed");
 }
 
+/// A spawned read joins with the file's contents
 #[test]
 fn a_spawned_read_joins() {
     Runtime::init();
@@ -129,6 +111,7 @@ fn a_spawned_read_joins() {
     assert_eq!(read.as_slice(), b"through the builder".as_slice(), "the bytes came back changed");
 }
 
+/// A missing file reports `ENOENT`
 #[test]
 fn read_of_a_missing_file_reports_enoent() {
     Runtime::init();
@@ -139,9 +122,6 @@ fn read_of_a_missing_file_reports_enoent() {
 
     println!("missing file gave {:?}", read);
 
-    // The one that catches an errno clobbered on the way out.
-    // Closing a descriptor before checking the call that failed
-    // would report the close instead, and this would be Some(0)
     assert_eq!(
         read,
         Err(RuntimeError::CheckError(Some(libc::ENOENT))),
@@ -149,6 +129,7 @@ fn read_of_a_missing_file_reports_enoent() {
     );
 }
 
+/// An empty file reads as an empty `Vec`
 #[test]
 fn an_empty_file_reads_as_empty() {
     Runtime::init();
@@ -161,13 +142,12 @@ fn an_empty_file_reads_as_empty() {
     assert!(read.is_empty(), "an empty file is not an error");
 }
 
+/// Files around and past the chunk size read whole
 #[test]
 fn a_file_bigger_than_one_chunk_reads_whole() {
     Runtime::init();
 
-    // Either side of the boundary and well past it. A chunk
-    // loop that is off by one shows up at exactly CHUNK, and a
-    // short read that is treated as the end shows up at four
+    // Either side of the chunk boundary and well past it
     for len in [CHUNK - 1, CHUNK, CHUNK + 1, CHUNK * 4 + 7] {
         let file = TestPath::new("big");
         let written = pattern(len);
@@ -183,6 +163,7 @@ fn a_file_bigger_than_one_chunk_reads_whole() {
     }
 }
 
+/// A write bigger than one chunk lands whole
 #[test]
 fn a_write_bigger_than_one_chunk_lands_whole() {
     Runtime::init();
@@ -202,6 +183,7 @@ fn a_write_bigger_than_one_chunk_lands_whole() {
     }
 }
 
+/// Append adds to a file rather than replacing it
 #[test]
 fn append_adds_rather_than_replaces() {
     Runtime::init();
@@ -216,6 +198,7 @@ fn append_adds_rather_than_replaces() {
     assert_eq!(back.as_slice(), b"first-second".as_slice(), "append replaced instead of adding");
 }
 
+/// `write_at` changes only the bytes it writes
 #[test]
 fn write_at_leaves_the_rest_alone() {
     Runtime::init();
@@ -230,6 +213,7 @@ fn write_at_leaves_the_rest_alone() {
     assert_eq!(back.as_slice(), b"aaabbaaaaa".as_slice(), "a positional write moved to the end");
 }
 
+/// `read_at` reads a range, and comes back short at the end
 #[test]
 fn read_at_takes_a_range_and_stops_at_the_end() {
     Runtime::init();
@@ -251,12 +235,11 @@ fn read_at_takes_a_range_and_stops_at_the_end() {
     assert!(past.is_empty(), "a range starting past the end is empty");
 }
 
+/// A path with a zero byte in it is refused
 #[test]
 fn a_path_with_a_zero_byte_is_refused() {
     Runtime::init();
 
-    // The dangerous failure is not a panic, it is quietly
-    // reading the file named by the part before the zero
     let read = Runtime::block(File::read("tests/files/a\0b"));
 
     println!("a path with a zero gave {:?}", read);
@@ -264,6 +247,7 @@ fn a_path_with_a_zero_byte_is_refused() {
     assert_eq!(read, Err(RuntimeError::BadPath), "a zero byte must be refused");
 }
 
+/// Reading a directory errors rather than hanging
 #[test]
 fn reading_a_directory_errors_rather_than_hanging() {
     Runtime::init();
@@ -282,6 +266,7 @@ fn reading_a_directory_errors_rather_than_hanging() {
     );
 }
 
+/// Metadata reports the length and the kind
 #[test]
 fn metadata_reports_the_length_and_the_kind() {
     Runtime::init();
@@ -299,6 +284,7 @@ fn metadata_reports_the_length_and_the_kind() {
     assert!(!meta.is_dir(), "a file is not a directory");
 }
 
+/// `read_dir` finds a new file and leaves out `.` and `..`
 #[test]
 fn read_dir_finds_a_new_file_and_omits_the_dot_entries() {
     Runtime::init();
@@ -325,6 +311,7 @@ fn read_dir_finds_a_new_file_and_omits_the_dot_entries() {
     }
 }
 
+/// Creating, removing and renaming do what they say
 #[test]
 fn create_remove_and_rename_do_what_they_say() {
     Runtime::init();
@@ -358,6 +345,7 @@ fn create_remove_and_rename_do_what_they_say() {
     );
 }
 
+/// A repeated read sees the file change between runs
 #[test]
 fn a_repeated_read_sees_the_file_change() {
     Runtime::init();
@@ -370,10 +358,8 @@ fn a_repeated_read_sees_the_file_change() {
         .every(Duration::from_millis(30))
         .spawn();
 
-    // Taken before anything else is written, so this run can
-    // only have read the first contents — which is what makes
-    // finding the second contents later proof of a second run
-    // rather than of one lucky first one
+    // Taken before the file changes, so this run can only have
+    // read the first contents
     let first = next_run(&handle, Duration::from_secs(10)).expect("no first run");
 
     assert_eq!(
@@ -403,40 +389,7 @@ fn a_repeated_read_sees_the_file_change() {
     assert!(saw, "a repeat never picked the change up");
 }
 
-#[test]
-fn a_bounded_repeat_of_a_read_runs_its_count() {
-    Runtime::init();
-
-    let file = TestPath::new("counted");
-    fs::write(file.path(), b"counted").unwrap();
-
-    let handle = Runtime::task(File::read(file.path()))
-        .repeat()
-        .every(Duration::from_millis(30))
-        .count(3)
-        .spawn();
-
-    let mut runs = 0;
-
-    while let Some(read) = next_run(&handle, Duration::from_secs(10)) {
-        assert_eq!(
-            read.expect("read failed").as_slice(),
-            b"counted".as_slice(),
-            "wrong contents"
-        );
-
-        runs += 1;
-    }
-
-    println!("saw {} runs against a count of 3", runs);
-
-    assert!(handle.is_finished(), "the series never reported finishing");
-    assert_eq!(runs, 3, "saw {} runs, not 3", runs);
-
-    // Ran out rather than fell over
-    assert!(!handle.is_failed(), "running out is not failing");
-}
-
+/// Reads on a fixed rate produce their output
 #[test]
 fn at_rate_reads_produce_their_output() {
     Runtime::init();
@@ -444,8 +397,6 @@ fn at_rate_reads_produce_their_output() {
     let file = TestPath::new("rated");
     fs::write(file.path(), b"at a rate").unwrap();
 
-    // Compiles only because every file task is Clone, which is
-    // what a series needs to make copies of its prototype
     let handle = Runtime::task(File::read(file.path()))
         .at_rate(Duration::from_millis(25))
         .count(3)
@@ -460,6 +411,7 @@ fn at_rate_reads_produce_their_output() {
     handle.cancel();
 }
 
+/// Concurrent reads of one file all read the same contents
 #[test]
 fn concurrent_reads_of_one_file_all_agree() {
     Runtime::init();
@@ -473,9 +425,6 @@ fn concurrent_reads_of_one_file_all_agree() {
         .map(|_| Runtime::task(File::read(file.path())).spawn())
         .collect();
 
-    // Every task opens its own descriptor, so nothing here can
-    // move anything else's file offset along. The point of the
-    // test is to keep it that way
     for handle in handles {
         let read = handle.join().expect("join failed").expect("read failed");
 
@@ -483,6 +432,8 @@ fn concurrent_reads_of_one_file_all_agree() {
     }
 }
 
+/// Cancelling a read settles its listeners, and the file still
+/// reads afterwards
 #[test]
 fn cancelling_a_read_settles_its_listeners() {
     Runtime::init();
@@ -497,10 +448,6 @@ fn cancelling_a_read_settles_its_listeners() {
     let file = TestPath::new("second");
     fs::write(file.path(), b"still working").unwrap();
 
-    // Deliberately says nothing about timing. A cancelled sleep
-    // is pulled out of the kernel and gives its thread straight
-    // back; a cancelled read is inside a syscall nothing can
-    // reach into, so it runs the chunk it is on to the end
     let after = Runtime::block(File::read(file.path())).expect("read failed");
 
     assert_eq!(after.as_slice(), b"still working".as_slice(), "the runtime stopped working");

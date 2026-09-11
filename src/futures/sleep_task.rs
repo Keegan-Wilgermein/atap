@@ -3,11 +3,6 @@
 //!
 //! Performs sleep functions defined by the `Sleep`
 //! struct
-//!
-//! Holds every impl `SleepTask` has — the data, the `Task` it
-//! satisfies, the `KernelWait` underneath it, and the two ways
-//! it waits. A reader asking what a sleep does has one file to
-//! read, and `task.rs` is left holding the definition alone
 
 use crate::{
     EventDesc,
@@ -15,13 +10,31 @@ use crate::{
     executor,
     futures::{kernel_wait::KernelWait, task::Task, task::sealed},
     modules::{
-        int_check::IntCheck, kevent::KEvent, kqueue, waiter::Waiter, wake_target::WakeTarget,
+        int_check::IntCheck,
+        kevent::KEvent,
+        kqueue::{self, Waited},
+        waiter::Waiter,
+        wake_target::WakeTarget,
     },
 };
 use std::{
     ptr,
     time::{Duration, Instant},
 };
+
+/// What happened to a sleep that went to the kernel
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slept {
+    /// The kernel held the thread for the duration asked of it
+    Waited,
+
+    /// Somebody cancelled the sleep part way through
+    Cancelled,
+
+    /// The kernel never took the wait, so the whole duration is
+    /// still owed
+    Refused,
+}
 
 /// The version of `Sleep` that implements `Task`
 ///
@@ -31,13 +44,6 @@ use std::{
 /// All it's runtime functions output `Duration`
 /// describing the time it took for the function
 /// to run in it's entirety
-///
-/// #### Note
-/// `Clone` because `.at_rate()` makes a fresh copy of its task
-/// for every run it starts. A copy carries the duration and the
-/// mode across and nothing else that matters — the start time
-/// is overwritten by `prepare` before the copy is ever run, so
-/// each run is timed from its own beginning
 #[derive(Clone)]
 pub struct SleepTask {
     /// How long to sleep for
@@ -49,8 +55,7 @@ pub struct SleepTask {
     /// Whether to trade cpu for precision
     ///
     /// On, the last stretch of the wait is spun rather than
-    /// slept. Off, every sleep is handed to the kernel and
-    /// whatever comes back is the answer
+    /// slept
     pub(crate) p_mode: bool,
 }
 
@@ -70,17 +75,9 @@ impl SleepTask {
     }
 
     /// Puts the timer on this thread's own queue and waits
-    /// there, with nothing else involved in the wake
-    ///
-    /// `udata` is left empty, because the only thread that
-    /// could be woken is the one already sitting on the queue
-    ///
-    /// ## Returns
-    /// Whether the sleep is still worth finishing. A spawned
-    /// sleep that was cancelled comes back here early and has
-    /// nothing left to do
+    /// there
     #[inline(always)]
-    fn wait_on_own(&self, queue: i32, task_id: usize) -> bool {
+    fn wait_on_own(&self, queue: i32, task_id: usize) -> Slept {
         let registered = unsafe {
             KEvent::register(
                 queue,
@@ -92,15 +89,14 @@ impl SleepTask {
         }
         .check();
 
-        // Nothing waits on a registration the kernel refused,
-        // and a spin is left to make up the time as best it can
+        // Spun out instead, since the alternative is a sleep that
+        // doesn't sleep
         if registered.is_err() {
-            return true;
+            return Slept::Refused;
         }
 
-        // Cancelled before the wait even started, so the timer
-        // comes straight back off rather than going off later
-        // into a queue nobody is waiting on it in
+        // Cancelled before the wait started, so the timer comes
+        // straight back off
         if !executor::waiting_on(queue) {
             let _ = unsafe {
                 KEvent::register(
@@ -113,31 +109,30 @@ impl SleepTask {
             }
             .check();
 
-            return false;
+            return Slept::Cancelled;
         }
 
-        kqueue::wait_for(queue, task_id, libc::EVFILT_TIMER);
+        let waited = kqueue::wait_for(queue, task_id, libc::EVFILT_TIMER);
 
-        executor::stopped_waiting()
+        // Also spins out a cancel still part way through its
+        // syscalls against this queue
+        if !executor::stopped_waiting() {
+            return Slept::Cancelled;
+        }
+
+        match waited {
+            Waited::Failed => Slept::Refused,
+            Waited::Cancelled => Slept::Cancelled,
+            Waited::Arrived => Slept::Waited,
+        }
     }
 
     /// Puts the timer on the `Reactor`'s queue and parks
     ///
-    /// ## Behaviour
-    /// The event goes on the `Reactor`'s queue carrying the way
-    /// back to this thread, and the `Reactor` sets the flag and
-    /// unparks it. Slower than waiting on a queue of your own,
-    /// and the only reason `Waiter` exists
-    ///
-    /// Only reached when this thread couldn't get a queue of
-    /// its own, which takes a kernel out of descriptors
-    ///
-    /// #### Note
-    /// Nothing waits on a registration that didn't take. A wake
-    /// only ever comes from an event the kernel accepted, so
-    /// waiting on one it refused waits for good
+    /// Only used when this thread couldn't get a queue of its
+    /// own
     #[inline(always)]
-    fn wait_on_reactor(&self, reactor_id: i32, task_id: usize) {
+    fn wait_on_reactor(&self, reactor_id: i32, task_id: usize) -> Slept {
         let waiter = Waiter::new();
 
         let registered = unsafe {
@@ -152,10 +147,12 @@ impl SleepTask {
         .check();
 
         if registered.is_err() {
-            return;
+            return Slept::Refused;
         }
 
         waiter.wait();
+
+        Slept::Waited
     }
 }
 
@@ -177,22 +174,12 @@ impl Task for SleepTask {
     }
 
     /// Times every run from its own beginning
-    ///
-    /// One of the few tasks that needs this. A repeat puts the
-    /// same box back in the same slot, so a `created` left over
-    /// from the last run would have the next one measuring from
-    /// a start it didn't have
     #[inline(always)]
     fn prepare(&mut self) {
         self.created = Instant::now();
     }
 
-    /// The same question `execute` asks itself
-    ///
-    /// A spin never reaches a sleep thread, because it never
-    /// gives the thread up in the first place. Everything else
-    /// ends up inside a `kevent` call for the whole duration,
-    /// which is precisely what a worker shouldn't be doing
+    /// Whether this sleep ends up waiting in the kernel
     #[inline(always)]
     fn blocking(&self) -> bool {
         !self.p_mode || self.sleep_for > SLEEP_TOLERANCE
@@ -208,31 +195,30 @@ impl KernelWait for SleepTask {
             self.sleep_for
         };
 
-        target.saturating_sub(self.created.elapsed()).as_nanos() as libc::intptr_t
+        let nanos = target.saturating_sub(self.created.elapsed()).as_nanos();
+
+        nanos.min(libc::intptr_t::MAX as u128) as libc::intptr_t
     }
 
     #[inline(always)]
     fn offload(&self, queue: Option<i32>, reactor_id: i32, task_id: usize) -> Self::Output {
-        // Sleep functions wait on their own thread's
-        // queue rather than going through the reactor,
-        // which avoids the overhead of the unpark
-        //
-        // Unless the thread couldn't get a queue, in which
-        // case the timer goes to the reactor like anything
-        // else and the thread parks for it
-        let carry_on = match queue {
+        // The thread's own queue avoids the overhead of an unpark,
+        // and the reactor is only used when there isn't one
+        let slept = match queue {
             Some(queue) => self.wait_on_own(queue, task_id),
-            None => {
-                self.wait_on_reactor(reactor_id, task_id);
-                true
-            }
+            None => self.wait_on_reactor(reactor_id, task_id),
         };
 
-        // A cancelled sleep has nothing left to be accurate
-        // about. Spinning out the rest of a duration nobody is
-        // waiting for would give the thread straight back to
-        // the kernel wait it was just taken out of
-        if carry_on && self.p_mode {
+        let spin = match slept {
+            Slept::Cancelled => false,
+
+            Slept::Waited => self.p_mode,
+
+            // Nothing waited, so the whole duration is spun out
+            Slept::Refused => true,
+        };
+
+        if spin {
             let until = self.created + self.sleep_for;
             self.spinlock(until);
         }

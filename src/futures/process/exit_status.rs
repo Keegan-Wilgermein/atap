@@ -1,19 +1,6 @@
 //! # Exit status
 //! What a child said on its way out, in a shape that fits in a
 //! task slot
-//!
-//! Its own file for the same reason `metadata` is: a size, not
-//! a feature. An output over `INLINE_PAYLOAD` takes a mapping
-//! of its own — a whole page per task — so what a caller can
-//! actually use is kept and the rest is left behind
-//!
-//! #### Note
-//! The status word is stored raw and taken apart in the
-//! accessors, rather than being split into fields on the way
-//! in. `libc` doesn't give the `W` macros for this platform, so
-//! the arithmetic has to live somewhere either way, and one
-//! place that names the layout is better than a constructor
-//! that quietly loses whatever it didn't think to keep
 
 /// The bits of a status word that say how the child ended
 ///
@@ -30,17 +17,10 @@ const CODE_SHIFT: i32 = 8;
 
 /// How a child ended
 ///
-/// ## Behaviour
-/// A snapshot of the status word `waitpid` gave back, which is
-/// the only thing that ever describes a finished child. Nothing
-/// keeps it up to date because there is nothing left to keep up
-/// with — the process is gone
-///
 /// ## Returns
-/// [`ExitStatus::code`] and [`ExitStatus::signal`] are the two
-/// halves of the same word and never both answer. A child
-/// either ran to its own end and has a code, or was killed and
-/// has a signal
+/// [`ExitStatus::code`] and [`ExitStatus::signal`] never both
+/// answer. A child either ran to its own end and has a code,
+/// or was killed and has a signal
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExitStatus {
     /// The status word, exactly as `waitpid` gave it back
@@ -55,10 +35,6 @@ impl ExitStatus {
 
     /// Whether the child ran to its own end and was happy
     /// about it
-    ///
-    /// The one question most callers have. A child that was
-    /// killed is not a success, however convenient that would
-    /// sometimes be
     pub fn success(&self) -> bool {
         self.code() == Some(0)
     }
@@ -82,12 +58,6 @@ impl ExitStatus {
     /// ## Returns
     /// `None` when nothing did, which means the child exited on
     /// its own and [`ExitStatus::code`] has the answer instead
-    ///
-    /// #### Note
-    /// A cancelled task's child is killed with `SIGKILL`, but
-    /// nobody ever sees this for one — a cancelled task's output
-    /// is dropped rather than published, so the status it would
-    /// have carried goes with it
     pub fn signal(&self) -> Option<i32> {
         let status = self.raw & STATUS_MASK;
 
@@ -99,8 +69,6 @@ impl ExitStatus {
     }
 
     /// The status word as the kernel gave it
-    ///
-    /// For the caller who wants a bit this doesn't name
     pub fn raw(&self) -> i32 {
         self.raw
     }
@@ -108,17 +76,8 @@ impl ExitStatus {
 
 /// What a child wrote, and how it ended
 ///
-/// ## Behaviour
-/// Both streams are read to their end before the exit is waited
-/// on, so these are everything the child wrote and not a prefix
-/// of it
-///
-/// #### Note
-/// Deliberately small. It is an output, so it lives in the task
-/// slot, and the slot has 128 bytes before an output starts
-/// costing a page of its own. Two `Vec`s and a word is 64 of
-/// them — the bytes themselves are on the heap where their size
-/// is the caller's business rather than the table's
+/// Both streams are read to their end, so these are everything
+/// the child wrote and not a prefix of it
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProcessOutput {
     /// Everything the child wrote to its standard output
@@ -147,9 +106,6 @@ impl ProcessOutput {
     }
 
     /// What the child wrote to its standard output
-    ///
-    /// Bytes rather than a `String`, because a child is under
-    /// no obligation to write anything that is one
     pub fn stdout(&self) -> &[u8] {
         &self.stdout
     }
@@ -159,10 +115,7 @@ impl ProcessOutput {
         &self.stderr
     }
 
-    /// Takes the buffers out
-    ///
-    /// The way to get at the bytes without copying them, for a
-    /// caller that has no further use for the output itself
+    /// Takes the buffers out without copying them
     pub fn into_parts(self) -> (Vec<u8>, Vec<u8>, ExitStatus) {
         (self.stdout, self.stderr, self.status)
     }
@@ -173,9 +126,6 @@ mod tests {
     use super::*;
 
     /// An ordinary exit reads back as a code and nothing else
-    ///
-    /// The two accessors are halves of one word, and a status
-    /// that answered both would mean the mask is wrong
     #[test]
     fn an_ordinary_exit_has_a_code_and_no_signal() {
         let ok = ExitStatus::from_raw(0);
@@ -184,8 +134,6 @@ mod tests {
         assert_eq!(ok.code(), Some(0), "a zero status must read as code 0");
         assert_eq!(ok.signal(), None, "a clean exit must have no signal");
 
-        // What `exit(1)` leaves behind, which is the status a
-        // failing program is most likely to be checked for
         let failed = ExitStatus::from_raw(1 << 8);
 
         assert!(!failed.success(), "a non zero code must not be a success");
@@ -207,12 +155,7 @@ mod tests {
         );
     }
 
-    /// A stopped child is neither, which is the case the
-    /// mask alone gets wrong
-    ///
-    /// `0o177` in the low bits is a stop, not a signal numbered
-    /// 127. Reporting it as one would have a caller believing a
-    /// child that is still very much alive had been killed
+    /// A stopped child is neither a code nor a signal
     #[test]
     fn a_stopped_child_is_neither_a_code_nor_a_signal() {
         let stopped = ExitStatus::from_raw((libc::SIGSTOP << 8) | 0o177);

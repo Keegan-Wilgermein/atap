@@ -33,17 +33,10 @@ impl KEvent {
         }
     }
 
-    /// Waits for events, but not forever
-    ///
-    /// ## Behaviour
-    /// The same call as `listen` with a timespec on the end,
-    /// which turns a wait with no way out into one that comes
-    /// back empty handed
+    /// Waits for events, giving up after `timeout`
     ///
     /// ## Returns
-    /// How many events landed. Zero means the time ran out,
-    /// which is an answer rather than a failure — the caller
-    /// asked to be let go, and it has been
+    /// How many events landed, or zero if the time ran out
     #[inline(always)]
     pub(crate) unsafe fn listen_for(
         id: i32,
@@ -90,7 +83,8 @@ pub(crate) const fn eventlist() -> [libc::kevent; KEVENT_COUNT] {
 
 /// Creates a `kevent`
 ///
-/// `data` is the sleep duration
+/// `data` is whatever the filter takes, such as a timer's
+/// duration
 #[inline(always)]
 fn create(id: usize, data: libc::intptr_t, udata: *mut c_void, desc: EventDesc) -> libc::kevent {
     libc::kevent {

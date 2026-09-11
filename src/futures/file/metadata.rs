@@ -1,21 +1,9 @@
 //! # Metadata
 //! What a `stat` says, in a shape that fits in a task slot
-//!
-//! Its own file because the reason it exists is a size, not a
-//! feature. `libc::stat` is 144 bytes and an output over
-//! `INLINE_PAYLOAD` takes a mapping of its own — a whole page
-//! per task — so the fields worth having are copied out and the
-//! rest is left behind
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// What kind of thing a path turned out to be
-///
-/// #### Note
-/// `Other` rather than a variant each for sockets, fifos and
-/// devices. A caller that cares which of those it is has a
-/// reason to be calling `stat` itself, and every caller that
-/// doesn't is asking whether it can be read as a file
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileKind {
     /// An ordinary file
@@ -26,8 +14,7 @@ pub enum FileKind {
 
     /// A symbolic link
     ///
-    /// Only ever seen through `symlink_metadata`. `metadata`
-    /// follows the link and reports whatever is on the far end
+    /// Only ever seen through `symlink_metadata`
     Symlink,
 
     /// A socket, fifo, device, or anything else
@@ -36,16 +23,9 @@ pub enum FileKind {
 
 /// What a `stat` said about a path
 ///
-/// ## Behaviour
-/// A snapshot, taken when the task ran. Nothing keeps it up to
-/// date and nothing holds the file still while it is read, so
-/// a length that was right when it was taken is a length that
-/// was right then
-///
 /// #### Note
-/// Deliberately small. It is an output, so it lives in the task
-/// slot, and the slot has 128 bytes before an output starts
-/// costing a page of its own
+/// A snapshot, taken when the task ran. Nothing keeps it up to
+/// date
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Metadata {
     /// Length in bytes
@@ -64,9 +44,6 @@ pub struct Metadata {
     accessed: SystemTime,
 
     /// When it came into being
-    ///
-    /// Real on macOS, where the filesystem records it, unlike
-    /// the platforms where this has to be guessed at
     created: SystemTime,
 }
 
@@ -118,8 +95,6 @@ impl Metadata {
     /// Whether it is a symbolic link
     ///
     /// Never true through `metadata`, which follows the link
-    /// before it looks. `symlink_metadata` is the one that
-    /// stops at the link itself
     pub fn is_symlink(&self) -> bool {
         self.kind == FileKind::Symlink
     }
@@ -154,15 +129,7 @@ impl FileKind {
 
 /// Turns a seconds and nanoseconds pair into a `SystemTime`
 ///
-/// ## Behaviour
-/// Both halves come from the kernel as signed, and neither is
-/// trusted. A negative second count is a time before 1970,
-/// which is rare but legal, and a nanosecond field outside its
-/// range is a filesystem misreporting rather than a time
-///
-/// Anything that still can't be represented settles on the
-/// epoch. A timestamp is not worth failing a whole `stat` over,
-/// and there is no better answer to give
+/// Anything that can't be represented settles on the epoch
 fn stamp(secs: libc::time_t, nanos: libc::c_long) -> SystemTime {
     let nanos = nanos.clamp(0, 999_999_999) as u32;
 

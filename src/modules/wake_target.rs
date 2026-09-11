@@ -1,10 +1,6 @@
 //! # Wake Target
-//! How the `Reactor` reaches the thread waiting on an event
-//!
-//! A `kevent` carries one word of user data, and that word has
-//! to say both how to wake the waiter and where it is. Tagging
-//! the low bit covers both in the space available, with no
-//! allocation and nothing for either side to free
+//! How the `Reactor` reaches the thread waiting on an event,
+//! packed into a `kevent`'s one word of user data
 
 use crate::modules::waiter::Waiter;
 use libc::c_void;
@@ -15,25 +11,17 @@ pub(crate) enum WakeTarget {
     None,
 
     /// Raise a trigger on this kqueue
-    ///
-    /// The cheap path. The waiting thread is sitting in a
-    /// `kevent` call on a queue of its own, so waking it is
-    /// one syscall and no handoff
     Queue(i32),
 
     /// Set this waiter's flag and unpark its thread
-    ///
-    /// The fallback, for a thread that couldn't get a queue
     Parked(*mut Waiter),
 }
 
 impl WakeTarget {
-    /// Packs a target into the one word a `kevent` gives it
+    /// Packs a target into a `kevent`'s user data
     ///
-    /// #### Note
-    /// The descriptor is stored one higher than it is, so that
-    /// a real kqueue on descriptor 0 doesn't encode to the
-    /// same word as having no waiter at all
+    /// A queue is stored one higher, so descriptor 0 doesn't read
+    /// back as `None`
     pub(crate) fn encode(self) -> *mut c_void {
         match self {
             Self::None => std::ptr::null_mut::<c_void>(),
@@ -42,10 +30,10 @@ impl WakeTarget {
         }
     }
 
-    /// Reads a target back out of an event
+    /// Reads a target back out of a `kevent`'s user data
     ///
-    /// A `Waiter` is at least word aligned wherever it lives,
-    /// so its low bit is free to mark it apart from a queue
+    /// The low bit marks a `Waiter`, which is always at least word
+    /// aligned
     pub(crate) fn decode(udata: *mut c_void) -> Self {
         let raw = udata as usize;
 

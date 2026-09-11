@@ -1,21 +1,11 @@
 //! # Injector
-//! The queue every spawned task lands in, and the one every
-//! worker falls back to when it has nothing of its own left
+//! The queue every spawned task lands in, and the one workers
+//! fall back to when their own is empty
 //!
-//! There is no ceiling on it. `spawn` promises not to block
-//! the calling thread, so a task that arrives faster than the
-//! pool can drain it has to go somewhere rather than push back,
-//! and the link it queues on lives inside the task's own slot.
-//! An unbounded queue that allocates nothing is the only shape
-//! that keeps both of those promises at once
-//!
-//! Each band is two stacks rather than one queue. Pushing onto
-//! a stack is a single compare exchange, and a stack read back
-//! to front is a queue, so reversing the pushed side when the
-//! served side runs dry gives first in first out order for the
-//! cost of one pass over a batch. That pass is O(n) once per
-//! batch, so O(1) for each task in it, and it runs on whichever
-//! thread had nothing better to do anyway
+//! Unbounded, and allocates nothing, since the link lives in
+//! each task's slot. Each band is two stacks: reversing the
+//! pushed side when the served side runs dry gives first in,
+//! first out order
 
 use crate::{
     constants::{INDEX_MASK, PRIORITY_BANDS, STARVE_RELIEF, TAG_SHIFT},
@@ -27,55 +17,31 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 pub(crate) struct Injector {
     /// Where new tasks are pushed, newest first
     ///
-    /// Untagged on purpose. Nothing ever pops one of these a
-    /// node at a time, they are only taken whole by `flip`, so
-    /// there is no node that can leave and come back between a
-    /// pusher's load and its compare exchange. Tagging would
-    /// be defending against something that can't happen
+    /// Untagged, since these are only ever taken whole by `flip`
     incoming: [AtomicUsize; PRIORITY_BANDS],
 
     /// Reversed and ready to serve, oldest first
     ///
-    /// Tagged, unlike `incoming`, because this side genuinely
-    /// is popped one node at a time by every worker at once.
-    /// See `TaskTable::alloc` for what the tag defends against
+    /// Tagged against ABA, since every worker pops from it one
+    /// node at a time
     ready: [AtomicUsize; PRIORITY_BANDS],
 
     /// Whether a reversal is under way on a band
     ///
-    /// One reversal at a time per band is what lets the
-    /// installed list simply be stored rather than merged into
-    /// whatever a second reversal might have put there first
+    /// One at a time per band, so a reversal can store its list
+    /// rather than merge it
     flipping: [AtomicBool; PRIORITY_BANDS],
 
     /// Tasks pushed but not yet taken
-    ///
-    /// The signal the manager grows the pool on, and the
-    /// number `PoolStats` reports
     len: AtomicUsize,
 
-    /// Pops still owed to the oldest work, as a budget the
-    /// manager tops up whenever it finds the queue starving
-    ///
-    /// A count rather than a flag, and that is the whole point.
-    /// A flag stays set for as long as the backlog is deep, and
-    /// serving oldest first for that whole time is priority
-    /// inverted rather than priority aged. A budget spends
-    /// itself and then the order goes back to what the caller
-    /// asked for
-    ///
-    /// Counted rather than compared on age because a pop
-    /// shouldn't be paying to dereference a slot it may not
-    /// even take, and starvation is a millisecond scale problem
-    /// being watched by a millisecond scale tick
+    /// Oldest first pops still owed, topped up by the manager when
+    /// the queue is starving
     relief: AtomicU32,
 }
 
 impl Injector {
     /// An empty injector
-    ///
-    /// A `const fn` so the pool holding it can be a plain
-    /// static with no lazy initialisation on every access
     pub(crate) const fn new() -> Self {
         Self {
             incoming: [const { AtomicUsize::new(0) }; PRIORITY_BANDS],
@@ -86,34 +52,22 @@ impl Injector {
         }
     }
 
-    /// Queues a task in the band its class picks
-    pub(crate) fn push(&self, id: usize) {
+    /// Queues a task in the band its priority picks
+    ///
+    /// ## Returns
+    /// Whether it was queued. `false` means the id has no live
+    /// task behind it
+    pub(crate) fn push(&self, id: usize) -> bool {
         let Some(data) = executor::slot(id) else {
-            return;
+            return false;
         };
 
         let band = data.band().min(PRIORITY_BANDS - 1);
         let index = id + 1;
 
-        // Counted before it is published rather than after, and
-        // the order is the whole point. The instant the swing
-        // below lands, another thread can flip this task onto
-        // the served side, take it, and subtract for it — so an
-        // add left until afterwards can arrive second and leave
-        // the count at nought minus one, which reads as a queue
-        // of eighteen quintillion tasks that don't exist
-        //
-        // Early is the safe direction for the park handshake
-        // too. It can only bring the moment `is_empty` starts
-        // saying no forward, and a worker that doesn't park
-        // when it could have costs a lap of the queue, where
-        // one that parks on a queue with work in it costs
-        // however long it takes somebody to notice
-        //
-        // Sequentially consistent because a worker about to
-        // park reads this after publishing that it is parking,
-        // and this is read against that publication. See
-        // `Worker::park`
+        // Counted before it is published, so a pop can never take the
+        // count below zero. `SeqCst` because a parking worker reads it
+        // against its own announcement
         self.len.fetch_add(1, Ordering::SeqCst);
 
         loop {
@@ -124,53 +78,51 @@ impl Injector {
                 .compare_exchange_weak(head, index, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
-                return;
+                return true;
             }
         }
     }
 
     /// Takes the task that should be served next
     ///
-    /// ## Behaviour
-    /// Bands are served highest first, so a class only ever
-    /// waits behind its own or better. The one exception is a
-    /// starving queue, where the order is turned upside down
-    /// for as long as the manager says it is starving, which
-    /// drains the oldest work at full speed rather than one
-    /// task per tick
+    /// Highest band first, unless the queue is starving, when the
+    /// oldest task can go first
     pub(crate) fn pop(&self) -> Option<usize> {
-        if self.relieving() {
-            for band in 0..PRIORITY_BANDS {
+        self.pop_banded().map(|(id, _)| id)
+    }
+
+    /// The same pop, saying which band it came out of
+    pub(crate) fn pop_banded(&self) -> Option<(usize, usize)> {
+        // Relief prefers the band holding the oldest task, and falls
+        // back to the normal order if that band is empty
+        if self.relief.load(Ordering::Relaxed) != 0 {
+            if let Some(band) = self.oldest_band() {
                 if let Some(id) = self.take(band) {
-                    return Some(id);
+                    self.spend_relief();
+
+                    return Some((id, band));
                 }
             }
-
-            return None;
         }
 
         for band in (0..PRIORITY_BANDS).rev() {
             if let Some(id) = self.take(band) {
-                return Some(id);
+                return Some((id, band));
             }
         }
 
         None
     }
 
+    /// Takes the next task out of one band and no other
+    #[inline(always)]
+    pub(crate) fn pop_from(&self, band: usize) -> Option<usize> {
+        self.take(band)
+    }
+
     /// Tasks queued and not yet taken
     ///
-    /// ## Behaviour
-    /// Approximate, and approximate in one direction only. A
-    /// push counts the task before it publishes it and a pop
-    /// subtracts after it has taken it, so every window either
-    /// side of a real change reads high — never low, and never
-    /// through nought into the top of the range
-    ///
-    /// That asymmetry is deliberate rather than incidental.
-    /// Everything reading this treats a queue as emptier than
-    /// it is as the expensive mistake: a worker parks on work
-    /// that was already there, and waits for somebody to notice
+    /// Approximate, and only ever high, never low
     #[inline(always)]
     pub(crate) fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
@@ -178,19 +130,14 @@ impl Injector {
 
     /// Whether anything is waiting at all
     ///
-    /// Sequentially consistent, unlike `len`, because this is
-    /// the read a worker makes on its way into a park and it
-    /// is ordered against the push that would make parking the
-    /// wrong thing to do
+    /// `SeqCst`, as a worker's park handshake needs
     #[inline(always)]
     pub(crate) fn is_empty(&self) -> bool {
         self.len.load(Ordering::SeqCst) == 0
     }
 
-    /// Says whether the oldest queued task is starving
-    ///
-    /// Grants a fresh budget of oldest first pops when it is,
-    /// and takes any left over away when it isn't
+    /// Says whether the oldest queued task is starving, granting or
+    /// clearing a budget of oldest first pops
     #[inline(always)]
     pub(crate) fn set_starving(&self, starving: bool) {
         let budget = match starving {
@@ -201,50 +148,58 @@ impl Injector {
         self.relief.store(budget, Ordering::Relaxed);
     }
 
-    /// Spends one pop of the starvation budget, if there is any
-    ///
-    /// The exchange is what keeps two workers from spending the
-    /// same unit, and it only ever loops while relief is
-    /// actually armed
+    /// Spends one unit of the starvation budget, once a relief pop
+    /// has come back with a task
     #[inline(always)]
-    fn relieving(&self) -> bool {
-        self.relief
+    fn spend_relief(&self) {
+        let _ = self
+            .relief
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| match left {
                 0 => None,
                 _ => Some(left - 1),
-            })
-            .is_ok()
+            });
     }
 
-    /// The oldest task waiting in the lowest occupied band
+    /// The oldest task waiting in any band, and the band it is in
     ///
-    /// What the manager measures an age against. Reads the
-    /// served side only, so it wants calling after a flip
+    /// Reads the served side only, so it wants calling after a
+    /// flip
     pub(crate) fn oldest(&self) -> Option<(usize, usize)> {
+        let mut oldest: Option<(usize, usize, u64)> = None;
+
         for band in 0..PRIORITY_BANDS {
             let index = self.ready[band].load(Ordering::Acquire) & INDEX_MASK;
 
-            if index != 0 {
-                return Some((band, index - 1));
+            if index == 0 {
+                continue;
+            }
+
+            let id = index - 1;
+
+            let Some(data) = executor::slot(id) else {
+                continue;
+            };
+
+            let stamp = data.priority_sequence();
+
+            if oldest.is_none_or(|(_, _, best)| stamp < best) {
+                oldest = Some((band, id, stamp));
             }
         }
 
-        None
+        oldest.map(|(band, id, _)| (band, id))
     }
 
-    /// Moves the oldest task in a band up into the one above
+    /// The band holding the oldest queued task
+    #[inline(always)]
+    fn oldest_band(&self) -> Option<usize> {
+        self.oldest().map(|(band, _)| band)
+    }
+
+    /// Moves the oldest task in a band onto the pushed side of the
+    /// band above
     ///
-    /// ## Behaviour
-    /// The task keeps the class it was spawned at, because the
-    /// caller asked for that class and aging is a decision
-    /// about where to put a task rather than about what it is
-    ///
-    /// #### Note
-    /// It lands on the pushed side of the band above, so it is
-    /// served after that band's current batch rather than
-    /// ahead of it. Still far sooner than it would have been,
-    /// which is the whole point, and it costs no walk to the
-    /// far end of a list to arrange
+    /// The task keeps its own priority class
     pub(crate) fn promote(&self, band: usize) {
         if band + 1 >= PRIORITY_BANDS {
             return;
@@ -254,6 +209,8 @@ impl Injector {
             return;
         };
 
+        // `pop_ready` only returns live tasks, and this one is only
+        // changing band, so the count stays as it is
         let Some(data) = executor::slot(id) else {
             self.len.fetch_sub(1, Ordering::Relaxed);
             return;
@@ -274,24 +231,16 @@ impl Injector {
         }
     }
 
-    /// Reverses every band's pushed side onto its served side
-    ///
-    /// Pops do this lazily as they need it, so this exists for
-    /// the manager rather than for the pool: measuring the age
-    /// of the oldest queued task means reading the served
-    /// side, and a task that hasn't been reversed yet isn't on
-    /// it to be read
+    /// Reverses every band's pushed side onto its served side, so
+    /// `oldest` can see everything queued
     pub(crate) fn refill(&self) {
         for band in 0..PRIORITY_BANDS {
             self.flip(band);
         }
     }
 
-    /// Empties every band into a list of ids
-    ///
-    /// Only used when the pool is being torn down, where the
-    /// point is to account for what was queued rather than to
-    /// serve it
+    /// Empties every band into a list of ids, for tearing the pool
+    /// down
     pub(crate) fn drain(&self) -> Vec<usize> {
         let mut drained = Vec::new();
 
@@ -305,10 +254,8 @@ impl Injector {
     /// Takes from one band, reversing its pushed side if the
     /// served side has run dry
     ///
-    /// At most one reversal per call, so a band that another
-    /// thread is already reversing is left for the next look
-    /// rather than spun on. Nothing is lost by moving along:
-    /// the work is still queued and the next pop finds it
+    /// A band another thread is already reversing is skipped, not
+    /// waited for
     fn take(&self, band: usize) -> Option<usize> {
         if let Some(id) = self.pop_ready(band) {
             self.len.fetch_sub(1, Ordering::Relaxed);
@@ -327,10 +274,7 @@ impl Injector {
 
     /// Pops one task off a band's served side
     ///
-    /// The tag is bumped on the way out, so a thread that read
-    /// this head and stalled long enough for the task to be
-    /// taken, run, freed and queued again can't mistake the
-    /// head it comes back to for the one it left
+    /// The tag is bumped on the way out, against ABA
     fn pop_ready(&self, band: usize) -> Option<usize> {
         loop {
             let head = self.ready[band].load(Ordering::Acquire);
@@ -341,44 +285,62 @@ impl Injector {
             }
 
             let id = index - 1;
-            let next = executor::slot(id)?.queue_next();
+
+            // Through `queue_link`, since a retired node still has to be
+            // stepped over
+            let Some(next) = executor::queue_link(id) else {
+                // No memory behind this id, so nothing behind it can be
+                // reached. The band is emptied rather than wedged on it
+                let tag = (head >> TAG_SHIFT).wrapping_add(1);
+
+                let _ = self.ready[band].compare_exchange(
+                    head,
+                    tag << TAG_SHIFT,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                );
+
+                return None;
+            };
 
             let tag = (head >> TAG_SHIFT).wrapping_add(1);
             let new = (tag << TAG_SHIFT) | next;
 
             if self.ready[band]
                 .compare_exchange_weak(head, new, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
+                .is_err()
             {
-                return Some(id);
+                continue;
             }
+
+            // A retired task is counted out and stepped over, rather than
+            // left at the head to wedge the band
+            if executor::slot(id).is_none() {
+                self.len.fetch_sub(1, Ordering::Relaxed);
+
+                continue;
+            }
+
+            return Some(id);
         }
     }
 
     /// Turns a band's pushed side into its served side
     ///
     /// ## Returns
-    /// Whether it is worth looking at the served side again.
-    /// `false` means the band is genuinely empty
+    /// Whether the served side is worth looking at again
     ///
-    /// ## Behaviour
-    /// The lock is taken before the served side is checked,
-    /// which is the ordering that makes the install a plain
-    /// store rather than a merge. Only a flip can put anything
-    /// on the served side, and only one flip runs at a time,
-    /// so a served side found empty under the lock stays empty
-    /// until this one fills it
+    /// Only a flip fills the served side, and only one runs at a
+    /// time, so its list is stored rather than merged
     fn flip(&self, band: usize) -> bool {
         if self.flipping[band].swap(true, Ordering::AcqRel) {
-            // Somebody else is part way through. Whatever they
-            // install will be there for the caller's re-check
+            // Somebody else is reversing it
             return true;
         }
 
         let head = self.ready[band].load(Ordering::Acquire);
 
-        // Filled while this was reaching for the lock, so
-        // there is nothing to do but let the caller take it
+        // Filled while this was taking the lock
         if head & INDEX_MASK != 0 {
             self.flipping[band].store(false, Ordering::Release);
             return true;
@@ -391,25 +353,10 @@ impl Injector {
             return false;
         }
 
-        // Newest first going in, oldest first coming out, which
-        // is the order the sequence numbers already imply
         let mut reversed = 0;
 
         while cursor != 0 {
-            // The link to the rest of the chain lives in the
-            // slot, so a slot that can't be read takes the
-            // whole tail behind it — there is no way to reach
-            // past a node you can't look inside
-            //
-            // Written down rather than handled, because it
-            // can't happen. `slot` refuses an id only past
-            // `MAX_TASK_ID` or one whose block was never
-            // mapped, and nothing queued here is either:
-            // allocation maps the block before it hands the id
-            // out, blocks are never unmapped, and the sentinel
-            // id a failed spawn carries is never queued at all.
-            // `trim` doesn't reach it either — it gives pages
-            // back with `madvise` and every address stays valid
+            // Can't happen: a queued id always has a mapped slot
             let Some(data) = executor::slot(cursor - 1) else {
                 break;
             };
@@ -421,8 +368,7 @@ impl Injector {
             cursor = next;
         }
 
-        // Bumped even though this is a store, so that a popper
-        // holding a stale head can't complete against it
+        // Tag bumped, so a popper holding a stale head can't land
         let tag = (head >> TAG_SHIFT).wrapping_add(1);
         self.ready[band].store((tag << TAG_SHIFT) | reversed, Ordering::Release);
 
