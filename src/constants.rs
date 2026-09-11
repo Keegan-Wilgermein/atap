@@ -102,7 +102,7 @@ pub(crate) const SLEEP_MULTIPLIER: usize = 8;
 pub(crate) const MANAGER_TICK: Duration = Duration::from_millis(10);
 
 /// How often a shutdown looks to see whether the pool has
-/// finished draining
+/// finished draining, and an `init` whether a shutdown has
 pub(crate) const SHUTDOWN_POLL: Duration = Duration::from_millis(1);
 
 /// How long a worker sits idle before it is reaped

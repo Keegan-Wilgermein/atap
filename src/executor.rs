@@ -36,8 +36,11 @@ use std::{
     mem,
     panic::{self, AssertUnwindSafe},
     ptr,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
-    thread,
+    sync::{
+        Mutex,
+        atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -46,8 +49,8 @@ static DATA: TaskTable = TaskTable::new();
 
 /// The kqueue the manager takes its tick from
 ///
-/// `Relaxed` reads, with a `SeqCst` write at initialisation and
-/// another if the manager ever gives up
+/// `Relaxed` reads, with `SeqCst` writes when the runtime starts,
+/// shuts down, or the manager gives up
 static EXECUTOR_KQUEUE_ID: AtomicI32 = AtomicI32::new(DEAD_KQUEUE_ID);
 
 /// How many tasks have been spawned
@@ -63,38 +66,73 @@ thread_local! {
     static CURRENT: Cell<usize> = const { Cell::new(NO_TASK) };
 }
 
-/// Whether the runtime has been shut down
-///
-/// One way, and `SeqCst` throughout
-static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+/// No manager and a closed pool, before the first `init` and
+/// after every `shutdown`
+const STOPPED: u8 = 0;
 
-/// Whether somebody has asked the runtime to stop
+/// Between `STOPPED` and `RUNNING`, while one `init` brings the
+/// runtime up
+const STARTING: u8 = 1;
+
+/// Started, and not yet asked to stop
+const RUNNING: u8 = 2;
+
+/// Between `RUNNING` and `STOPPED`, while one `shutdown` drains
+/// the pool
+const STOPPING: u8 = 3;
+
+/// Where the runtime is between an `init` and a `shutdown`
+///
+/// Only a `STOPPED` runtime is started and only a `RUNNING` one
+/// is stopped, so a start and a stop never overlap. `SeqCst`
+/// throughout
+static LIFECYCLE: AtomicU8 = AtomicU8::new(STOPPED);
+
+/// The thread supervising the manager, so a shutdown can wait
+/// for it to be gone before the runtime can start again
+static SUPERVISOR: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+/// Whether the runtime is stopping or stopped
 #[inline(always)]
 pub(crate) fn shutting_down() -> bool {
-    SHUTDOWN.load(Ordering::SeqCst)
+    matches!(LIFECYCLE.load(Ordering::SeqCst), STOPPING | STOPPED)
 }
 
-/// Stops the runtime for good
+/// Stops the runtime until the next `init`
 ///
 /// ## Behaviour
 /// Nothing new gets in, and everything already queued still
-/// runs. Blocks until the pool is empty, then writes off
-/// whatever is left, such as schedules and repeats between runs
+/// runs. Blocks until the pool is empty and every thread it
+/// started has gone, then writes off whatever is left, such as
+/// schedules and repeats between runs
 ///
-/// A second caller returns straight away
+/// A second caller waits for the first one to finish
 ///
 /// #### Note
 /// Never returns while a task that never finishes is running,
 /// including when called from inside a spawned task
 pub(crate) fn shutdown_now() {
-    // Claimed and checked in one step, so only one caller goes
-    // through
-    if SHUTDOWN.swap(true, Ordering::SeqCst) {
-        return;
+    loop {
+        match LIFECYCLE.compare_exchange(RUNNING, STOPPING, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(STOPPED) => return,
+
+            // Somebody else's shutdown, which is this one too
+            Err(STOPPING) => {
+                while LIFECYCLE.load(Ordering::SeqCst) == STOPPING {
+                    thread::sleep(SHUTDOWN_POLL);
+                }
+
+                return;
+            }
+
+            // A start that is nearly done, and then gets stopped
+            Err(_) => thread::sleep(SHUTDOWN_POLL),
+        }
     }
 
     // A spawn from here on settles `Failed`
-    POOL.stop_permanently();
+    POOL.close();
 
     let manager = EXECUTOR_KQUEUE_ID.swap(DEAD_KQUEUE_ID, Ordering::SeqCst);
 
@@ -113,13 +151,31 @@ pub(crate) fn shutdown_now() {
         .check();
     }
 
+    // Gone before the pool is stopped, so no tick can start a
+    // thread behind it
+    let supervisor = SUPERVISOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+
+    if let Some(supervisor) = supervisor {
+        let _ = supervisor.join();
+    }
+
     // Everything already queued still runs
     while POOL.stats().has_any_task() {
         thread::sleep(SHUTDOWN_POLL);
     }
 
-    POOL.stop_all();
-    POOL.abandon();
+    // Asked again every time round, for a thread that started
+    // just as the pool closed
+    loop {
+        POOL.stop_all();
+        POOL.abandon();
+
+        if POOL.live() == 0 && POOL.sleeps_live() == 0 {
+            break;
+        }
+
+        thread::sleep(SHUTDOWN_POLL);
+    }
 
     // Blocking tasks too
     for task in POOL
@@ -138,6 +194,10 @@ pub(crate) fn shutdown_now() {
             continue;
         };
 
+        // Its timer went with the manager's queue, and the next
+        // manager would otherwise arm it again
+        data.disarm();
+
         let state = data.state();
 
         // The running thread gives the reference back itself. A
@@ -154,6 +214,8 @@ pub(crate) fn shutdown_now() {
 
         release(task);
     }
+
+    LIFECYCLE.store(STOPPED, Ordering::SeqCst);
 }
 
 /// Manager deaths still owed, so tests can exercise the restart
@@ -164,7 +226,7 @@ static INJECTED_FAULTS: AtomicU32 = AtomicU32::new(0);
 /// round its loop
 ///
 /// Past `RESTART_LIMIT` in one window, the supervisor gives up
-/// for good
+/// until the runtime is shut down and started again
 pub(crate) fn inject_manager_faults(count: u32) {
     INJECTED_FAULTS.store(count, Ordering::SeqCst);
 }
@@ -183,21 +245,40 @@ fn injected_fault() -> bool {
 pub(crate) struct Executor;
 
 impl Executor {
-    /// Initialises a new `Executor`
+    /// Starts the manager and opens the pool
     ///
-    /// The kqueue and the first workers are created on the calling
-    /// thread, so a task spawned the moment `Runtime::init` returns
-    /// has somewhere to go
+    /// Used by the first `Runtime::init` and by every one after a
+    /// shutdown. The kqueue and the first workers are created on
+    /// the calling thread, so a task spawned the moment `init`
+    /// returns has somewhere to go
+    ///
+    /// ## Returns
+    /// `AlreadyInit` when the runtime is already running. A
+    /// shutdown or a start still in progress is waited out first
     pub(crate) fn init() -> Option<RuntimeError> {
+        loop {
+            match LIFECYCLE.compare_exchange(STOPPED, STARTING, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(RUNNING) => return Some(RuntimeError::AlreadyInit),
+                Err(_) => thread::sleep(SHUTDOWN_POLL),
+            }
+        }
+
         let id = match unsafe { libc::kqueue() }.check() {
             Ok(id) => id,
-            Err(error) => return Some(error),
+            Err(error) => {
+                LIFECYCLE.store(STOPPED, Ordering::SeqCst);
+                return Some(error);
+            }
         };
 
         EXECUTOR_KQUEUE_ID.store(id, Ordering::SeqCst);
 
+        POOL.open();
         POOL.ensure_floor();
         supervise(id);
+
+        LIFECYCLE.store(RUNNING, Ordering::SeqCst);
 
         None
     }
@@ -1412,7 +1493,7 @@ fn release(id: usize) {
 /// Nothing is lost on a restart, since no task lives on the
 /// manager's stack
 fn supervise(id: i32) {
-    thread::spawn(move || {
+    let supervisor = thread::spawn(move || {
         let mut failures = 0;
         let mut started = Instant::now();
 
@@ -1442,6 +1523,8 @@ fn supervise(id: i32) {
             started = Instant::now();
         }
     });
+
+    *SUPERVISOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(supervisor);
 }
 
 /// The loop the manager runs on, woken by its own tick
@@ -1576,7 +1659,8 @@ fn recover_waits() {
     }
 }
 
-/// Stops managing the pool for good
+/// Stops managing the pool until the runtime is shut down and
+/// started again
 ///
 /// Doesn't fail the backlog, since the pool carries on without
 /// a manager. Tasks are only written off when nothing is left
@@ -1595,10 +1679,10 @@ fn shutdown(id: i32) {
         return;
     }
 
-    // Nothing is left running. The pool is shut for good, since
-    // everything below is about to be failed and its slot given
-    // back
-    POOL.stop_permanently();
+    // Nothing is left running. The pool is shut until a shutdown
+    // and an `init` start it again, since everything below is about
+    // to be failed and its slot given back
+    POOL.close();
     POOL.abandon();
 
     for task in POOL.injector().drain() {

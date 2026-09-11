@@ -60,10 +60,8 @@ pub(crate) struct WorkerPool {
     /// Workers asleep on their own state word
     parked: AtomicU32,
 
-    /// Whether the pool has been shut for good
-    ///
-    /// Nothing restarts it once set, since everything it held has
-    /// been failed and given back
+    /// Whether the pool is shut, from a shutdown until the next
+    /// `init`
     stopped: AtomicBool,
 
     /// Manager ticks since the table was last trimmed
@@ -421,7 +419,7 @@ impl WorkerPool {
     /// The count goes up before the spawn, the same as
     /// `start_sleep`
     pub(crate) fn start_one(&'static self) -> bool {
-        if self.live() >= cap() {
+        if self.stopped.load(Ordering::Acquire) || self.live() >= cap() {
             return false;
         }
 
@@ -622,14 +620,19 @@ impl WorkerPool {
         self.sweep_all();
     }
 
-    /// Shuts the pool for good
-    pub(crate) fn stop_permanently(&'static self) {
+    /// Shuts the pool, so nothing new is queued or started
+    pub(crate) fn close(&'static self) {
         self.stopped.store(true, Ordering::Release);
+    }
+
+    /// Opens the pool again, for a runtime that is starting
+    pub(crate) fn open(&'static self) {
+        self.stopped.store(false, Ordering::Release);
     }
 
     /// Asks every thread in the pool to stop between tasks
     ///
-    /// Only useful after `stop_permanently`, or the next tick
+    /// Only useful after `close`, or the next tick
     /// starts them straight back up
     pub(crate) fn stop_all(&'static self) {
         let highest = self.highest.load(Ordering::Acquire);

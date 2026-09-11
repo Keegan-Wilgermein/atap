@@ -1,12 +1,15 @@
 //! # Shutdown
 
 use atap::{Runtime, RuntimeError, Sleep};
-use std::time::{Duration, Instant};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 /// A shutdown drains the backlog, refuses new work, and leaves
-/// `block` working
+/// `block` working, then `init` starts the runtime again
 #[test]
-fn shutdown_drains_the_backlog_then_refuses_new_work() {
+fn shutdown_drains_the_backlog_then_init_starts_it_again() {
     Runtime::init();
 
     let tasks = 2_000;
@@ -31,6 +34,7 @@ fn shutdown_drains_the_backlog_then_refuses_new_work() {
 
     // Closed to new work
     let late = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn();
+    let kept = late.clone();
 
     assert_eq!(
         late.join(),
@@ -58,10 +62,58 @@ fn shutdown_drains_the_backlog_then_refuses_new_work() {
     // Safe twice
     Runtime::shutdown();
 
-    // And it can't be started again
-    assert_eq!(
-        Runtime::init(),
-        Some(RuntimeError::ShutDown),
-        "a runtime that has been shut down doesn't start again",
-    );
+    for cycle in 0..2 {
+        // Starts again, and only once
+        assert_eq!(Runtime::init(), None, "cycle {cycle}: the runtime didn't start again");
+
+        assert_eq!(
+            Runtime::init(),
+            Some(RuntimeError::AlreadyInit),
+            "cycle {cycle}: a running runtime was started twice",
+        );
+
+        let status = Runtime::status();
+        println!("cycle {cycle}: {status}");
+
+        assert!(status.healthy(), "cycle {cycle}: the runtime came back degraded");
+
+        // A handle from before the shutdown still reads what its
+        // task ended with
+        assert_eq!(
+            kept.maybe_join(),
+            Err(RuntimeError::TaskFailed),
+            "cycle {cycle}: a restart changed what an old handle reads",
+        );
+
+        let quick = Runtime::task(Sleep::sleep(Duration::from_micros(200), true)).spawn();
+        let blocking = Runtime::task(Sleep::sleep(Duration::from_millis(5), false)).spawn();
+
+        // Both need the new manager's timers
+        let delayed = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+            .after(Duration::from_millis(50))
+            .spawn();
+
+        let counted = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+            .repeat()
+            .every(Duration::from_millis(10))
+            .count(3)
+            .spawn();
+
+        quick.join().expect("a task spawned after the restart runs");
+        blocking.join().expect("a blocking task spawned after the restart runs");
+        delayed.join().expect("a delayed task spawned after the restart runs");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+
+        while !counted.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(counted.is_finished(), "cycle {cycle}: a timed repeat never got through its count");
+        assert!(!counted.is_failed(), "cycle {cycle}: a timed repeat failed after the restart");
+
+        Runtime::shutdown();
+
+        assert!(Runtime::status().shut_down(), "cycle {cycle}: the second shutdown didn't take");
+    }
 }

@@ -6,7 +6,7 @@
 //! was asked for, every join has a ceiling, and the only errors
 //! allowed are cancels and lost races. Once it goes quiet, the
 //! runtime has to go idle, give its slots back, still grow for
-//! a burst, stop burning cpu, and shut down
+//! a burst, stop burning cpu, shut down, and start again
 //!
 //! ## Knobs
 //! `ATAP_STRESS_SECS` runs it longer than the default twenty
@@ -1317,6 +1317,21 @@ fn everything_at_once() {
     );
 
     println!("shut down cleanly after the storm");
+
+    // ---- and starts again
+    assert_eq!(Runtime::init(), None, "the runtime wouldn't start again after the storm");
+
+    match Runtime::task(File::read(small.as_path())).spawn().join() {
+        Ok(Ok(bytes)) => {
+            assert_eq!(bytes.as_slice(), small_body.as_slice(), "a read after starting again was wrong");
+        }
+        other => panic!(
+            "the runtime took no spawned work after starting again: {:?}",
+            other.map(|read| read.map(|bytes| bytes.len())),
+        ),
+    }
+
+    println!("started again after the storm");
 
     let _ = fs::remove_file(small.as_path());
     let _ = fs::remove_file(large.as_path());

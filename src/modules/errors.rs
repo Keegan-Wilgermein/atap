@@ -16,10 +16,6 @@ pub enum RuntimeError {
     /// Runtime has already been previously initialised
     AlreadyInit,
 
-    /// The runtime has been shut down, and can't be initialised
-    /// again
-    ShutDown,
-
     /// The output was already moved out by `take()`
     ///
     /// On a repeat, the next run may still publish another.
@@ -88,7 +84,6 @@ impl fmt::Display for RuntimeError {
             Self::CheckError(None) => write!(formatter, "system call failed"),
             Self::AddressLock => write!(formatter, "the kernel refused a wait on an address"),
             Self::AlreadyInit => write!(formatter, "the runtime is already initialised"),
-            Self::ShutDown => write!(formatter, "the runtime has been shut down"),
             Self::AlreadyTaken => write!(formatter, "the output was already taken"),
             Self::Finished => write!(formatter, "the series ran out and its output was taken"),
             Self::Cancelled => write!(formatter, "the task was cancelled"),

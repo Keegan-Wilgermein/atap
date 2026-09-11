@@ -40,7 +40,7 @@ impl RuntimeStatus {
 
     /// Whether the runtime has been shut down
     ///
-    /// Once true, it stays true
+    /// Stays true until `Runtime::init` starts it again
     pub fn shut_down(&self) -> bool {
         self.shut_down
     }

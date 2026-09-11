@@ -41,7 +41,7 @@ fn sleep_accuracy_vs_std_blocking() {
 fn sleep_multi_threaded_blocking() {
     Runtime::init();
 
-    let threads = 3;
+    let threads = 4;
 
     (1..=threads).into_iter().for_each(|i| {
         thread::spawn(move || {

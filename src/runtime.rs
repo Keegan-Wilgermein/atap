@@ -50,24 +50,23 @@ impl Runtime {
     ///
     /// If a runtime is already initialised, this is a no-op
     ///
+    /// After a `shutdown`, this starts it again. A shutdown still
+    /// in progress is waited out first
+    ///
     /// Runtimes aren't returned as objects to call methods on
     /// and instead handle all their operations and state internally
     ///
     /// For this reason, Runtimes are threadsafe
     pub fn init() -> Option<RuntimeError> {
-        // Old handles still hold the slots a shutdown handed back,
-        // so starting again is refused
-        if executor::shutting_down() {
-            return Some(RuntimeError::ShutDown);
-        }
-
         if INIT.swap(true, Ordering::SeqCst) {
             // Somebody else is part way through, so wait it out
             while !READY.load(Ordering::Acquire) {
                 thread::yield_now();
             }
 
-            return Some(RuntimeError::AlreadyInit);
+            // Starts it again after a shutdown, and is `AlreadyInit`
+            // otherwise
+            return Executor::init();
         }
 
         let error = init_runtime();
@@ -98,7 +97,6 @@ impl Runtime {
         let reactor_id = REACTOR_KQUEUE_ID.load(Ordering::Relaxed);
 
         // IDs are per thread, so 0 can't overlap
-
         task.execute(reactor_id, 0)
     }
 
@@ -266,16 +264,16 @@ impl Runtime {
     pub fn status() -> RuntimeStatus {
         let initialised = Self::initialised();
 
-        // Neither is up before there has been an initialisation
+        // None of these mean anything before an initialisation
         RuntimeStatus::new(
             initialised,
-            executor::shutting_down(),
+            initialised && executor::shutting_down(),
             initialised && REACTOR_KQUEUE_ID.load(Ordering::Relaxed) != DEAD_KQUEUE_ID,
             initialised && executor::manager_alive(),
         )
     }
 
-    /// Stops the runtime for good
+    /// Stops the runtime until the next `init`
     ///
     /// ## Behaviour
     /// Drains rather than aborts. Nothing new gets in, and a
@@ -283,17 +281,19 @@ impl Runtime {
     /// Everything already queued still runs, and a task in
     /// flight runs to the end
     ///
-    /// Blocks until the pool has nothing left to do. Anything
-    /// the drain can't reach, like a repeat between runs, is
-    /// failed so its listeners get an answer
+    /// Blocks until the pool has nothing left to do and every
+    /// thread it started has gone. Anything the drain can't
+    /// reach, like a repeat between runs, is failed so its
+    /// listeners get an answer
     ///
     /// `block` still works during and after a shutdown
     ///
-    /// `init` after this returns `ShutDown`
+    /// `init` after this starts the runtime again. Handles from
+    /// before it keep reading what their tasks ended with
     ///
     /// #### Note
-    /// Calling it twice is safe. The second call comes straight
-    /// back without waiting for the first to finish draining
+    /// Calling it twice is safe. The second call waits for the
+    /// first to finish
     ///
     /// #### Note
     /// Never comes back while a task that never finishes is
