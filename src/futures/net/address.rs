@@ -1,5 +1,5 @@
 //! # Address
-//! Where a socket task points, and the form the kernel takes
+//! Where a TCP or UDP task points, and the form the kernel takes
 //! an address in
 
 use crate::{RuntimeError, modules::int_check::IntCheck};
@@ -63,7 +63,7 @@ impl Target {
     }
 }
 
-/// Stops `TcpAddress` being implemented outside the crate
+/// Stops `NetAddress` being implemented outside the crate
 ///
 /// `Target` is crate private, which is the point: nothing outside can
 /// name `target`, so nothing outside can implement it
@@ -78,13 +78,13 @@ pub(crate) mod sealed {
     }
 }
 
-/// Anything a socket task can be pointed at
+/// Anything a TCP or UDP task can be pointed at
 ///
 /// `"host:port"` as a `&str` or a `String`, or a `SocketAddr`.
 /// A name is looked up when the task runs, never when it is
 /// built
 #[allow(private_bounds)]
-pub trait TcpAddress: sealed::Sealed {}
+pub trait NetAddress: sealed::Sealed {}
 
 #[allow(private_interfaces)]
 impl sealed::Sealed for &str {
@@ -114,10 +114,10 @@ impl sealed::Sealed for SocketAddr {
     }
 }
 
-impl TcpAddress for &str {}
-impl TcpAddress for String {}
-impl TcpAddress for &String {}
-impl TcpAddress for SocketAddr {}
+impl NetAddress for &str {}
+impl NetAddress for String {}
+impl NetAddress for &String {}
+impl NetAddress for SocketAddr {}
 
 /// The address family a socket for `addr` is made in
 #[inline(always)]

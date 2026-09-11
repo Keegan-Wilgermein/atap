@@ -2,104 +2,25 @@
 //! An open TCP connection and a listening socket, and the
 //! tasks each of them starts
 
-use crate::{
-    RuntimeError,
-    futures::tcp::{
-        address::family,
-        tcp_task::{AcceptTask, RecvTask, SendTask},
+use crate::futures::{
+    net::{
+        socket::Fd,
+        stream::{Pipe, RecvTask, SendTask, Source},
     },
-    modules::int_check::IntCheck,
+    tcp::tcp_task::AcceptTask,
 };
-use std::{
-    fmt, mem,
-    net::SocketAddr,
-    sync::{Arc, Mutex, MutexGuard},
-};
-
-/// An open descriptor that closes itself
-///
-/// #### Note
-/// Closing in `Drop` also keeps errno intact
-pub(crate) struct Fd(libc::c_int);
-
-impl Fd {
-    /// Takes ownership of a descriptor the kernel just handed out
-    #[inline(always)]
-    pub(crate) fn new(fd: libc::c_int) -> Self {
-        Self(fd)
-    }
-
-    /// The number, for handing to a syscall
-    #[inline(always)]
-    pub(crate) fn raw(&self) -> libc::c_int {
-        self.0
-    }
-}
-
-impl Drop for Fd {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.0) };
-    }
-}
-
-/// Makes a socket for `addr`'s family, set up the way every
-/// socket here is kept
-pub(crate) fn open_socket(addr: &SocketAddr) -> Result<Fd, RuntimeError> {
-    let fd = Fd::new(unsafe { libc::socket(family(addr), libc::SOCK_STREAM, 0) }.check()?);
-
-    configure(fd.raw())?;
-
-    Ok(fd)
-}
-
-/// Puts a socket in the state every one here is kept in
-///
-/// ## Behaviour
-/// Non-blocking, so a step never waits in a syscall. Closed on
-/// exec, so a process task's child doesn't inherit it. And no
-/// `SIGPIPE` when the other side has gone, which would take the
-/// whole program down
-pub(crate) fn configure(fd: libc::c_int) -> Result<(), RuntimeError> {
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }.check()?;
-
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) }.check()?;
-    unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) }.check()?;
-
-    set_flag(fd, libc::SO_NOSIGPIPE)
-}
-
-/// Turns a socket level option on
-pub(crate) fn set_flag(fd: libc::c_int, option: libc::c_int) -> Result<(), RuntimeError> {
-    let on: libc::c_int = 1;
-
-    unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            option,
-            (&on as *const libc::c_int).cast::<libc::c_void>(),
-            mem::size_of::<libc::c_int>() as libc::socklen_t,
-        )
-    }
-    .check()?;
-
-    Ok(())
-}
+use std::{fmt, net::SocketAddr, sync::Arc};
 
 /// What every copy of one connection shares
 struct Stream {
-    /// The socket, closed when the last copy goes
-    fd: Fd,
+    /// The socket, and what the last receive read past its end
+    pipe: Pipe,
 
     /// This end's address
     local: SocketAddr,
 
     /// The other end's address
     peer: SocketAddr,
-
-    /// Bytes a receive read past what it was asked for, which the
-    /// next receive takes first
-    leftover: Mutex<Vec<u8>>,
 }
 
 /// An open TCP connection
@@ -144,26 +65,23 @@ impl Connection {
     pub(crate) fn new(fd: Fd, local: SocketAddr, peer: SocketAddr) -> Self {
         Self {
             stream: Arc::new(Stream {
-                fd,
+                pipe: Pipe::new(fd),
                 local,
                 peer,
-                leftover: Mutex::new(Vec::new()),
             }),
         }
     }
 
-    /// The socket, for handing to a syscall
+    /// The stream the send and receive tasks work on
     #[inline(always)]
-    pub(crate) fn fd(&self) -> libc::c_int {
-        self.stream.fd.raw()
+    pub(crate) fn pipe(&self) -> &Pipe {
+        &self.stream.pipe
     }
 
-    /// The bytes read past the end of an earlier receive
-    pub(crate) fn leftover(&self) -> MutexGuard<'_, Vec<u8>> {
-        self.stream
-            .leftover
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// This connection, as something a stream task can hold
+    #[inline(always)]
+    fn source(&self) -> Source {
+        Source::Tcp(self.clone())
     }
 
     /// Sends every byte of `data`
@@ -180,7 +98,7 @@ impl Connection {
     /// A send that times out or is cancelled may already have sent
     /// part of `data`, and that part can't be taken back
     pub fn send(&self, data: impl Into<Arc<[u8]>>) -> SendTask {
-        SendTask::new(self.clone(), data.into())
+        SendTask::new(self.source(), data.into())
     }
 
     /// Receives whatever has arrived, up to `max` bytes
@@ -193,7 +111,7 @@ impl Connection {
     /// other side closed the connection**, and nothing more is
     /// coming
     pub fn recv(&self, max: usize) -> RecvTask {
-        RecvTask::some(self.clone(), max)
+        RecvTask::some(self.source(), max)
     }
 
     /// Receives exactly `len` bytes
@@ -205,7 +123,7 @@ impl Connection {
     ///
     /// [`RuntimeError::Closed`]: crate::RuntimeError::Closed
     pub fn recv_exact(&self, len: usize) -> RecvTask {
-        RecvTask::exact(self.clone(), len)
+        RecvTask::exact(self.source(), len)
     }
 
     /// Receives up to and including `delimiter`
@@ -227,7 +145,7 @@ impl Connection {
     /// [`RuntimeError::TooLong`]: crate::RuntimeError::TooLong
     /// [`RuntimeError::Closed`]: crate::RuntimeError::Closed
     pub fn recv_until(&self, delimiter: &[u8], max: usize) -> RecvTask {
-        RecvTask::until(self.clone(), Arc::from(delimiter), max)
+        RecvTask::until(self.source(), Arc::from(delimiter), max)
     }
 
     /// Receives everything until the other side closes the
@@ -236,7 +154,7 @@ impl Connection {
     /// #### Note
     /// All of it lands in memory at once
     pub fn recv_to_end(&self) -> RecvTask {
-        RecvTask::to_end(self.clone())
+        RecvTask::to_end(self.source())
     }
 
     /// This end's address

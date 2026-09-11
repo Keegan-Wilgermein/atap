@@ -1,9 +1,9 @@
 //! # TCP
 //! The constructors every TCP task is started from
 
-use crate::futures::tcp::{
-    address::TcpAddress,
-    tcp_task::{ConnectTask, ListenTask, RequestTask},
+use crate::futures::{
+    net::address::NetAddress,
+    tcp::tcp_task::{ConnectTask, ListenTask, RequestTask},
 };
 use std::sync::Arc;
 
@@ -64,7 +64,7 @@ impl Tcp {
     /// found as [`RuntimeError::BadAddress`]
     ///
     /// [`RuntimeError::BadAddress`]: crate::RuntimeError::BadAddress
-    pub fn connect(addr: impl TcpAddress) -> ConnectTask {
+    pub fn connect(addr: impl NetAddress) -> ConnectTask {
         ConnectTask::new(addr.target())
     }
 
@@ -78,7 +78,7 @@ impl Tcp {
     /// The listener
     ///
     /// [`Listener::local_addr`]: crate::Listener::local_addr
-    pub fn listen(addr: impl TcpAddress) -> ListenTask {
+    pub fn listen(addr: impl NetAddress) -> ListenTask {
         ListenTask::new(addr.target())
     }
 
@@ -96,7 +96,7 @@ impl Tcp {
     /// #### Note
     /// The whole answer lands in memory at once. A server that
     /// never closes its end keeps this waiting until its timeout
-    pub fn request(addr: impl TcpAddress, data: impl Into<Arc<[u8]>>) -> RequestTask {
+    pub fn request(addr: impl NetAddress, data: impl Into<Arc<[u8]>>) -> RequestTask {
         RequestTask::new(addr.target(), data.into())
     }
 }

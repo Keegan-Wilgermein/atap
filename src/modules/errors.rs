@@ -55,6 +55,9 @@ pub enum RuntimeError {
 
     /// A path contained a zero byte, so it couldn't be handed to
     /// the kernel
+    ///
+    /// For a Unix socket, also a path that is empty or longer than
+    /// the 103 bytes the kernel has room for
     BadPath,
 
     /// A program argument contained a zero byte, so it couldn't be
@@ -89,6 +92,23 @@ pub enum RuntimeError {
     /// A `recv_until` read as much as it was allowed without
     /// finding its delimiter
     TooLong,
+
+    /// A certificate was refused
+    ///
+    /// The other side's didn't check out: an untrusted issuer, the
+    /// wrong name, or out of date. Or this side's own certificate
+    /// or key file didn't parse, or the two didn't match
+    ///
+    /// Only TLS tasks return this, which need the `tls` feature
+    BadCertificate,
+
+    /// TLS failed for a reason other than a certificate
+    ///
+    /// The handshake broke down, a record didn't decrypt, or the
+    /// other side sent an alert
+    ///
+    /// Only TLS tasks return this, which need the `tls` feature
+    TlsFailed,
 }
 
 impl fmt::Display for RuntimeError {
@@ -109,7 +129,7 @@ impl fmt::Display for RuntimeError {
             Self::TaskFailed => write!(formatter, "the task will never produce an output"),
             Self::NotReady => write!(formatter, "the task has not settled yet"),
             Self::StillInUse => write!(formatter, "too much of the task table is in use to trim"),
-            Self::BadPath => write!(formatter, "the path contains a zero byte"),
+            Self::BadPath => write!(formatter, "the path can't be handed to the kernel"),
             Self::BadArgument => write!(formatter, "an argument contains a zero byte"),
             Self::BadVariable => {
                 write!(formatter, "an environment variable cannot be passed on as written")
@@ -121,6 +141,8 @@ impl fmt::Display for RuntimeError {
             Self::BadAddress => write!(formatter, "the address could not be parsed or found"),
             Self::Closed => write!(formatter, "the other side closed the connection"),
             Self::TooLong => write!(formatter, "the delimiter was not found within the limit"),
+            Self::BadCertificate => write!(formatter, "a certificate was refused"),
+            Self::TlsFailed => write!(formatter, "the TLS session failed"),
         }
     }
 }

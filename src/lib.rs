@@ -39,11 +39,16 @@ mod modules {
 mod futures {
     pub mod file;
     pub(crate) mod kernel_wait;
+    pub mod net;
     pub mod process;
     pub mod sleep;
     pub(crate) mod sleep_task;
     pub(crate) mod task;
     pub mod tcp;
+    #[cfg(feature = "tls")]
+    pub mod tls;
+    pub mod udp;
+    pub mod unix;
 }
 
 // Re-exports
@@ -54,9 +59,16 @@ pub use futures::process::{ExitStatus, OutputTask, Process, ProcessOutput, Statu
 pub use futures::sleep::Sleep;
 pub use futures::sleep_task::SleepTask;
 pub use futures::task::Task;
-pub use futures::tcp::{
-    AcceptTask, ConnectTask, Connection, ListenTask, Listener, RecvTask, RequestTask, SendTask,
-    Tcp, TcpAddress,
+pub use futures::net::{NetAddress, RecvTask, SendTask};
+pub use futures::tcp::{AcceptTask, ConnectTask, Connection, ListenTask, Listener, RequestTask, Tcp};
+#[cfg(feature = "tls")]
+pub use futures::tls::{
+    Tls, TlsAcceptTask, TlsConnectTask, TlsConnection, TlsListenTask, TlsListener, TlsRequestTask,
+};
+pub use futures::udp::{BindTask, RecvFromTask, SendToTask, Udp, UdpSocket};
+pub use futures::unix::{
+    Unix, UnixAcceptTask, UnixBindTask, UnixConnectTask, UnixConnection, UnixDatagram,
+    UnixListenTask, UnixListener, UnixRecvFromTask, UnixSendToTask,
 };
 pub use modules::errors::RuntimeError;
 pub use modules::join_policy::JoinPolicy;
