@@ -198,9 +198,9 @@ pub(crate) fn shutdown_now() {
         // manager would otherwise arm it again
         data.disarm();
 
-        // Waiting on the network holds no thread, so nothing would
-        // ever give this one's reference back. Written off, like a
-        // delay still waiting
+        // A parked task holds no thread, so nothing would ever give
+        // this one's reference back. Written off, like a delay still
+        // waiting
         if data.parked() {
             unpark(task, data);
             continue;
@@ -892,7 +892,8 @@ pub(crate) fn run(id: usize) {
     CURRENT.with(|current| current.set(NO_TASK));
 
     let finished = match stepped {
-        // Waiting on a socket, so the thread goes back to the pool
+        // Parked on something the kernel will report, so the thread
+        // goes back to the pool
         Ok(Some(park)) => {
             park_task(id, data, task, park);
 
@@ -992,8 +993,9 @@ fn queue(id: usize, blocking: bool) -> bool {
 /// whoever claims the park to take off the queue
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fired {
-    /// The socket became ready
-    Socket,
+    /// What it was watching happened: a socket became ready, or a
+    /// signal arrived
+    Event,
 
     /// The deadline came
     Deadline,
@@ -1003,8 +1005,8 @@ enum Fired {
     Neither,
 }
 
-/// Puts a task down until its socket is ready, giving its thread
-/// back to the pool
+/// Puts a task down until what it is watching happens, giving its
+/// thread back to the pool
 ///
 /// ## Behaviour
 /// The task goes back in its slot and is marked parked before
@@ -1018,11 +1020,7 @@ fn park_task(id: usize, data: &TaskData, task: Box<Box<dyn ErasedTask>>, park: P
     data.add_listener();
 
     data.rearm(Box::into_raw(task).cast::<c_void>());
-    data.park(
-        park.fd,
-        park.filter == libc::EVFILT_WRITE,
-        park.deadline.is_some(),
-    );
+    data.park(park.ident, park.filter, park.deadline.is_some());
 
     let watched = watch_park(id, park);
 
@@ -1077,7 +1075,7 @@ fn watch_park(id: usize, park: Park) -> bool {
     unsafe {
         KEvent::register(
             manager,
-            park.fd as usize,
+            park.ident as usize,
             0,
             id as *mut c_void,
             EventDesc::new_park(park.filter),
@@ -1091,14 +1089,14 @@ fn watch_park(id: usize, park: Park) -> bool {
 ///
 /// `parked` is what `claim_parked` gave back. Nothing is taken off
 /// once the manager has gone, since its queue went with it
-fn unwatch_park(id: usize, parked: (i32, bool, bool), fired: Fired) {
+fn unwatch_park(id: usize, parked: (i32, i16, bool), fired: Fired) {
     let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
 
     if manager == DEAD_KQUEUE_ID {
         return;
     }
 
-    let (fd, write, timed) = parked;
+    let (ident, filter, timed) = parked;
 
     if timed && fired != Fired::Deadline {
         let _ = unsafe {
@@ -1113,16 +1111,11 @@ fn unwatch_park(id: usize, parked: (i32, bool, bool), fired: Fired) {
         .check();
     }
 
-    if fired != Fired::Socket {
-        let filter = match write {
-            true => libc::EVFILT_WRITE,
-            false => libc::EVFILT_READ,
-        };
-
+    if fired != Fired::Event {
         let _ = unsafe {
             KEvent::register(
                 manager,
-                fd as usize,
+                ident as usize,
                 0,
                 id as *mut c_void,
                 EventDesc::new_park_delete(filter),
@@ -1132,12 +1125,12 @@ fn unwatch_park(id: usize, parked: (i32, bool, bool), fired: Fired) {
     }
 }
 
-/// Queues a parked task again, because its socket is ready or
-/// its deadline has come
+/// Queues a parked task again, because what it was watching
+/// happened or its deadline has come
 ///
 /// A wake for a task that is no longer parked is left over from
 /// an earlier park, and does nothing. One for a task parked since
-/// only costs it a look at its socket
+/// only costs it a second look at what it is watching
 fn wake_parked(id: usize, fired: Fired) {
     let Some(data) = slot(id) else {
         return;
@@ -1816,9 +1809,10 @@ fn executor_loop(id: i32) {
             }
 
             match event.filter {
-                // A parked task's socket is ready
-                libc::EVFILT_READ | libc::EVFILT_WRITE => {
-                    wake_parked(event.udata as usize, Fired::Socket);
+                // What a parked task was watching happened: a socket is
+                // ready, or a signal arrived
+                libc::EVFILT_READ | libc::EVFILT_WRITE | libc::EVFILT_SIGNAL => {
+                    wake_parked(event.udata as usize, Fired::Event);
                 }
 
                 // The tick carries nothing
@@ -2062,12 +2056,12 @@ mod tests {
     fn a_stale_park_wake_cannot_start_a_delayed_task() {
         crate::Runtime::init();
 
-        let handle = crate::Runtime::task(Sleep::sleep(Duration::from_micros(1), true))
+        let handle = crate::Runtime::task(Sleep::sleep(Duration::from_micros(1)))
             .after(Duration::from_millis(300))
             .spawn();
 
         // Both kinds of park wake, aimed at a task that isn't parked
-        wake_parked(handle.id(), Fired::Socket);
+        wake_parked(handle.id(), Fired::Event);
         wake_parked(handle.id(), Fired::Deadline);
 
         thread::sleep(Duration::from_millis(50));
@@ -2092,7 +2086,7 @@ mod tests {
     fn panicking_task_does_not_lose_its_queue() {
         crate::Runtime::init();
 
-        let quick = || Sleep::sleep(Duration::from_micros(50), true);
+        let quick = || Sleep::sleep(Duration::from_micros(50));
 
         let before: Vec<_> = (0..256).map(|_| crate::Runtime::task(quick()).spawn()).collect();
         let doomed = crate::Runtime::task(Panics).spawn();

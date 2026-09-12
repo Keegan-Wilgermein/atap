@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -32,7 +32,7 @@ fn finished_and_already_taken_are_different_endings() {
     Runtime::init();
 
     // A one shot, taken twice
-    let once = Runtime::task(Sleep::sleep(Duration::from_millis(5), false)).spawn();
+    let once = Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed)).spawn();
     let watcher = once.clone();
 
     once.take().expect("the value moves out");
@@ -44,7 +44,7 @@ fn finished_and_already_taken_are_different_endings() {
     );
 
     // A bounded repeat, drained to the end
-    let bounded = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+    let bounded = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()
         .every(Duration::from_millis(10))
         .count(3)

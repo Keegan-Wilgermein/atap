@@ -13,12 +13,12 @@ fn builder_priority_reaches_the_band() {
     let started = Instant::now();
 
     let queued: Vec<_> = (0..tasks)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50), true)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50))).spawn())
         .collect();
 
     // Last in, and served first anyway
     let queued_at = Instant::now();
-    let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(50), true))
+    let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(50)))
         .priority(255)
         .spawn();
 

@@ -16,18 +16,19 @@ pub(crate) mod sealed {
         /// The run is over, and this is its output
         Done(T),
 
-        /// The run is waiting on a socket, and can give its thread
-        /// back until the socket is ready
+        /// The run is waiting on something the kernel will report,
+        /// and can give its thread back until it does
         Park(Park),
     }
 
-    /// The socket a parked task is waiting on
+    /// What a parked task is waiting for
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Park {
-        /// The descriptor to watch
-        pub fd: libc::c_int,
+        /// What to watch, which is whatever the filter takes: a
+        /// descriptor for a socket, a signal number for a signal
+        pub ident: libc::c_int,
 
-        /// `EVFILT_READ` or `EVFILT_WRITE`
+        /// Which `EVFILT_` decides what counts as ready
         pub filter: i16,
 
         /// When to wake it anyway, so it can give up

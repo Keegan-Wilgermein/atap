@@ -4,7 +4,7 @@
 //! spawned tasks with blocking ones, to catch leaks, drift and
 //! schedules that quietly stop
 
-use atap::{DEFAULT_PRIORITY, File, Runtime, RuntimeError, Sleep};
+use atap::{DEFAULT_PRIORITY, File, Runtime, RuntimeError, Sleep, SleepMode};
 use std::{
     fs,
     path::PathBuf,
@@ -61,7 +61,7 @@ fn a_program_that_just_runs() {
         .spawn();
 
     // Something a program does once, a moment after starting
-    let warmup = Runtime::task(Sleep::sleep(Duration::from_millis(5), false))
+    let warmup = Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed))
         .after(Duration::from_millis(250))
         .spawn();
 
@@ -89,7 +89,7 @@ fn a_program_that_just_runs() {
                     _ => DEFAULT_PRIORITY,
                 };
 
-                Runtime::task(Sleep::sleep(Duration::from_micros(index * 200 + 50), true))
+                Runtime::task(Sleep::sleep(Duration::from_micros(index * 200 + 50)))
                     .priority(priority)
                     .spawn()
             })
@@ -134,7 +134,7 @@ fn a_program_that_just_runs() {
 
         // A bounded retry job, now and then
         if ticks % 200 == 0 {
-            let retries = Runtime::task(Sleep::sleep(Duration::from_millis(2), false))
+            let retries = Runtime::task(Sleep::sleep(Duration::from_millis(2)).mode(SleepMode::Relaxed))
                 .repeat()
                 .every(Duration::from_millis(20))
                 .count(3)

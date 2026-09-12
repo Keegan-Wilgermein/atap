@@ -171,6 +171,16 @@ pub(crate) const SELECT_IDENT: usize = 1;
 /// A missed wake costs latency, not an answer
 pub(crate) const SELECT_POLL: Duration = Duration::from_millis(50);
 
+/// How long a signal task waits before looking at its count again
+/// anyway
+///
+/// A signal's watch only reports what arrives once it is on, unlike
+/// a socket's, which reports a socket that is ready already. So a
+/// delivery landing between a task reading the count and its watch
+/// going on wakes nothing, and this is what bounds the wait for the
+/// next look. A missed wake costs latency, not an answer
+pub(crate) const SIGNAL_POLL: Duration = Duration::from_millis(50);
+
 /// Stored in a slot's waiting field while a canceller is part
 /// way through interrupting it
 ///

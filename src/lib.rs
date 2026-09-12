@@ -41,6 +41,7 @@ mod futures {
     pub(crate) mod kernel_wait;
     pub mod net;
     pub mod process;
+    pub mod signal;
     pub mod sleep;
     pub(crate) mod sleep_task;
     pub(crate) mod task;
@@ -56,7 +57,8 @@ pub use futures::file::{
     File, FileKind, Metadata, MetadataTask, PathTask, ReadDirTask, ReadTask, WriteTask,
 };
 pub use futures::process::{ExitStatus, OutputTask, Process, ProcessOutput, StatusTask};
-pub use futures::sleep::Sleep;
+pub use futures::signal::{SendSignalTask, SigReleasePolicy, Signal, SignalKind, SignalTask};
+pub use futures::sleep::{Sleep, SleepMode};
 pub use futures::sleep_task::SleepTask;
 pub use futures::task::Task;
 pub use futures::net::{NetAddress, RecvTask, SendTask};

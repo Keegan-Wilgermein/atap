@@ -39,17 +39,26 @@ impl Clock {
         self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
     }
 
-    /// Parks on `fd` until it is ready for `filter`, or the
+    /// When the run has to be done by, if it has a limit
+    ///
+    /// For a task that parks on its own terms rather than through
+    /// `wait`
+    #[inline(always)]
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Parks on `ident` until it is ready for `filter`, or the
     /// deadline comes
     ///
     /// Out of time already is a timeout instead
-    pub(crate) fn wait<T>(&self, fd: libc::c_int, filter: i16) -> Result<Step<T>, RuntimeError> {
+    pub(crate) fn wait<T>(&self, ident: libc::c_int, filter: i16) -> Result<Step<T>, RuntimeError> {
         if self.expired() {
             return Err(RuntimeError::TimedOut);
         }
 
         Ok(Step::Park(Park {
-            fd,
+            ident,
             filter,
             deadline: self.deadline,
         }))

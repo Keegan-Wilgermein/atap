@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -32,7 +32,7 @@ fn count_runs_exactly_that_many_times() {
 
     let runs = 5;
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()
         .every(Duration::from_millis(30))
         .count(runs)

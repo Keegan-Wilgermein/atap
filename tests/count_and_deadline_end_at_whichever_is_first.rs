@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -33,7 +33,7 @@ fn count_and_deadline_end_at_whichever_is_first() {
     let gap = Duration::from_millis(20);
 
     // The count ends this one
-    let counted = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+    let counted = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()
         .every(gap)
         .count(3)
@@ -41,7 +41,7 @@ fn count_and_deadline_end_at_whichever_is_first() {
         .spawn();
 
     // And the deadline ends this one
-    let timed = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+    let timed = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()
         .every(gap)
         .count(1_000_000)

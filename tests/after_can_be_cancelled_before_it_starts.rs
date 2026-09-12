@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -7,7 +7,7 @@ use std::time::Instant;
 fn after_can_be_cancelled_before_it_starts() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).after(Duration::from_millis(300)).spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).after(Duration::from_millis(300)).spawn();
 
     let watcher = handle.clone();
     handle.cancel();

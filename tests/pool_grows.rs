@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, Sleep, SleepMode};
 use common::cores;
 use std::{
     thread,
@@ -18,7 +18,7 @@ fn pool_grows_under_blocking_load() {
     let started = Instant::now();
 
     let handles: Vec<_> = (0..tasks)
-        .map(|_| Runtime::task(Sleep::sleep(duration, false)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).spawn())
         .collect();
 
     // Long enough for the offloads to have found threads, and

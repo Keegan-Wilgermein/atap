@@ -14,7 +14,7 @@
 //! failed, and every run prints the seed it used
 
 use atap::{
-    File, JoinPolicy, Process, Runtime, RuntimeError, Sleep, SleepTask, TaskHandle,
+    File, JoinPolicy, Process, Runtime, RuntimeError, Sleep, SleepMode, SleepTask, TaskHandle,
 };
 use std::{
     collections::HashMap,
@@ -261,13 +261,13 @@ fn identity(index: usize) -> (PathBuf, Vec<u8>) {
 ///
 /// Spun rather than slept, so it never leaves a worker
 fn quick(nanos: u64) -> SleepTask {
-    Sleep::sleep(Duration::from_nanos(nanos), true)
+    Sleep::sleep(Duration::from_nanos(nanos))
 }
 
 /// A sleep that waits in the kernel on a sleep thread for
 /// the whole of its duration
 fn kernel_sleep(asked: Duration) -> SleepTask {
-    Sleep::sleep(asked, false)
+    Sleep::sleep(asked).mode(SleepMode::Relaxed)
 }
 
 /// Process time burnt so far, user and system together
@@ -916,7 +916,14 @@ fn everything_at_once() {
         crews.push(thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 let asked = Duration::from_millis(1);
-                let slept = Runtime::block(Sleep::sleep(asked, crew == 0));
+
+                // One crew each way
+                let mode = match crew == 0 {
+                    true => SleepMode::Precise,
+                    false => SleepMode::Relaxed,
+                };
+
+                let slept = Runtime::block(Sleep::sleep(asked).mode(mode));
 
                 Tally::bump(&tally.blocked);
                 tally.check_slept(slept, asked, "a blocking sleep");

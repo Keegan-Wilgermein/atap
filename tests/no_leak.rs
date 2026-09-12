@@ -14,7 +14,7 @@ fn spawning_does_not_leak() {
     let mut baseline = 0;
 
     for task in 0..total {
-        let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).spawn();
+        let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).spawn();
         handle.join().expect("every task finishes");
 
         // Taken after the table has grown to its working size

@@ -4,7 +4,7 @@
 //! #### Note
 //! The panics printed as it unwinds are the test working
 
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
 use std::time::Duration;
 
 /// The pool keeps working while the manager is down, and the
@@ -14,7 +14,7 @@ fn manager_comes_back_from_going_down() {
     Runtime::init();
 
     let interval = Duration::from_millis(20);
-    let before = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).repeat().every(interval).spawn();
+    let before = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).repeat().every(interval).spawn();
 
     // Working beforehand
     for _ in 0..3 {
@@ -28,7 +28,7 @@ fn manager_comes_back_from_going_down() {
 
     // Spawned while there is no manager at all
     let during: Vec<_> = (0..256)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50), true)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50))).spawn())
         .collect();
 
     for handle in during {
@@ -40,7 +40,7 @@ fn manager_comes_back_from_going_down() {
     // Three deaths and their backoffs, with room to spare
     std::thread::sleep(Duration::from_millis(400));
 
-    let after = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).repeat().every(interval).spawn();
+    let after = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).repeat().every(interval).spawn();
 
     for _ in 0..5 {
         take_a_run(&after, "after the manager went down three times");
@@ -48,7 +48,7 @@ fn manager_comes_back_from_going_down() {
 
     after.cancel();
 
-    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn()
+    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).spawn()
         .join()
         .expect("a task spawned after the manager came back still runs");
 

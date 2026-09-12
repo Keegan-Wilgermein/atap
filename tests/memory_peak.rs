@@ -14,7 +14,7 @@ fn holds_a_peak_of_live_tasks() {
     let baseline = max_rss();
 
     let handles: Vec<_> = (0..tasks)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1))).spawn())
         .collect();
 
     let peak = max_rss();

@@ -1,9 +1,9 @@
-use atap::{JoinPolicy, Runtime, Sleep, TaskHandle};
+use atap::{JoinPolicy, Runtime, Sleep, SleepMode, TaskHandle};
 use std::time::Duration;
 
 /// A sleep of a given length, spawned
 fn sleeping(millis: u64) -> TaskHandle<Duration> {
-    Runtime::task(Sleep::sleep(Duration::from_millis(millis), false)).spawn()
+    Runtime::task(Sleep::sleep(Duration::from_millis(millis)).mode(SleepMode::Relaxed)).spawn()
 }
 
 /// `PassBack` hands the losing handles back in the order they

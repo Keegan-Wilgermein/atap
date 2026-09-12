@@ -10,7 +10,6 @@ fn main() {
 
     let task: SleepTask = Sleep::sleep(
         Duration::from_secs(5),
-        true,
     ); // Inert on creation
     
     let _ = Runtime::block(

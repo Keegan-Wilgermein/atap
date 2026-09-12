@@ -257,10 +257,10 @@ mod type_checks {
     //! Chains that must build, checked by compiling them
 
     use super::*;
-    use crate::{Sleep, SleepTask};
+    use crate::{Sleep, SleepMode, SleepTask};
 
     fn task() -> SleepTask {
-        Sleep::sleep(Duration::from_millis(1), false)
+        Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed)
     }
 
     #[allow(dead_code)]

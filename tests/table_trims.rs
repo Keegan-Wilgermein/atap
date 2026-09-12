@@ -15,7 +15,7 @@ fn gives_the_table_back() {
     // Held all at once so the table grows, then dropped so it is
     // at its largest with nothing in it
     let peak: Vec<_> = (0..200_000)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1))).spawn())
         .collect();
 
     for handle in peak {
@@ -83,7 +83,7 @@ fn gives_the_table_back() {
 
     // Straight back into the range that was just handed over
     let handles: Vec<_> = (0..200_000)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1))).spawn())
         .collect();
 
     for handle in handles {

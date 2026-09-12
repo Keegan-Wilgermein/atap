@@ -6,7 +6,7 @@
 //! Six panics are printed as they unwind. That is the test
 //! working
 
-use atap::{Runtime, RuntimeError, Sleep};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode};
 use std::{thread, time::Duration};
 
 /// A manager that gives up settles every repeat that depended
@@ -15,7 +15,7 @@ use std::{thread, time::Duration};
 fn a_manager_that_gives_up_strands_nothing() {
     Runtime::init();
 
-    let quick = || Sleep::sleep(Duration::from_nanos(1), true);
+    let quick = || Sleep::sleep(Duration::from_nanos(1));
     let interval = Duration::from_millis(20);
 
     let before = Runtime::workers();
@@ -63,7 +63,7 @@ fn a_manager_that_gives_up_strands_nothing() {
     );
 
     // The pool outlives its manager
-    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn()
+    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).spawn()
         .join()
         .expect("the pool still runs tasks with no manager at all");
 

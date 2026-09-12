@@ -1,6 +1,6 @@
 //! # Shutdown
 
-use atap::{Runtime, RuntimeError, Sleep};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -16,7 +16,14 @@ fn shutdown_drains_the_backlog_then_init_starts_it_again() {
 
     // Half on workers and half on sleep threads
     let handles: Vec<_> = (0..tasks)
-        .map(|task| Runtime::task(Sleep::sleep(Duration::from_micros(200), task % 2 == 0)).spawn())
+        .map(|task| {
+            let mode = match task % 2 == 0 {
+                true => SleepMode::Precise,
+                false => SleepMode::Relaxed,
+            };
+
+            Runtime::task(Sleep::sleep(Duration::from_micros(200)).mode(mode)).spawn()
+        })
         .collect();
 
     let started = Instant::now();
@@ -33,7 +40,7 @@ fn shutdown_drains_the_backlog_then_init_starts_it_again() {
     }
 
     // Closed to new work
-    let late = Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn();
+    let late = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).spawn();
     let kept = late.clone();
 
     assert_eq!(
@@ -43,7 +50,7 @@ fn shutdown_drains_the_backlog_then_init_starts_it_again() {
     );
 
     // Blocking calls still work
-    let slept = Runtime::block(Sleep::sleep(Duration::from_millis(20), false));
+    let slept = Runtime::block(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed));
 
     println!("a blocking call after the shutdown still slept {slept:?}");
 
@@ -85,15 +92,15 @@ fn shutdown_drains_the_backlog_then_init_starts_it_again() {
             "cycle {cycle}: a restart changed what an old handle reads",
         );
 
-        let quick = Runtime::task(Sleep::sleep(Duration::from_micros(200), true)).spawn();
-        let blocking = Runtime::task(Sleep::sleep(Duration::from_millis(5), false)).spawn();
+        let quick = Runtime::task(Sleep::sleep(Duration::from_micros(200))).spawn();
+        let blocking = Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed)).spawn();
 
         // Both need the new manager's timers
-        let delayed = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+        let delayed = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
             .after(Duration::from_millis(50))
             .spawn();
 
-        let counted = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+        let counted = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
             .repeat()
             .every(Duration::from_millis(10))
             .count(3)

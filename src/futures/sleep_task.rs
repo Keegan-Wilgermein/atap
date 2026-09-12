@@ -8,7 +8,7 @@ use crate::{
     EventDesc,
     constants::SLEEP_TOLERANCE,
     executor,
-    futures::{kernel_wait::KernelWait, task::Task, task::sealed},
+    futures::{kernel_wait::KernelWait, sleep::SleepMode, task::Task, task::sealed},
     modules::{
         int_check::IntCheck,
         kevent::KEvent,
@@ -53,20 +53,50 @@ pub struct SleepTask {
     pub(crate) created: Instant,
 
     /// Whether to trade cpu for precision
-    ///
-    /// On, the last stretch of the wait is spun rather than
-    /// slept
-    pub(crate) p_mode: bool,
+    pub(crate) mode: SleepMode,
 }
 
 impl SleepTask {
-    /// Creates a new `SleepTask`
-    pub(crate) fn new(time: Duration, p_mode: bool) -> Self {
+    /// Creates a new `SleepTask`, precise until told otherwise
+    pub(crate) fn new(time: Duration) -> Self {
         Self {
             sleep_for: time,
             created: Instant::now(),
-            p_mode,
+            mode: SleepMode::Precise,
         }
+    }
+
+    /// Trades cpu time for precision, or gives it back
+    ///
+    /// ## Behaviour
+    /// [`SleepMode::Precise`], the default, spins the last stretch
+    /// of the wait rather than sleeping it.
+    /// [`SleepMode::Relaxed`] leaves all of it to the kernel and
+    /// burns nothing
+    ///
+    /// ## Accuracy
+    /// Measured on Apple silicon, for targets from 400 nanoseconds
+    /// to 30 seconds
+    ///
+    /// `Precise` is around 200 nanoseconds over at every duration,
+    /// about 5200x more accurate than `thread::sleep()`, and holds a
+    /// core for up to 500 microseconds
+    ///
+    /// `Relaxed` is around 4 microseconds over on short waits and
+    /// around 60 on waits of a few milliseconds or more, about 37x
+    /// more accurate than `thread::sleep()`
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn mode(mut self, mode: SleepMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Whether this sleep spins its last stretch
+    #[inline(always)]
+    pub(crate) fn precise(&self) -> bool {
+        self.mode == SleepMode::Precise
     }
 
     /// Spins the cpu until hitting the given time parameter
@@ -163,7 +193,7 @@ impl Task for SleepTask {
 
     #[inline(always)]
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
-        if !self.p_mode || self.sleep_for > SLEEP_TOLERANCE {
+        if !self.precise() || self.sleep_for > SLEEP_TOLERANCE {
             return self.offload(kqueue::id().ok(), reactor_id, task_id);
         }
 
@@ -182,14 +212,14 @@ impl Task for SleepTask {
     /// Whether this sleep ends up waiting in the kernel
     #[inline(always)]
     fn blocking(&self) -> bool {
-        !self.p_mode || self.sleep_for > SLEEP_TOLERANCE
+        !self.precise() || self.sleep_for > SLEEP_TOLERANCE
     }
 }
 
 impl KernelWait for SleepTask {
     #[inline(always)]
     fn get_intptr_t_data(&self) -> libc::intptr_t {
-        let target = if self.p_mode {
+        let target = if self.precise() {
             self.sleep_for.saturating_sub(SLEEP_TOLERANCE)
         } else {
             self.sleep_for
@@ -212,7 +242,7 @@ impl KernelWait for SleepTask {
         let spin = match slept {
             Slept::Cancelled => false,
 
-            Slept::Waited => self.p_mode,
+            Slept::Waited => self.precise(),
 
             // Nothing waited, so the whole duration is spun out
             Slept::Refused => true,

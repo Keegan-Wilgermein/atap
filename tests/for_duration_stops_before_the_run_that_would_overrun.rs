@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -33,7 +33,7 @@ fn drain(handle: &TaskHandle<Duration>, patience: Duration) -> usize {
 fn for_duration_stops_before_the_run_that_would_overrun() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(1), false))
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()
         .every(Duration::from_millis(750))
         .for_duration(Duration::from_secs(1))

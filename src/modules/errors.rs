@@ -60,8 +60,10 @@ pub enum RuntimeError {
     /// the 103 bytes the kernel has room for
     BadPath,
 
-    /// A program argument contained a zero byte, so it couldn't be
-    /// handed to the kernel
+    /// An argument couldn't be handed to the kernel as written
+    ///
+    /// A program argument with a zero byte in it, or a process id
+    /// that names a group rather than one process
     BadArgument,
 
     /// An environment variable couldn't be handed to the kernel
@@ -109,6 +111,13 @@ pub enum RuntimeError {
     ///
     /// Only TLS tasks return this, which need the `tls` feature
     TlsFailed,
+
+    /// The signal isn't one the kernel will take
+    ///
+    /// A number that isn't a signal at all, or `SIGKILL` or
+    /// `SIGSTOP` where one could be caught: those two can be sent,
+    /// but never taken over
+    BadSignal,
 }
 
 impl fmt::Display for RuntimeError {
@@ -143,6 +152,7 @@ impl fmt::Display for RuntimeError {
             Self::TooLong => write!(formatter, "the delimiter was not found within the limit"),
             Self::BadCertificate => write!(formatter, "a certificate was refused"),
             Self::TlsFailed => write!(formatter, "the TLS session failed"),
+            Self::BadSignal => write!(formatter, "the signal cannot be used that way"),
         }
     }
 }

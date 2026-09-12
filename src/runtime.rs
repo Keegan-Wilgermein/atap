@@ -131,18 +131,18 @@ impl Runtime {
 
     /// Sleeps the calling thread, accurately
     ///
-    /// Shorthand for `Runtime::block(Sleep::sleep(time, true))`
+    /// Shorthand for `Runtime::block(Sleep::sleep(time))`
     ///
     /// ## Returns
     /// The total time it actually took
     ///
     /// #### Note
-    /// Precision mode, so the last stretch is spun rather than
-    /// slept. Use `block` with `Sleep::sleep(time, false)` for
-    /// a sleep that never burns a core
+    /// Precise, so the last stretch is spun rather than slept. Use
+    /// `block` with `Sleep::sleep(time).mode(SleepMode::Relaxed)`
+    /// for a sleep that never burns a core
     #[inline(always)]
     pub fn sleep(time: Duration) -> Duration {
-        Self::block(Sleep::sleep(time, true))
+        Self::block(Sleep::sleep(time))
     }
 
     /// Waits for every one of a set of tasks

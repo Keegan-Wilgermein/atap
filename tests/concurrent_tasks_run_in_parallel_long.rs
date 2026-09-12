@@ -1,4 +1,4 @@
-use atap::{Runtime, Sleep};
+use atap::{Runtime, Sleep, SleepMode};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -22,7 +22,7 @@ fn concurrent_tasks_run_in_parallel_long() {
     let started = Instant::now();
 
     let handles: Vec<_> = (0..tasks)
-        .map(|_| Runtime::task(Sleep::sleep(duration, false)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).spawn())
         .collect();
 
     let mut slept = Duration::ZERO;

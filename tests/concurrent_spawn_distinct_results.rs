@@ -1,4 +1,4 @@
-use atap::{Runtime, Sleep};
+use atap::{Runtime, Sleep, SleepMode};
 use std::thread;
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ fn concurrent_spawn_distinct_results() {
                         let millis = worker * per_thread + task + 1;
                         let duration = Duration::from_millis(millis);
 
-                        (duration, Runtime::task(Sleep::sleep(duration, false)).spawn())
+                        (duration, Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).spawn())
                     })
                     .collect::<Vec<_>>()
             })

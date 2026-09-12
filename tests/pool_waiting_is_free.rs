@@ -12,7 +12,7 @@ fn waiting_costs_no_thread() {
 
     let interval = Duration::from_secs(1);
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).repeat().every(interval).spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).repeat().every(interval).spawn();
 
     // The first run out of the way, so what follows is the wait
     take_a_run(&handle);

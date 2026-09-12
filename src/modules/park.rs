@@ -68,7 +68,7 @@ fn wait_ready(park: Park) {
     let watched = unsafe {
         KEvent::register(
             queue,
-            park.fd as usize,
+            park.ident as usize,
             0,
             ptr::null_mut(),
             EventDesc::new_ready(park.filter),
@@ -95,7 +95,7 @@ fn wait_ready(park: Park) {
     let _ = unsafe {
         KEvent::register(
             queue,
-            park.fd as usize,
+            park.ident as usize,
             0,
             ptr::null_mut(),
             EventDesc::new_ready_delete(park.filter),

@@ -1,4 +1,4 @@
-use atap::{Runtime, Sleep};
+use atap::{Runtime, Sleep, SleepMode};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -10,7 +10,7 @@ fn bare_chain_runs_once_now() {
     let duration = Duration::from_millis(50);
     let started = Instant::now();
 
-    let handle = Runtime::task(Sleep::sleep(duration, false)).spawn();
+    let handle = Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).spawn();
     let slept = handle.join().expect("it finishes");
 
     println!("slept {slept:?} against {duration:?}");

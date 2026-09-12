@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, Sleep, SleepMode};
 use common::cores;
 use std::{thread, time::Duration};
 
@@ -10,7 +10,7 @@ fn pool_reaps_idle_sleep_threads() {
     Runtime::init();
 
     let handles: Vec<_> = (0..cores() * 4)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_millis(200), false)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn())
         .collect();
 
     // Read while they are all still in flight

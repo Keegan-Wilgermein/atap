@@ -4,15 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# TLS over the socket family. Off by default, so a build without it
-# depends on nothing but libc
 tls = ["dep:rustls", "dep:rustls-platform-verifier"]
 
 [dependencies]
 libc = "0.2.186"
 
-# Only what TLS needs: the aws-lc-rs backend, std, TLS 1.2 for older
-# servers, and post-quantum key exchange preferred. No logging
 rustls = { version = "0.23.44", optional = true, default-features = false, features = [
     "std",
     "aws_lc_rs",
@@ -20,20 +16,11 @@ rustls = { version = "0.23.44", optional = true, default-features = false, featu
     "prefer-post-quantum",
 ] }
 
-# Certificates are checked by macOS itself, against the system's
-# trust store
 rustls-platform-verifier = { version = "0.7", optional = true }
 
-# The same crate as above, declared again so the tests can
-# read the process's own memory use. Integration tests are a
-# separate crate and don't inherit the library's dependencies
 [dev-dependencies]
 libc = "0.2.186"
 
-# Mints a throwaway CA and server certificate for the TLS tests, on
-# the same crypto backend TLS uses rather than a second one
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 
-# Certificate validity is set from the current time, since macOS
-# refuses server certificates valid for too long
 time = "0.3"

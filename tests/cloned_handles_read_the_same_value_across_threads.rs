@@ -1,4 +1,4 @@
-use atap::{Runtime, Sleep};
+use atap::{Runtime, Sleep, SleepMode};
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Barrier};
@@ -16,8 +16,8 @@ fn cloned_handles_read_the_same_value_across_threads() {
     let quick = Duration::from_millis(300);
     let slow = Duration::from_millis(700);
 
-    let first = Runtime::task(Sleep::sleep(quick, false)).spawn();
-    let second = Runtime::task(Sleep::sleep(slow, false)).spawn();
+    let first = Runtime::task(Sleep::sleep(quick).mode(SleepMode::Relaxed)).spawn();
+    let second = Runtime::task(Sleep::sleep(slow).mode(SleepMode::Relaxed)).spawn();
 
     let barrier = Arc::new(Barrier::new(threads));
 

@@ -4,6 +4,28 @@
 use crate::futures::sleep_task::SleepTask;
 use std::time::Duration;
 
+/// What a sleep trades for accuracy
+///
+/// Set with [`SleepTask::mode`], and `Precise` without it
+///
+/// [`SleepTask::mode`]: crate::SleepTask::mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SleepMode {
+    /// Spins the last stretch of the wait rather than sleeping it
+    ///
+    /// A wait shorter than about 500 microseconds is spun entirely,
+    /// and a longer one spins its last 500 microseconds. Either way
+    /// a core is busy for up to 500 microseconds
+    #[default]
+    Precise,
+
+    /// Leaves the whole wait to the kernel
+    ///
+    /// Whatever the kernel gives back is the answer, however short
+    /// the wait. No core is burnt
+    Relaxed,
+}
+
 /// Builds sleep tasks
 ///
 /// Doesn't implement `Task` itself. `Sleep::sleep` returns one
@@ -12,31 +34,20 @@ pub struct Sleep;
 impl Sleep {
     /// Creates a task that sleeps for `time`
     ///
-    /// ## `p_mode`
-    /// Trades CPU time for precision
+    /// ## Behaviour
+    /// Precise by default, which spins the last stretch of the wait
+    /// for accuracy. [`SleepTask::mode`] trades that back for a core
+    /// that stays idle:
     ///
-    /// On, a sleep shorter than about 500 microseconds is spun
-    /// entirely, and a longer one spins its last 500 microseconds.
-    /// Either way a core is busy for up to 500 microseconds
-    ///
-    /// Off, every sleep goes to the kernel however short it is,
-    /// and whatever the kernel returns is the answer. No core is
-    /// burnt
-    ///
-    /// ## Accuracy
-    /// Measured on Apple silicon, for targets from 400 nanoseconds
-    /// to 30 seconds
-    ///
-    /// With `p_mode`, around 200 nanoseconds over at every
-    /// duration — about 5200x more accurate than `thread::sleep()`
-    ///
-    /// Without, around 4 microseconds over on short waits and
-    /// around 60 on waits of a few milliseconds or more — about
-    /// 37x more accurate than `thread::sleep()`
+    /// ```ignore
+    /// Sleep::sleep(time).mode(SleepMode::Relaxed)
+    /// ```
     ///
     /// ## Returns
     /// How long it actually took, from start to finish
-    pub fn sleep(time: Duration, p_mode: bool) -> SleepTask {
-        SleepTask::new(time, p_mode)
+    ///
+    /// [`SleepTask::mode`]: crate::SleepTask::mode
+    pub fn sleep(time: Duration) -> SleepTask {
+        SleepTask::new(time)
     }
 }

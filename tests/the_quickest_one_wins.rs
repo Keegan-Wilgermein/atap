@@ -1,10 +1,10 @@
-use atap::{JoinPolicy, Runtime, Sleep, TaskHandle};
+use atap::{JoinPolicy, Runtime, Sleep, SleepMode, TaskHandle};
 use std::time::Duration;
 use std::time::Instant;
 
 /// A sleep of a given length, spawned
 fn sleeping(millis: u64) -> TaskHandle<Duration> {
-    Runtime::task(Sleep::sleep(Duration::from_millis(millis), false)).spawn()
+    Runtime::task(Sleep::sleep(Duration::from_millis(millis)).mode(SleepMode::Relaxed)).spawn()
 }
 
 /// `join_first` returns the quickest task without waiting for

@@ -17,7 +17,7 @@ fn many_concurrent_tasks() {
     let baseline = max_rss();
 
     for _ in 0..tasks {
-        let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(500), true)).spawn();
+        let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(500))).spawn();
 
         handle_list.push(handle);
     }

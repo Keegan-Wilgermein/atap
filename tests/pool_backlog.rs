@@ -12,7 +12,7 @@ fn backlog_is_visible_while_running() {
     let tasks = 200_000;
 
     let handles: Vec<_> = (0..tasks)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50), true)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50))).spawn())
         .collect();
 
     // Asked while the pool is still working through them

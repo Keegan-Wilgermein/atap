@@ -1,4 +1,4 @@
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -49,7 +49,7 @@ fn every_overlaps_its_runs() {
 
     // Four times the period, so four runs are in flight before
     // the first one has finished
-    let handle = Runtime::task(Sleep::sleep(duration, false)).at_rate(interval).spawn();
+    let handle = Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).at_rate(interval).spawn();
 
     // The first output lands a whole duration in, so the clock
     // starts after it

@@ -1,6 +1,6 @@
 //! `join_first`, the race, and what becomes of the losers
 
-use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, TaskHandle, TaskState};
+use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode, TaskHandle, TaskState};
 use std::{
     fs,
     path::PathBuf,
@@ -46,7 +46,7 @@ impl Drop for TestFile {
 
 /// A sleep of a given length, spawned
 fn sleeping(millis: u64) -> TaskHandle<Duration> {
-    Runtime::task(Sleep::sleep(Duration::from_millis(millis), false)).spawn()
+    Runtime::task(Sleep::sleep(Duration::from_millis(millis)).mode(SleepMode::Relaxed)).spawn()
 }
 
 /// `Cancel` cancels every task that didn't win

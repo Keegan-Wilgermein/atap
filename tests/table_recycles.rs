@@ -15,7 +15,7 @@ fn recycles_ids_forever() {
 
     let wave = || {
         let handles: Vec<_> = (0..per_wave)
-            .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).spawn())
+            .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1))).spawn())
             .collect();
 
         for handle in handles {

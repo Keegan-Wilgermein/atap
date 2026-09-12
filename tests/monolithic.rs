@@ -5,7 +5,7 @@
 
 mod common;
 
-use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep};
+use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode};
 use common::{report, take_a_run};
 use std::{
     fs,
@@ -60,10 +60,10 @@ fn join_first_settles_every_loser() {
 
     // All three policies, in rotation
     for race in 0..races {
-        let quick = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).spawn();
+        let quick = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).spawn();
 
         let slow: Vec<_> = (0..width)
-            .map(|_| Runtime::task(Sleep::sleep(Duration::from_millis(10), false)).spawn())
+            .map(|_| Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).spawn())
             .collect();
 
         let policy = match race % 3 {
@@ -223,7 +223,7 @@ fn fixture(name: &str, size: usize) -> PathBuf {
 /// killed and rebuilt
 fn survives_losing_its_manager() {
     let tasks = 200_000;
-    let quick = || Sleep::sleep(Duration::from_nanos(1), true);
+    let quick = || Sleep::sleep(Duration::from_nanos(1));
 
     let started = Instant::now();
 
@@ -267,7 +267,7 @@ fn survives_losing_its_manager() {
 fn repeating_holds_one_slot() {
     let runs = 20_000;
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).repeat().spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).repeat().spawn();
 
     // The first one, so the series is under way before anything
     // is measured
@@ -322,7 +322,7 @@ fn every_gives_its_run_slots_back() {
 
     // Instant runs on a short period, so slots come and go fast
     let handles: Vec<_> = (0..schedules)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1), true)).at_rate(interval).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1))).at_rate(interval).spawn())
         .collect();
 
     // Counted, so a schedule that quietly stopped fails
@@ -451,7 +451,7 @@ fn never_crosses_two_tasks() {
                         let micros = (worker * per_thread + task + 1) as u64;
                         let duration = Duration::from_micros(micros);
 
-                        (duration, Runtime::task(Sleep::sleep(duration, true)).spawn())
+                        (duration, Runtime::task(Sleep::sleep(duration)).spawn())
                     })
                     .collect::<Vec<_>>()
             })
@@ -497,7 +497,7 @@ fn survives_every_ending_at_once() {
         .map(|task| {
             let duration = Duration::from_micros((task % 200 + 1) as u64);
 
-            (duration, Runtime::task(Sleep::sleep(duration, true)).spawn())
+            (duration, Runtime::task(Sleep::sleep(duration)).spawn())
         })
         .collect();
 
@@ -615,13 +615,13 @@ fn keeps_priority_under_a_deep_queue() {
     let started = Instant::now();
 
     let queued: Vec<_> = (0..filler)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(20), true)).spawn())
+        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(20))).spawn())
         .collect();
 
     report("queue filled");
 
     let asked = Instant::now();
-    let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(20), true)).priority(255).spawn();
+    let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(20))).priority(255).spawn();
 
     // Blocked on rather than polled for, so this thread's own
     // scheduling isn't what gets measured
