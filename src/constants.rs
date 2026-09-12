@@ -181,6 +181,16 @@ pub(crate) const SELECT_POLL: Duration = Duration::from_millis(50);
 /// next look. A missed wake costs latency, not an answer
 pub(crate) const SIGNAL_POLL: Duration = Duration::from_millis(50);
 
+/// How long a watch waits before looking at the path again
+/// anyway
+///
+/// A path's watch only reports what happens once it is on, the
+/// same as a signal's. A change landing between a task taking its
+/// snapshot and the watch going on wakes nothing, and this is what
+/// bounds the wait for the next look. A missed wake costs latency,
+/// not an answer
+pub(crate) const VNODE_POLL: Duration = Duration::from_millis(50);
+
 /// Stored in a slot's waiting field while a canceller is part
 /// way through interrupting it
 ///

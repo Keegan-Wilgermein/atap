@@ -31,6 +31,13 @@ pub(crate) mod sealed {
         /// Which `EVFILT_` decides what counts as ready
         pub filter: i16,
 
+        /// Which of the filter's notes count, for a filter that
+        /// fires on nothing until it is told what to look for
+        ///
+        /// Zero for the filters that already know: a socket is
+        /// ready or it isn't
+        pub notes: u32,
+
         /// When to wake it anyway, so it can give up
         pub deadline: Option<Instant>,
     }

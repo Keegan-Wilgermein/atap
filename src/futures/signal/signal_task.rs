@@ -156,6 +156,7 @@ impl SignalTask {
         Ok(Step::Park(Park {
             ident: signo,
             filter: libc::EVFILT_SIGNAL,
+            notes: 0,
             deadline: Some(deadline),
         }))
     }

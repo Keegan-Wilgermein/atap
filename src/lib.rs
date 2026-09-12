@@ -54,7 +54,8 @@ mod futures {
 
 // Re-exports
 pub use futures::file::{
-    File, FileKind, Metadata, MetadataTask, PathTask, ReadDirTask, ReadTask, WriteTask,
+    Change, File, FileKind, Metadata, MetadataTask, PathTask, ReadDirTask, ReadTask, WatchTask,
+    WriteTask,
 };
 pub use futures::process::{ExitStatus, OutputTask, Process, ProcessOutput, StatusTask};
 pub use futures::signal::{SendSignalTask, SigReleasePolicy, Signal, SignalKind, SignalTask};

@@ -1,8 +1,9 @@
 //! # File
 //! The constructors every file task is started from
 
-use crate::futures::file::file_task::{
-    MetadataTask, PathTask, ReadDirTask, ReadTask, WriteTask,
+use crate::futures::file::{
+    file_task::{MetadataTask, PathTask, ReadDirTask, ReadTask, WriteTask},
+    watch_task::WatchTask,
 };
 use std::{path::Path, sync::Arc};
 
@@ -13,10 +14,13 @@ use std::{path::Path, sync::Arc};
 /// that returns something that does
 ///
 /// ## Behaviour
-/// Every task here holds a thread for as long as its work
-/// takes, so a spawned one runs on a sleep thread rather than
-/// a worker. Past `cores * 8` of them, file tasks queue and
-/// wait their turn
+/// Every task here but [`File::watch`] holds a thread for as
+/// long as its work takes, so a spawned one runs on a sleep
+/// thread rather than a worker. Past `cores * 8` of them, file
+/// tasks queue and wait their turn
+///
+/// A watch is the exception. It is nearly all waiting, so it
+/// parks the way a socket task does and holds no thread at all
 ///
 /// ## Cancelling
 /// A read or a write is cancellable before it opens the file
@@ -205,6 +209,58 @@ impl File {
         P: AsRef<Path>,
     {
         PathTask::create_dir(path)
+    }
+
+    /// Waits for a path to change
+    ///
+    /// ## Behaviour
+    /// Settles the moment anything happens to the path, saying
+    /// what. A `.repeat()` of one is a watcher: it reports every
+    /// change, including any that land between runs
+    ///
+    /// ```ignore
+    /// // the next change, once
+    /// let change = Runtime::block(File::watch(&path))?;
+    ///
+    /// // every change, for as long as the program runs
+    /// let changes = Runtime::task(File::watch(&path)).repeat().spawn();
+    /// ```
+    ///
+    /// A directory works as readily as a file, and reports a
+    /// write when an entry comes or goes. [`WatchTask::only`]
+    /// narrows what counts, and [`WatchTask::timeout`] gives up
+    ///
+    /// ## Returns
+    /// What changed. Several parts of a [`Change`] can be true at
+    /// once, since one write can be both a write and a growth
+    ///
+    /// A path that isn't there is an error rather than a wait:
+    /// there has to be something to watch. Nothing waits for a
+    /// path to appear
+    ///
+    /// The watch counts from when the task first runs, the same
+    /// as a signal does: a change that happened beforehand is not
+    /// waited for
+    ///
+    /// #### Note
+    /// The watch follows the **file**, not the name. It opens the
+    /// path once and holds that descriptor, so a file moved out
+    /// from under its name is still watched, and reported as
+    /// [`Change::renamed`]. A removal is the last thing a watch
+    /// can report, since nothing can reach the file afterwards
+    ///
+    /// A spawned watch holds no thread, unlike every other task
+    /// here, so any number of paths can be watched at once
+    ///
+    /// [`WatchTask::only`]: crate::WatchTask::only
+    /// [`WatchTask::timeout`]: crate::WatchTask::timeout
+    /// [`Change`]: crate::Change
+    /// [`Change::renamed`]: crate::Change::renamed
+    pub fn watch<P>(path: P) -> WatchTask
+    where
+        P: AsRef<Path>,
+    {
+        WatchTask::new(path)
     }
 
     /// Moves a path to another one

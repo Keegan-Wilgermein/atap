@@ -140,15 +140,17 @@ impl EventDesc {
     }
 
     /// Returns the `kevent` flags required to wake a parked task
-    /// once, when its socket is ready for `filter`
+    /// once, when its ident is ready for `filter`
     ///
     /// Unique to the task, so another task parked on the same
-    /// socket keeps its own watch
-    pub(crate) fn new_park(filter: i16) -> Self {
+    /// socket keeps its own watch. `notes` is what a filter that
+    /// fires on nothing by itself is told to look for, and zero
+    /// for the rest
+    pub(crate) fn new_park(filter: i16, notes: u32) -> Self {
         Self {
             filter,
             flags: libc::EV_ADD | libc::EV_ONESHOT | EV_UDATA_SPECIFIC,
-            fflags: 0,
+            fflags: notes,
         }
     }
 
@@ -162,13 +164,16 @@ impl EventDesc {
         }
     }
 
-    /// Returns the `kevent` flags required to wait once for a
-    /// socket to be ready for `filter`, on a thread's own queue
-    pub(crate) fn new_ready(filter: i16) -> Self {
+    /// Returns the `kevent` flags required to wait once for an
+    /// ident to be ready for `filter`, on a thread's own queue
+    ///
+    /// `notes` is what a filter that fires on nothing by itself is
+    /// told to look for, and zero for the rest
+    pub(crate) fn new_ready(filter: i16, notes: u32) -> Self {
         Self {
             filter,
             flags: libc::EV_ADD | libc::EV_ONESHOT,
-            fflags: 0,
+            fflags: notes,
         }
     }
 

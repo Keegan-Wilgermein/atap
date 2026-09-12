@@ -9,6 +9,7 @@ use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode};
 use common::{report, take_a_run};
 use std::{
     fs,
+    io::Write,
     path::PathBuf,
     sync::{Arc, Barrier},
     thread,
@@ -33,6 +34,9 @@ fn monolithic() {
 
     println!("\n== losing the manager ==");
     survives_losing_its_manager();
+
+    println!("\n== parked tasks outlive the manager ==");
+    parks_outlive_the_manager();
 
     println!("\n== a repeating task holds one slot ==");
     repeating_holds_one_slot();
@@ -260,6 +264,100 @@ fn survives_losing_its_manager() {
         "{} tasks through a pool that lost its manager three times in {:?}, and timers after",
         finished,
         started.elapsed(),
+    );
+}
+
+/// Tasks parked on the manager's own queue come back when the
+/// manager does
+///
+/// ## Behaviour
+/// A park lives on the manager's kqueue, and so does the timer
+/// that backstops it, so a manager that dies takes both down and
+/// nothing is left to wake the task. What puts them back is the
+/// recovery pass the next manager runs, which queues every parked
+/// task again to look at the world and park afresh
+///
+/// Watches are what this parks, since they need no sockets: a
+/// file is touched and the task has to notice
+fn parks_outlive_the_manager() {
+    let watching = 200;
+    let patience = Duration::from_secs(10);
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/files");
+
+    fs::create_dir_all(&root).expect("could not make tests/files");
+
+    let paths: Vec<PathBuf> = (0..watching)
+        .map(|index| {
+            let path = root.join(format!("monolithic-park-{}-{}.txt", std::process::id(), index));
+
+            fs::write(&path, b"before").expect("could not write a watched file");
+
+            path
+        })
+        .collect();
+
+    let handles: Vec<_> = paths
+        .iter()
+        .map(|path| Runtime::task(File::watch(path)).spawn())
+        .collect();
+
+    // Every one of them on the manager's queue before it is taken
+    // away, so the watches are being put back rather than never
+    // having been registered
+    let deadline = Instant::now() + patience;
+
+    while handles.iter().any(|handle| handle.is_pending()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    thread::sleep(Duration::from_millis(50));
+
+    let parked = handles.iter().filter(|handle| handle.is_running()).count();
+
+    assert_eq!(parked, watching, "only {} of {} watches parked", parked, watching);
+
+    Runtime::inject_manager_faults(2);
+
+    // Long enough for the manager to have died and been rebuilt,
+    // and for every park to have been handed to the new queue
+    thread::sleep(Duration::from_millis(300));
+
+    // Appends rather than writes, so the file only ever grows and
+    // a watch can't catch a truncate half way through
+    for path in &paths {
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("could not touch a watched file");
+
+        file.write_all(b" and after").expect("could not touch a watched file");
+    }
+
+    let deadline = Instant::now() + patience;
+    let mut woke = 0;
+
+    for handle in handles {
+        let left = deadline.saturating_duration_since(Instant::now());
+
+        if let Ok(Ok(change)) = handle.take_with_timeout(left) {
+            assert!(change.written(), "a watch woke reporting {:?} rather than a write", change);
+
+            woke += 1;
+        }
+    }
+
+    for path in &paths {
+        let _ = fs::remove_file(path);
+    }
+
+    println!("{} watches parked through two manager deaths, {} woke afterwards", parked, woke);
+
+    assert_eq!(
+        woke, watching,
+        "{} of {} watches were left waiting on a queue that had gone",
+        watching - woke,
+        watching,
     );
 }
 

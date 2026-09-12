@@ -75,7 +75,22 @@ enum PathOp {
 /// #### Note
 /// Closing in `Drop` also keeps errno intact, since the guard
 /// drops after the error value has been built
-struct Fd(libc::c_int);
+#[derive(Debug)]
+pub(super) struct Fd(libc::c_int);
+
+impl Fd {
+    /// Takes ownership of a descriptor the kernel just handed out
+    #[inline(always)]
+    pub(super) fn new(fd: libc::c_int) -> Self {
+        Self(fd)
+    }
+
+    /// The number, for handing to a syscall
+    #[inline(always)]
+    pub(super) fn raw(&self) -> libc::c_int {
+        self.0
+    }
+}
 
 impl Drop for Fd {
     fn drop(&mut self) {
@@ -455,7 +470,7 @@ impl Task for PathTask {
 /// ## Returns
 /// `None` when the path has a zero byte in it, since passing
 /// the part before it would act on a different file
-fn as_c_path(path: impl AsRef<Path>) -> Option<CString> {
+pub(super) fn as_c_path(path: impl AsRef<Path>) -> Option<CString> {
     CString::new(path.as_ref().as_os_str().as_bytes()).ok()
 }
 
@@ -476,7 +491,7 @@ fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, 
         let raw = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC, mode) }.check();
 
         match raw {
-            Ok(fd) => return Ok(Fd(fd)),
+            Ok(fd) => return Ok(Fd::new(fd)),
             Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
             Err(error) => return Err(error),
         }
@@ -484,7 +499,7 @@ fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, 
 }
 
 /// Runs a syscall until it says something other than `EINTR`
-fn retried(mut call: impl FnMut() -> libc::c_int) -> Result<libc::c_int, RuntimeError> {
+pub(super) fn retried(mut call: impl FnMut() -> libc::c_int) -> Result<libc::c_int, RuntimeError> {
     loop {
         match call().check() {
             Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,

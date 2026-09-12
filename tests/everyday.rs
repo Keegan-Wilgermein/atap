@@ -47,11 +47,15 @@ fn a_program_that_just_runs() {
 
     let line: Arc<[u8]> = Arc::from(b"tick\n".as_slice());
 
-    // Watches the config the way a program that reloads on
-    // change would
-    let watcher = Runtime::task(File::read(&config))
+    // Watches the config the way a program that reloads on change
+    // does, waking when it actually changes rather than asking
+    // over and over
+    //
+    // Spaced, since a slot holds the latest output rather than a
+    // queue of them, and the loop below only looks once a tick
+    let watcher = Runtime::task(File::watch(&config))
         .repeat()
-        .every(Duration::from_millis(500))
+        .every(Duration::from_millis(50))
         .spawn();
 
     // A heartbeat in the log
@@ -73,6 +77,7 @@ fn a_program_that_just_runs() {
 
     let mut ticks = 0u64;
     let mut served = 0u64;
+    let mut edits = 0u64;
     let mut reloads = 0u64;
     let mut sweeps = 0u64;
 
@@ -100,9 +105,27 @@ fn a_program_that_just_runs() {
             .filter(|result| result.is_ok())
             .count() as u64;
 
-        // Pick up a config reload if the watcher has one ready
-        if let Ok(Ok(bytes)) = watcher.maybe_take() {
-            assert!(!bytes.is_empty(), "the config came back empty");
+        // The config is edited now and then, the way a running
+        // program's is
+        if ticks % 20 == 0 {
+            edits += 1;
+
+            let body = format!("workers = 4\nverbose = false\nedit = {}\n", edits);
+
+            Runtime::block(File::write(&config, body.into_bytes()))
+                .expect("could not edit the config");
+        }
+
+        // Pick up a config reload if the watch caught one
+        if let Ok(Ok(change)) = watcher.maybe_take() {
+            assert!(
+                !change.removed(),
+                "the config went away rather than changing",
+            );
+
+            let reloaded = Runtime::block(File::read(&config)).expect("could not reload");
+
+            assert!(!reloaded.is_empty(), "the config came back empty");
 
             reloads += 1;
         }
@@ -144,10 +167,11 @@ fn a_program_that_just_runs() {
             drop(retries);
 
             println!(
-                "  [{:>5.1}s] {} ticks, {} served, {} reloads, {} sweeps",
+                "  [{:>5.1}s] {} ticks, {} served, {} edits, {} reloads, {} sweeps",
                 started.elapsed().as_secs_f32(),
                 ticks,
                 served,
+                edits,
                 reloads,
                 sweeps,
             );
@@ -173,8 +197,9 @@ fn a_program_that_just_runs() {
     let written = fs::metadata(&log).expect("the log went missing").len();
 
     println!(
-        "\nfinished after {:?}\n  {} ticks, {} served, {} reloads, {} sweeps, {} bytes logged",
-        ran, ticks, served, reloads, sweeps, written,
+        "\nfinished after {:?}\n  {} ticks, {} served, {} edits, {} reloads, {} sweeps, \
+         {} bytes logged",
+        ran, ticks, served, edits, reloads, sweeps, written,
     );
 
     println!("\n{}", Runtime::workers());
@@ -192,7 +217,12 @@ fn a_program_that_just_runs() {
     assert_eq!(served, ticks * 8, "{} of {} batches came back short", ticks * 8 - served, ticks * 8);
 
     // The two schedules ran for the whole run
-    assert!(reloads > 10, "the config watcher only ran {} times", reloads);
+    assert!(
+        reloads > 10,
+        "{} edits to the config and the watch caught only {}",
+        edits,
+        reloads,
+    );
 
     assert!(
         written >= line.len() as u64 * 10,

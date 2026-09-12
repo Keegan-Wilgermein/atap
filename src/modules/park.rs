@@ -71,7 +71,7 @@ fn wait_ready(park: Park) {
             park.ident as usize,
             0,
             ptr::null_mut(),
-            EventDesc::new_ready(park.filter),
+            EventDesc::new_ready(park.filter, park.notes),
         )
     }
     .check();

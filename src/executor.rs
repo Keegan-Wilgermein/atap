@@ -1078,7 +1078,7 @@ fn watch_park(id: usize, park: Park) -> bool {
             park.ident as usize,
             0,
             id as *mut c_void,
-            EventDesc::new_park(park.filter),
+            EventDesc::new_park(park.filter, park.notes),
         )
     }
     .check()
@@ -1810,8 +1810,11 @@ fn executor_loop(id: i32) {
 
             match event.filter {
                 // What a parked task was watching happened: a socket is
-                // ready, or a signal arrived
-                libc::EVFILT_READ | libc::EVFILT_WRITE | libc::EVFILT_SIGNAL => {
+                // ready, a signal arrived, or a watched path moved
+                libc::EVFILT_READ
+                | libc::EVFILT_WRITE
+                | libc::EVFILT_SIGNAL
+                | libc::EVFILT_VNODE => {
                     wake_parked(event.udata as usize, Fired::Event);
                 }
 

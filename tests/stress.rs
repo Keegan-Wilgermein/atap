@@ -19,6 +19,7 @@ use atap::{
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::PathBuf,
     sync::{
         Arc,
@@ -69,6 +70,10 @@ struct Tally {
     /// Outputs checked against what their task was asked for
     verified: AtomicU64,
 
+    /// Changes a parked watch caught, which is the only work here
+    /// that holds no thread while it waits
+    watched: AtomicU64,
+
     /// Reads that lost fairly, to a cancel or to another reader
     refused: AtomicU64,
 
@@ -109,8 +114,9 @@ impl Tally {
         );
 
         println!(
-            "  verified {}, refused {} | errors {}, crossed {}, early {}, stalled {}",
+            "  verified {}, watched {}, refused {} | errors {}, crossed {}, early {}, stalled {}",
             Self::get(&self.verified),
+            Self::get(&self.watched),
             Self::get(&self.refused),
             Self::get(&self.errors),
             Self::get(&self.crossed),
@@ -1073,6 +1079,89 @@ fn everything_at_once() {
         })
     });
 
+    // ---- watches, parked on files that keep changing under them
+    //
+    // The only work here that holds no thread while it waits. A
+    // park lives on the manager's own queue, which is the queue the
+    // crew below keeps killing, so this is what says whether a park
+    // survives losing it
+    for crew in 0..2u64 {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+        let scratch = Arc::clone(&scratch);
+
+        crews.push(thread::spawn(move || {
+            let path = scratch.join(format!(
+                "stress-watch-{}-{}.txt",
+                std::process::id(),
+                crew,
+            ));
+
+            fs::write(&path, b"before").expect("could not write a watched file");
+
+            while !stop.load(Ordering::Relaxed) {
+                Tally::bump(&tally.spawned);
+
+                let handle = Runtime::task(File::watch(&path).timeout(STALL)).spawn();
+
+                // Touched over and over rather than once. A watch
+                // takes its baseline when it first runs, and under a
+                // deep enough queue a single append can land before
+                // that first look and become part of the baseline
+                // rather than a change. A park that was genuinely lost
+                // still shows up, as the stall below
+                let deadline = Instant::now() + STALL;
+                let mut settled = None;
+
+                while settled.is_none() && Instant::now() < deadline {
+                    // An append, so the file only ever grows and a watch
+                    // can't catch a truncating write half way through
+                    let touched = fs::OpenOptions::new()
+                        .append(true)
+                        .open(&path)
+                        .and_then(|mut file| file.write_all(b"more"));
+
+                    touched.expect("could not touch a watched file");
+
+                    match handle.join_with_timeout(Duration::from_millis(20 + crew * 10)) {
+                        Err(RuntimeError::NotReady) => continue,
+                        other => settled = Some(other),
+                    }
+                }
+
+                match settled {
+                    Some(Ok(Ok(change))) => {
+                        Tally::bump(&tally.joined);
+
+                        match change.written() {
+                            true => Tally::bump(&tally.watched),
+
+                            false => {
+                                Tally::bump(&tally.errors);
+                                eprintln!("  ERROR: a watch woke reporting {:?}", change);
+                            }
+                        }
+                    }
+
+                    Some(Ok(Err(error))) => tally.failed(error, "a watch"),
+                    Some(Err(error)) => tally.refusal(error, "a watch"),
+
+                    None => {
+                        Tally::bump(&tally.stalled);
+                        eprintln!("  STALLED: a watch never woke, {:?} of touches later", STALL);
+                    }
+                }
+
+                // Kept from growing without bound over a long run
+                if fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > 1024 * 1024 {
+                    fs::write(&path, b"before").expect("could not trim a watched file");
+                }
+            }
+
+            let _ = fs::remove_file(&path);
+        }));
+    }
+
     // ---- the manager, killed out from under all of it
     crews.push({
         let stop = Arc::clone(&stop);
@@ -1167,6 +1256,7 @@ fn everything_at_once() {
     assert!(Tally::get(&tally.refused) > 0, "no cancel or race ever refused a read");
     assert!(Tally::get(&tally.children) > 0, "no child was ever run");
     assert!(Tally::get(&tally.raced) > 0, "no race was ever run");
+    assert!(Tally::get(&tally.watched) > 0, "no watch ever caught a change");
 
     assert!(
         Tally::get(&tally.faults) > 0 || running < Duration::from_secs(3),

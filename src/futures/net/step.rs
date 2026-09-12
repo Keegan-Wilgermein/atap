@@ -60,6 +60,7 @@ impl Clock {
         Ok(Step::Park(Park {
             ident,
             filter,
+            notes: 0,
             deadline: self.deadline,
         }))
     }
