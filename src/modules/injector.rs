@@ -10,6 +10,7 @@
 use crate::{
     constants::{INDEX_MASK, PRIORITY_BANDS, STARVE_RELIEF, TAG_SHIFT},
     executor,
+    modules::task_data::QUEUED_SHARED,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
@@ -64,6 +65,9 @@ impl Injector {
 
         let band = data.band().min(PRIORITY_BANDS - 1);
         let index = id + 1;
+
+        // Marked before it can be found, so whoever pops it can claim it
+        data.mark_queued(QUEUED_SHARED);
 
         // Counted before it is published, so a pop can never take the
         // count below zero. `SeqCst` because a parking worker reads it
@@ -257,19 +261,27 @@ impl Injector {
     /// A band another thread is already reversing is skipped, not
     /// waited for
     fn take(&self, band: usize) -> Option<usize> {
-        if let Some(id) = self.pop_ready(band) {
+        loop {
+            let id = match self.pop_ready(band) {
+                Some(id) => id,
+
+                None => {
+                    if !self.flip(band) {
+                        return None;
+                    }
+
+                    self.pop_ready(band)?
+                }
+            };
+
             self.len.fetch_sub(1, Ordering::Relaxed);
-            return Some(id);
+
+            // Only this queue takes what it links, so this always holds.
+            // Checked anyway, so nothing could ever run twice
+            if executor::slot(id).is_some_and(|data| data.claim_queued(QUEUED_SHARED)) {
+                return Some(id);
+            }
         }
-
-        if !self.flip(band) {
-            return None;
-        }
-
-        let id = self.pop_ready(band)?;
-        self.len.fetch_sub(1, Ordering::Relaxed);
-
-        Some(id)
     }
 
     /// Pops one task off a band's served side

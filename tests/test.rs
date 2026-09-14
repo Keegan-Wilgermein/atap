@@ -1,4 +1,7 @@
-use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle, TaskState};
+mod common;
+
+use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskState};
+use common::{drain, report, take_a_run};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -101,7 +104,8 @@ fn duplicated_handles_both_join() {
 fn take_invalidates_other_handles() {
     Runtime::init();
 
-    let first = Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn();
+    let first =
+        Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn();
     let second = first.clone();
 
     let taken = first.take().expect("the value moves out once");
@@ -119,7 +123,8 @@ fn take_invalidates_other_handles() {
 fn cancelled_task_is_unreadable() {
     Runtime::init();
 
-    let first = Runtime::task(Sleep::sleep(Duration::from_secs(1)).mode(SleepMode::Relaxed)).spawn();
+    let first =
+        Runtime::task(Sleep::sleep(Duration::from_secs(1)).mode(SleepMode::Relaxed)).spawn();
     let second = first.clone();
 
     first.cancel();
@@ -136,7 +141,8 @@ fn cancelled_task_is_unreadable() {
 fn maybe_join_says_why_rather_than_just_nothing() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_secs(1)).mode(SleepMode::Relaxed)).spawn();
+    let handle =
+        Runtime::task(Sleep::sleep(Duration::from_secs(1)).mode(SleepMode::Relaxed)).spawn();
     let watcher = handle.clone();
 
     assert_eq!(
@@ -189,7 +195,9 @@ fn repeating_runs_until_cancelled() {
     Runtime::init();
 
     let wanted = 20;
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed)).repeat().spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed))
+        .repeat()
+        .spawn();
 
     // A take that succeeds is a run that happened
     for _ in 0..wanted {
@@ -224,7 +232,9 @@ fn repeating_finishes_a_run_before_the_next() {
     let duration = Duration::from_millis(50);
     let runs: u32 = 5;
 
-    let handle = Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).repeat().spawn();
+    let handle = Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed))
+        .repeat()
+        .spawn();
 
     // One on its own first, so the clock starts at the end of a run
     take_a_run(&handle);
@@ -242,7 +252,10 @@ fn repeating_finishes_a_run_before_the_next() {
     // Four whole runs between the first take and the last
     let floor = duration * (runs - 1);
 
-    println!("{} runs of {:?} took {:?}, floor {:?}", runs, duration, elapsed, floor);
+    println!(
+        "{} runs of {:?} took {:?}, floor {:?}",
+        runs, duration, elapsed, floor
+    );
 
     assert!(
         elapsed >= floor,
@@ -262,7 +275,10 @@ fn repeat_every_waits_between_runs() {
     let runs: u32 = 5;
 
     // A task with nothing in it, so what is measured is the gap
-    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).repeat().every(interval).spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1)))
+        .repeat()
+        .every(interval)
+        .spawn();
 
     // One on its own first, so the clock starts at the end of a run
     take_a_run(&handle);
@@ -303,7 +319,9 @@ fn every_starts_runs_on_the_interval() {
     let runs: u32 = 5;
 
     // A task with nothing in it, so what is measured is the clock
-    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).at_rate(interval).spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1)))
+        .at_rate(interval)
+        .spawn();
 
     // One on its own first, so the clock starts at the end of a run
     take_a_run(&handle);
@@ -340,7 +358,9 @@ fn every_starts_runs_on_the_interval() {
 fn every_ends_the_whole_series_on_cancel() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).at_rate(Duration::from_millis(5)).spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1)))
+        .at_rate(Duration::from_millis(5))
+        .spawn();
 
     // Several periods in, so the schedule is well established
     for _ in 0..10 {
@@ -388,40 +408,6 @@ fn many_one_by_one_tasks() {
     println!("Average time: {}", avg);
 }
 
-/// Waits for the next run of a repeating task and takes it
-fn take_a_run(handle: &TaskHandle<Duration>) -> Duration {
-    let mut polls = 0u64;
-    let waited = Instant::now();
-
-    loop {
-        match handle.clone().take() {
-            Ok(slept) => return slept,
-
-            // The next run hasn't landed yet
-            Err(RuntimeError::AlreadyTaken) => {}
-
-            Err(error) => panic!(
-                "a repeating task came back with {:?} after {} polls, pool {:?}",
-                error,
-                polls,
-                Runtime::workers(),
-            ),
-        }
-
-        polls += 1;
-
-        // A series that stopped producing fails rather than hangs
-        assert!(
-            waited.elapsed() < Duration::from_secs(30),
-            "a repeating task stopped producing runs after {} polls, pool {:?}",
-            polls,
-            Runtime::workers(),
-        );
-
-        thread::sleep(Duration::from_micros(100));
-    }
-}
-
 /// The pool works through a backlog while the manager is down,
 /// alongside every other test in this file, and the manager
 /// comes back
@@ -455,7 +441,10 @@ fn survives_losing_its_manager() {
     report("manager back");
 
     // Only the manager reads this timer
-    let timed = Runtime::task(quick()).repeat().every(Duration::from_millis(20)).spawn();
+    let timed = Runtime::task(quick())
+        .repeat()
+        .every(Duration::from_millis(20))
+        .spawn();
 
     for _ in 0..3 {
         take_a_run(&timed);
@@ -470,33 +459,14 @@ fn survives_losing_its_manager() {
     );
 }
 
-/// A line of what the pool is doing at this moment
-fn report(at: &str) {
-    let stats = Runtime::workers();
-
-    println!(
-        "  [{}] {} workers ({} busy), {} sleep threads ({} busy), \
-         {} queued, {} blocking, {} backlog, {} live, {} slots",
-        at,
-        stats.len(),
-        stats.busy(),
-        stats.sleep_threads(),
-        stats.sleep_busy(),
-        stats.queued(),
-        stats.blocking_queued(),
-        stats.backlog(),
-        stats.live(),
-        stats.peak_slots(),
-    );
-}
-
 /// `maybe_take` polls a task whose output can't be cloned
 /// without committing to waiting for it
 #[test]
 fn maybe_take_polls_without_committing() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn();
+    let handle =
+        Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn();
 
     assert_eq!(
         handle.maybe_take(),
@@ -521,7 +491,8 @@ fn maybe_take_polls_without_committing() {
 fn take_with_timeout_costs_nothing_when_it_gives_up() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(300)).mode(SleepMode::Relaxed)).spawn();
+    let handle =
+        Runtime::task(Sleep::sleep(Duration::from_millis(300)).mode(SleepMode::Relaxed)).spawn();
 
     assert_eq!(
         handle.take_with_timeout(Duration::from_millis(20)),
@@ -542,7 +513,8 @@ fn take_with_timeout_costs_nothing_when_it_gives_up() {
 fn wait_settles_without_consuming_or_reading() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(50)).mode(SleepMode::Relaxed)).spawn();
+    let handle =
+        Runtime::task(Sleep::sleep(Duration::from_millis(50)).mode(SleepMode::Relaxed)).spawn();
 
     let state = handle.wait().expect("the task settles");
 
@@ -557,13 +529,15 @@ fn wait_settles_without_consuming_or_reading() {
 fn state_and_predicates_agree() {
     Runtime::init();
 
-    let ready = Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
+    let ready =
+        Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
     ready.wait().expect("it settles");
 
     assert_eq!(ready.state(), TaskState::Ready);
     assert!(ready.is_ready() && ready.settled());
 
-    let cancelled = Runtime::task(Sleep::sleep(Duration::from_secs(5)).mode(SleepMode::Relaxed)).spawn();
+    let cancelled =
+        Runtime::task(Sleep::sleep(Duration::from_secs(5)).mode(SleepMode::Relaxed)).spawn();
     cancelled.clone().cancel();
 
     assert_eq!(cancelled.state(), TaskState::Cancelled);
@@ -575,7 +549,8 @@ fn state_and_predicates_agree() {
         "a cancelled task has settled and has nothing to give",
     );
 
-    let taken = Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
+    let taken =
+        Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
     let watcher = taken.clone();
     taken.take().expect("the value moves out");
 
@@ -584,7 +559,11 @@ fn state_and_predicates_agree() {
 
     // An empty slot is never observable through a handle
     for handle in [&ready, &cancelled, &watcher] {
-        assert_ne!(handle.state(), TaskState::Free, "a live handle is never free");
+        assert_ne!(
+            handle.state(),
+            TaskState::Free,
+            "a live handle is never free"
+        );
     }
 }
 
@@ -630,9 +609,11 @@ fn handles_compare_and_hash_on_the_task() {
 
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
+    let handle =
+        Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
     let same = handle.clone();
-    let other = Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
+    let other =
+        Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
 
     assert_eq!(handle, same, "a clone points at the same task");
     assert_ne!(handle.id(), other.id(), "two spawns are two tasks");
@@ -653,7 +634,10 @@ fn join_all_keeps_the_order_it_was_given() {
     Runtime::init();
 
     let handles: Vec<_> = (1..=5)
-        .map(|step| Runtime::task(Sleep::sleep(Duration::from_millis(step * 10)).mode(SleepMode::Relaxed)).spawn())
+        .map(|step| {
+            Runtime::task(Sleep::sleep(Duration::from_millis(step * 10)).mode(SleepMode::Relaxed))
+                .spawn()
+        })
         .collect();
 
     let results = Runtime::join_all(handles);
@@ -698,7 +682,9 @@ fn after_waits_before_it_runs() {
     let delay = Duration::from_millis(200);
     let started = Instant::now();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).after(delay).spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed))
+        .after(delay)
+        .spawn();
 
     // Sitting on a timer rather than anywhere in the pool
     assert!(!handle.settled(), "nowhere near the delay being up");
@@ -730,7 +716,11 @@ fn many_delayed_tasks_cost_no_threads() {
     let started = Instant::now();
 
     let handles: Vec<_> = (0..2_000)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(50)).mode(SleepMode::Relaxed)).after(delay).spawn())
+        .map(|_| {
+            Runtime::task(Sleep::sleep(Duration::from_micros(50)).mode(SleepMode::Relaxed))
+                .after(delay)
+                .spawn()
+        })
         .collect();
 
     for (task, handle) in handles.into_iter().enumerate() {
@@ -804,28 +794,6 @@ fn delay_and_repeat_compose() {
     );
 }
 
-/// Drains a bounded series, counting what it published
-fn drain(handle: &TaskHandle<Duration>, patience: Duration) -> usize {
-    let deadline = Instant::now() + patience;
-    let mut seen = 0;
-
-    while Instant::now() < deadline {
-        match handle.maybe_take() {
-            Ok(_) => seen += 1,
-
-            // Between runs, or one still going
-            Err(RuntimeError::AlreadyTaken) | Err(RuntimeError::NotReady) => {
-                thread::sleep(Duration::from_millis(1))
-            }
-
-            // `Finished` and every other error are endings
-            Err(_) => break,
-        }
-    }
-
-    seen
-}
-
 /// A deadline already past runs once and stops
 #[test]
 fn until_in_the_past_runs_once() {
@@ -860,7 +828,10 @@ fn at_rate_starts_exactly_its_count() {
 
     println!("a schedule bounded to {runs} published {seen} times");
 
-    assert!(handle.is_finished(), "the schedule never reported finishing");
+    assert!(
+        handle.is_finished(),
+        "the schedule never reported finishing"
+    );
 
     // Overlapping runs can publish one output between two, so
     // only an upper bound can be seen
@@ -948,5 +919,8 @@ fn an_unbounded_repeat_is_never_finished() {
     handle.cancel();
 
     assert!(settled, "it published, so it has settled");
-    assert!(!finished, "but there is another run coming, so it isn't over");
+    assert!(
+        !finished,
+        "but there is another run coming, so it isn't over"
+    );
 }

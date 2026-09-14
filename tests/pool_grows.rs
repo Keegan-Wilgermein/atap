@@ -29,7 +29,10 @@ fn pool_grows_under_blocking_load() {
 
     println!(
         "{} blocking tasks got {} sleep threads, {} busy, {} still queued",
-        tasks, stats.sleep_threads(), stats.sleep_busy(), stats.blocking_queued(),
+        tasks,
+        stats.sleep_threads(),
+        stats.sleep_busy(),
+        stats.blocking_queued(),
     );
 
     let mut slept = Duration::ZERO;

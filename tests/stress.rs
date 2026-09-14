@@ -2,9 +2,13 @@
 //!
 //! Every kind of work runs at once on threads that know nothing
 //! about each other, while the manager is killed every few
-//! seconds. Every output is checked against what its own task
-//! was asked for, every join has a ceiling, and the only errors
-//! allowed are cancels and lost races. Once it goes quiet, the
+//! seconds and pool threads now and then. Computes split into a
+//! task per call, chain hundreds deep, gather sets of handles,
+//! take gives, run pipelines, rally values back and forth and
+//! panic on purpose, all on the same workers. Every output is
+//! checked against what its own task was asked for, every join
+//! has a ceiling, and the only errors allowed are cancels, lost
+//! races, and tasks lost with a thread killed moments before. Once it goes quiet, the
 //! runtime has to go idle, give its slots back, still grow for
 //! a burst, stop burning cpu, shut down, and start again
 //!
@@ -13,16 +17,20 @@
 //! seconds. `ATAP_STRESS_SEED` replays the choices of a run that
 //! failed, and every run prints the seed it used
 
+mod common;
+
 use atap::{
-    File, JoinPolicy, Process, Runtime, RuntimeError, Sleep, SleepMode, SleepTask, TaskHandle,
+    Compute, File, JoinPolicy, Process, Runtime, RuntimeError, Sleep, SleepMode, SleepTask,
+    TaskHandle, Waiting,
 };
+use common::{Resources, cores, cpu_time, mebibytes, raise_descriptor_limit};
 use std::{
     collections::HashMap,
     fs,
     io::Write,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
@@ -53,6 +61,23 @@ const FAULTS_PER_BURST: u32 = 2;
 /// Files with distinct contents, for the crews that check a
 /// read came back from the file it was asked for
 const IDENTITIES: usize = 64;
+
+/// Gap between one burst of pool thread deaths and the next
+const KILL_GAP: Duration = Duration::from_secs(7);
+
+/// Workers killed per burst, with one sleep thread beside them
+const KILLS_PER_BURST: u32 = 2;
+
+/// How long after a burst of thread deaths a task failing counts as
+/// one the dead threads were holding, rather than a fault
+const KILL_GRACE: Duration = Duration::from_secs(4);
+
+/// Milliseconds since the storm started, never zero
+fn millis() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
 
 /// Counters, so a crew that quietly stopped doing anything is
 /// distinguishable from one that worked the whole time
@@ -88,6 +113,28 @@ struct Tally {
 
     /// Tasks that were never going to finish
     stalled: AtomicU64,
+
+    /// Computes that split, chained, gathered or were given to, and
+    /// came back right
+    computed: AtomicU64,
+
+    /// Values given into waiting tasks by hand
+    gave: AtomicU64,
+
+    /// Outputs that reached a task through `receive` or `give_to`
+    received: AtomicU64,
+
+    /// Computes that panicked because they were asked to
+    panics: AtomicU64,
+
+    /// Pool threads killed on purpose
+    killed: AtomicU64,
+
+    /// Tasks lost with a thread killed on purpose
+    lost: AtomicU64,
+
+    /// When threads were last killed, in `millis`
+    last_kill: AtomicU64,
 }
 
 impl Tally {
@@ -123,6 +170,66 @@ impl Tally {
             Self::get(&self.early),
             Self::get(&self.stalled),
         );
+
+        println!(
+            "  computed {}, gave {}, received {}, panics {} | threads killed {}, tasks lost with them {}",
+            Self::get(&self.computed),
+            Self::get(&self.gave),
+            Self::get(&self.received),
+            Self::get(&self.panics),
+            Self::get(&self.killed),
+            Self::get(&self.lost),
+        );
+    }
+
+    /// Whether threads were killed recently enough that a task failing
+    /// could be one they were holding
+    fn kill_is_recent(&self) -> bool {
+        let last = Self::get(&self.last_kill);
+
+        last != 0 && millis().saturating_sub(last) < KILL_GRACE.as_millis() as u64
+    }
+
+    /// Whether threads were killed at any point during a wait that began
+    /// at `began`, or just before it
+    ///
+    /// A wait that runs out long after the kill that stopped it still
+    /// counts the kill, where `kill_is_recent` asked at the end wouldn't
+    fn kill_during(&self, began: u64) -> bool {
+        let last = Self::get(&self.last_kill);
+
+        last != 0 && last + KILL_GRACE.as_millis() as u64 >= began
+    }
+
+    /// Books a value that should have come back as `wanted`
+    fn check_value<T: PartialEq + std::fmt::Debug>(&self, got: T, wanted: T, what: &str) {
+        if got == wanted {
+            Self::bump(&self.verified);
+            Self::bump(&self.computed);
+            return;
+        }
+
+        Self::bump(&self.crossed);
+
+        eprintln!(
+            "  CROSSED: {} came back {:?}, wanted {:?}",
+            what, got, wanted
+        );
+    }
+
+    /// Books the whole of a join on a compute that reports its own
+    /// failures
+    fn check_computed<T: PartialEq + std::fmt::Debug>(
+        &self,
+        joined: Result<Result<T, RuntimeError>, RuntimeError>,
+        wanted: T,
+        what: &str,
+    ) {
+        match joined {
+            Ok(Ok(got)) => self.check_value(got, wanted, what),
+            Ok(Err(error)) => self.failed(error, what),
+            Err(error) => self.refusal(error, what),
+        }
     }
 
     /// Books a read that should have produced exactly `wanted`
@@ -153,7 +260,10 @@ impl Tally {
 
         Self::bump(&self.early);
 
-        eprintln!("  EARLY: {} asked for {:?} and came back after {:?}", what, asked, slept);
+        eprintln!(
+            "  EARLY: {} asked for {:?} and came back after {:?}",
+            what, asked, slept
+        );
     }
 
     /// Books a task that ran and reported a failure of its own
@@ -161,6 +271,12 @@ impl Tally {
     /// Nothing here asks a task to fail, so any error inside an
     /// output is a fault
     fn failed(&self, error: RuntimeError, what: &str) {
+        // Reported by a compute whose child went down with a killed thread
+        if matches!(error, RuntimeError::TaskFailed) && self.kill_is_recent() {
+            Self::bump(&self.lost);
+            return;
+        }
+
         Self::bump(&self.errors);
 
         eprintln!("  ERROR: {} reported {:?}", what, error);
@@ -172,6 +288,11 @@ impl Tally {
     fn refusal(&self, error: RuntimeError, what: &str) {
         match error {
             RuntimeError::Cancelled | RuntimeError::AlreadyTaken => Self::bump(&self.refused),
+
+            // Held by a thread killed moments ago, or waiting on one that was
+            RuntimeError::TaskFailed | RuntimeError::Finished if self.kill_is_recent() => {
+                Self::bump(&self.lost)
+            }
 
             RuntimeError::NotReady => {
                 Self::bump(&self.stalled);
@@ -194,6 +315,8 @@ struct Peaks {
     sleep_threads: AtomicUsize,
     queued: AtomicUsize,
     blocking_queued: AtomicUsize,
+    threads: AtomicUsize,
+    footprint: AtomicUsize,
 }
 
 impl Peaks {
@@ -252,7 +375,11 @@ fn fixture(name: &str, size: usize) -> PathBuf {
 
 /// A file whose contents and length say which one it is
 fn identity(index: usize) -> (PathBuf, Vec<u8>) {
-    let path = fixtures().join(format!("stress-identity-{}-{}.txt", std::process::id(), index));
+    let path = fixtures().join(format!(
+        "stress-identity-{}-{}.txt",
+        std::process::id(),
+        index
+    ));
 
     let stamp = format!("identity {} of process {} | ", index, std::process::id());
     let length = 64 + (index * 97) % 8000;
@@ -276,56 +403,39 @@ fn kernel_sleep(asked: Duration) -> SleepTask {
     Sleep::sleep(asked).mode(SleepMode::Relaxed)
 }
 
-/// Process time burnt so far, user and system together
-fn cpu_time() -> Duration {
-    let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+/// Fibonacci the plain way
+fn fib_plain(n: u64) -> u64 {
+    let (mut a, mut b) = (0u64, 1u64);
 
-    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
-        return Duration::ZERO;
+    for _ in 0..n {
+        (a, b) = (b, a + b);
     }
 
-    let seconds = |time: libc::timeval| {
-        Duration::from_secs(time.tv_sec as u64) + Duration::from_micros(time.tv_usec as u64)
-    };
-
-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+    a
 }
 
-/// Lifts the soft limit on open descriptors as far as the hard
-/// limit allows, so running out isn't counted as a fault
-///
-/// ## Returns
-/// The limit it ended up with, for the log
-fn raise_descriptor_limit() -> u64 {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-
-    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
-
-    // `OPEN_MAX`, which is as high as macOS lets a process ask for
-    let wanted = limit.rlim_max.min(10_240);
-
-    if wanted > limit.rlim_cur {
-        let raised = libc::rlimit {
-            rlim_cur: wanted,
-            rlim_max: limit.rlim_max,
-        };
-
-        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) };
+/// Fibonacci split into a task per call, with a branch lost to a killed
+/// thread reported rather than panicking
+fn fib_split(n: u64) -> Result<u64, RuntimeError> {
+    if n < 8 {
+        return Ok(fib_plain(n));
     }
 
-    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
+    let left = Runtime::task(Compute::compute(move |()| fib_split(n - 1))).spawn();
+    let right = fib_split(n - 2);
 
-    limit.rlim_cur
+    Ok(left.join().and_then(|inner| inner)? + right?)
 }
 
-/// Online cores, which the pool sizes itself against
-fn cores() -> usize {
-    thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1)
+/// A chain of computes, each spawning and joining the next
+fn chain(depth: u64) -> Result<u64, RuntimeError> {
+    if depth == 0 {
+        return Ok(0);
+    }
+
+    let next = Runtime::task(Compute::compute(move |()| chain(depth - 1))).spawn();
+
+    Ok(next.join().and_then(|inner| inner)? + 1)
 }
 
 /// Waits for the pool to have nothing left to do and the live
@@ -353,6 +463,30 @@ fn settle() -> Duration {
 #[test]
 fn everything_at_once() {
     Runtime::init();
+
+    // Panics asked for and threads killed on purpose would otherwise print
+    // thousands of times over. Any other panic still prints
+    let printed_panic = std::panic::take_hook();
+
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+
+        match message {
+            Some(message) if message.contains("asked to panic") => {}
+
+            // An injected thread death, which carries no message
+            None => {}
+
+            Some(_) => printed_panic(info),
+        }
+    }));
+
+    millis();
 
     let descriptors = raise_descriptor_limit();
 
@@ -412,7 +546,10 @@ fn everything_at_once() {
                 thread::sleep(Duration::from_millis(50));
 
                 let stats = Runtime::workers();
+                let resources = Resources::now();
 
+                Peaks::raise(&peaks.threads, resources.threads as usize);
+                Peaks::raise(&peaks.footprint, resources.footprint as usize);
                 Peaks::raise(&peaks.live, stats.live());
                 Peaks::raise(&peaks.workers, stats.len());
                 Peaks::raise(&peaks.sleep_threads, stats.sleep_threads());
@@ -420,7 +557,7 @@ fn everything_at_once() {
                 Peaks::raise(&peaks.blocking_queued, stats.blocking_queued());
 
                 if printed.elapsed() >= Duration::from_secs(1) {
-                    println!("{}", stats);
+                    println!("{}\n  {}", stats, resources);
                     printed = Instant::now();
                 }
             }
@@ -522,11 +659,7 @@ fn everything_at_once() {
         let scratch = Arc::clone(&scratch);
 
         crews.push(thread::spawn(move || {
-            let path = scratch.join(format!(
-                "stress-write-{}-{}.txt",
-                std::process::id(),
-                crew,
-            ));
+            let path = scratch.join(format!("stress-write-{}-{}.txt", std::process::id(), crew,));
 
             let body: Arc<[u8]> = Arc::from(vec![b'a' + crew as u8; 96 * 1024]);
             let doubled: Vec<u8> = body.iter().chain(body.iter()).copied().collect();
@@ -545,7 +678,11 @@ fn everything_at_once() {
                     Ok(Ok(count)) if count == body.len() => Tally::bump(&tally.joined),
                     Ok(Ok(count)) => {
                         Tally::bump(&tally.errors);
-                        eprintln!("  ERROR: a write reported {} of {} bytes", count, body.len());
+                        eprintln!(
+                            "  ERROR: a write reported {} of {} bytes",
+                            count,
+                            body.len()
+                        );
                     }
                     Ok(Err(error)) => tally.failed(error, "a write"),
                     Err(error) => tally.refusal(error, "a write"),
@@ -565,7 +702,10 @@ fn everything_at_once() {
                 if round % 8 == 0 {
                     Tally::bump(&tally.spawned);
 
-                    match Runtime::task(File::read(&path)).spawn().join_with_timeout(STALL) {
+                    match Runtime::task(File::read(&path))
+                        .spawn()
+                        .join_with_timeout(STALL)
+                    {
                         Ok(Ok(bytes)) => tally.check_bytes(&bytes, &doubled, "a write read back"),
                         Ok(Err(error)) => tally.failed(error, "a read back"),
                         Err(error) => tally.refusal(error, "a read back"),
@@ -767,7 +907,11 @@ fn everything_at_once() {
                     match handle.join_with_timeout(STALL) {
                         Ok(Ok(out)) if out.status().success() => {
                             Tally::bump(&tally.joined);
-                            tally.check_bytes(out.stdout(), format!("{}\n", token).as_bytes(), "an echo");
+                            tally.check_bytes(
+                                out.stdout(),
+                                format!("{}\n", token).as_bytes(),
+                                "an echo",
+                            );
                         }
                         Ok(Ok(out)) => {
                             Tally::bump(&tally.errors);
@@ -783,7 +927,11 @@ fn everything_at_once() {
                 match fed.join_with_timeout(STALL) {
                     Ok(Ok(out)) => {
                         Tally::bump(&tally.joined);
-                        tally.check_bytes(out.stdout(), tokens[0].as_bytes(), "a child fed its input");
+                        tally.check_bytes(
+                            out.stdout(),
+                            tokens[0].as_bytes(),
+                            "a child fed its input",
+                        );
                     }
                     Ok(Err(error)) => tally.failed(error, "a fed child"),
                     Err(error) => tally.refusal(error, "a fed child"),
@@ -820,9 +968,12 @@ fn everything_at_once() {
     // sixty four different files, so a value reaching the wrong
     // reader comes back as the wrong file
     {
-        let (to_joiner, joiner_rx) = mpsc::sync_channel::<(usize, TaskHandle<Result<Vec<u8>, RuntimeError>>)>(64);
-        let (to_taker, taker_rx) = mpsc::sync_channel::<(usize, TaskHandle<Result<Vec<u8>, RuntimeError>>)>(64);
-        let (to_third, third_rx) = mpsc::sync_channel::<(usize, TaskHandle<Result<Vec<u8>, RuntimeError>>)>(64);
+        let (to_joiner, joiner_rx) =
+            mpsc::sync_channel::<(usize, TaskHandle<Result<Vec<u8>, RuntimeError>>)>(64);
+        let (to_taker, taker_rx) =
+            mpsc::sync_channel::<(usize, TaskHandle<Result<Vec<u8>, RuntimeError>>)>(64);
+        let (to_third, third_rx) =
+            mpsc::sync_channel::<(usize, TaskHandle<Result<Vec<u8>, RuntimeError>>)>(64);
 
         crews.push({
             let stop = Arc::clone(&stop);
@@ -1026,7 +1177,10 @@ fn everything_at_once() {
 
                 Tally::bump(&tally.raced);
 
-                assert!(shadow_settled, "a race over shared handles produced an unsettled winner");
+                assert!(
+                    shadow_settled,
+                    "a race over shared handles produced an unsettled winner"
+                );
 
                 // A race against a file, so the set spans both pools
                 let mixed: Vec<_> = (0..3)
@@ -1091,11 +1245,7 @@ fn everything_at_once() {
         let scratch = Arc::clone(&scratch);
 
         crews.push(thread::spawn(move || {
-            let path = scratch.join(format!(
-                "stress-watch-{}-{}.txt",
-                std::process::id(),
-                crew,
-            ));
+            let path = scratch.join(format!("stress-watch-{}-{}.txt", std::process::id(), crew,));
 
             fs::write(&path, b"before").expect("could not write a watched file");
 
@@ -1148,7 +1298,10 @@ fn everything_at_once() {
 
                     None => {
                         Tally::bump(&tally.stalled);
-                        eprintln!("  STALLED: a watch never woke, {:?} of touches later", STALL);
+                        eprintln!(
+                            "  STALLED: a watch never woke, {:?} of touches later",
+                            STALL
+                        );
                     }
                 }
 
@@ -1161,6 +1314,508 @@ fn everything_at_once() {
             let _ = fs::remove_file(&path);
         }));
     }
+
+    // ---- computes that split into a task per call, on the same
+    // workers as everything else
+    for crew in 0..2u64 {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            let mut dice = Dice::new(seed, 400 + crew);
+
+            while !stop.load(Ordering::Relaxed) {
+                let n = 10 + dice.below(9);
+
+                Tally::bump(&tally.spawned);
+
+                let joined = Runtime::task(Compute::compute(move |()| fib_split(n)))
+                    .spawn()
+                    .join_with_timeout(STALL);
+
+                tally.check_computed(joined, fib_plain(n), "a split fibonacci");
+            }
+        }));
+    }
+
+    // ---- chains far deeper than a worker helps, and blocks nested
+    // inside computes
+    {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+        let large = Arc::clone(&large);
+        let large_len = large_body.len();
+
+        crews.push(thread::spawn(move || {
+            let mut dice = Dice::new(seed, 410);
+
+            while !stop.load(Ordering::Relaxed) {
+                let depth = 16 + dice.below(160);
+
+                Tally::bump(&tally.spawned);
+
+                let joined = Runtime::task(Compute::compute(move |()| chain(depth)))
+                    .spawn()
+                    .join_with_timeout(STALL);
+
+                tally.check_computed(joined, depth, "a deep chain");
+
+                let large = Arc::clone(&large);
+
+                Tally::bump(&tally.spawned);
+
+                // A file and a compute blocked on from inside a compute
+                let joined =
+                    Runtime::task(Compute::compute(move |()| -> Result<usize, RuntimeError> {
+                        let read = Runtime::block(File::read(large.as_path()))?;
+
+                        Ok(Runtime::block(Compute::compute(move |()| read.len() * 2)))
+                    }))
+                    .spawn()
+                    .join_with_timeout(STALL);
+
+                tally.check_computed(joined, large_len * 2, "a block nested in a compute");
+            }
+        }));
+    }
+
+    // ---- sets of handles, gathered into their shape or merged into one
+    {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+        let small = Arc::clone(&small);
+        let small_body = Arc::clone(&small_body);
+
+        crews.push(thread::spawn(move || {
+            let mut dice = Dice::new(seed, 420);
+
+            while !stop.load(Ordering::Relaxed) {
+                let width = 2 + dice.below(30);
+
+                let parts: Vec<TaskHandle<u64>> = (0..width)
+                    .map(|index| {
+                        Tally::bump(&tally.spawned);
+
+                        Runtime::task(Compute::compute(move |()| index * 7 + 1)).spawn()
+                    })
+                    .collect();
+
+                Tally::bump(&tally.spawned);
+
+                let total = Runtime::task(Compute::compute(|parts: Vec<u64>| {
+                    parts.iter().sum::<u64>()
+                }))
+                .receive(parts)
+                .count(1)
+                .spawn()
+                .join_with_timeout(STALL);
+
+                match total {
+                    Ok(total) => {
+                        Tally::bump(&tally.received);
+
+                        let wanted = (0..width).map(|index| index * 7 + 1).sum();
+                        tally.check_value(total, wanted, "a gathered vec");
+                    }
+                    Err(error) => tally.refusal(error, "a gathered vec"),
+                }
+
+                // Three types at once, one of them a file read
+                Tally::bump(&tally.spawned);
+                let read = Runtime::task(File::read(small.as_path())).spawn();
+
+                Tally::bump(&tally.spawned);
+                let label = Runtime::task(Compute::compute(|()| String::from("small"))).spawn();
+
+                Tally::bump(&tally.spawned);
+                let size = Runtime::task(Compute::compute(|()| 64usize)).spawn();
+
+                Tally::bump(&tally.spawned);
+
+                let described = Runtime::task(Compute::compute(
+                    |(read, label, size): (Result<Vec<u8>, RuntimeError>, String, usize)| {
+                        read.map(|bytes| (bytes, format!("{label} {size}")))
+                    },
+                ))
+                .receive((read, label, size))
+                .count(1)
+                .spawn()
+                .join_with_timeout(STALL);
+
+                match described {
+                    Ok(Ok((bytes, text))) => {
+                        Tally::bump(&tally.received);
+                        tally.check_bytes(&bytes, &small_body, "a gathered read");
+                        tally.check_value(text, String::from("small 64"), "a gathered label");
+                    }
+                    Ok(Err(error)) => tally.failed(error, "a gathered read"),
+                    Err(error) => tally.refusal(error, "a gathered read"),
+                }
+
+                // Several sources merged into one receive, which hears one of them
+                let sources: Vec<TaskHandle<u64>> = (0..4u64)
+                    .map(|index| {
+                        Tally::bump(&tally.spawned);
+
+                        Runtime::task(Compute::compute(move |()| 1_000 + index)).spawn()
+                    })
+                    .collect();
+
+                Tally::bump(&tally.spawned);
+
+                let merged = Runtime::task(Compute::compute(|value: u64| value))
+                    .receive_any(sources)
+                    .count(1)
+                    .spawn()
+                    .join_with_timeout(STALL);
+
+                match merged {
+                    Ok(value) if (1_000..1_004).contains(&value) => {
+                        Tally::bump(&tally.received);
+                        Tally::bump(&tally.verified);
+                    }
+                    Ok(value) => {
+                        Tally::bump(&tally.crossed);
+                        eprintln!("  CROSSED: a merge heard {value} from sources of 1000 to 1003");
+                    }
+                    Err(error) => tally.refusal(error, "a merge"),
+                }
+            }
+        }));
+    }
+
+    // ---- values given by hand into a task that waits for them
+    {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            let mut dice = Dice::new(seed, 430);
+
+            let spawn_tripler = || {
+                Tally::bump(&tally.spawned);
+
+                Runtime::task(Compute::compute(|(seq, value): (u64, u64)| {
+                    (seq, value * 3)
+                }))
+                .wait_for::<(u64, u64)>()
+                .spawn()
+            };
+
+            let mut tripler = spawn_tripler();
+            let mut seq = 0u64;
+
+            while !stop.load(Ordering::Relaxed) {
+                seq += 1;
+
+                let value = dice.below(1_000_000);
+
+                // Only once the last run is over, so this give starts a run of its own
+                let waited = Instant::now();
+
+                while !tripler.is_waiting() && !tripler.is_finished() && waited.elapsed() < STALL {
+                    thread::yield_now();
+                }
+
+                if let Err(error) = tripler.give((seq, value)) {
+                    tally.refusal(error, "a give");
+                    tripler = spawn_tripler();
+                    continue;
+                }
+
+                Tally::bump(&tally.gave);
+
+                let deadline = Instant::now() + STALL;
+
+                loop {
+                    let left = deadline.saturating_duration_since(Instant::now());
+
+                    match tripler.take_with_timeout(left) {
+                        Ok((at, tripled)) if at == seq => {
+                            tally.check_value(tripled, value * 3, "a given value");
+                            break;
+                        }
+
+                        // The last run's output, or this run's not written yet
+                        Ok(_) | Err(RuntimeError::AlreadyTaken) if Instant::now() < deadline => {
+                            thread::yield_now()
+                        }
+
+                        Ok(_) => {
+                            tally.refusal(RuntimeError::NotReady, "a given value");
+                            break;
+                        }
+
+                        Err(error) => {
+                            tally.refusal(error, "a given value");
+
+                            if tripler.is_finished() {
+                                tripler = spawn_tripler();
+                            }
+
+                            break;
+                        }
+                    }
+                }
+            }
+
+            tripler.cancel();
+        }));
+    }
+
+    // ---- pipelines: gives into a waiting source, a receive after it,
+    // and give_to into a sink that reports back
+    {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            let mut dice = Dice::new(seed, 440);
+
+            while !stop.load(Ordering::Relaxed) {
+                let (reported, reports) = mpsc::channel::<(u64, u64)>();
+
+                Tally::bump(&tally.spawned);
+
+                let source = Runtime::task(Compute::compute(|(seq, value): (u64, u64)| {
+                    (seq, value + 1)
+                }))
+                .wait_for::<(u64, u64)>()
+                .spawn();
+
+                Tally::bump(&tally.spawned);
+
+                let sink = Runtime::task(Compute::compute(move |(seq, value): (u64, u64)| {
+                    let _ = reported.send((seq, value));
+                }))
+                .wait_for::<(u64, u64)>()
+                .spawn();
+
+                Tally::bump(&tally.spawned);
+
+                let middle = Runtime::task(Compute::compute(|(seq, value): (u64, u64)| {
+                    (seq, value * 2)
+                }))
+                .receive(source.clone())
+                .give_to(&sink)
+                .spawn();
+
+                let mut broken = false;
+
+                for seq in 1..=32u64 {
+                    let value = dice.below(1_000_000);
+
+                    if let Err(error) = source.give((seq, value)) {
+                        tally.refusal(error, "a pipeline give");
+                        broken = true;
+                        break;
+                    }
+
+                    Tally::bump(&tally.gave);
+
+                    let began = millis();
+
+                    match reports.recv_timeout(STALL) {
+                        Ok(arrived) => {
+                            Tally::bump(&tally.received);
+                            tally.check_value(arrived, (seq, (value + 1) * 2), "a pipeline value");
+                        }
+
+                        Err(_) if tally.kill_during(began) => {
+                            Tally::bump(&tally.lost);
+                            broken = true;
+                            break;
+                        }
+
+                        Err(_) => {
+                            Tally::bump(&tally.stalled);
+                            eprintln!("  STALLED: a value never came out of its pipeline");
+                            broken = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Ending the source ends the stage after it, which ends the sink,
+                // which drops the only sender
+                drop(middle);
+                drop(sink);
+                source.cancel();
+
+                if !broken {
+                    let began = millis();
+
+                    match reports.recv_timeout(STALL) {
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {}
+
+                        _ if tally.kill_during(began) => Tally::bump(&tally.lost),
+
+                        other => {
+                            Tally::bump(&tally.stalled);
+                            eprintln!(
+                                "  STALLED: a sink outlived its pipeline, and heard {:?}",
+                                other
+                            );
+                        }
+                    }
+                }
+            }
+        }));
+    }
+
+    // ---- two waiting tasks rallying a value, each holding the other
+    {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            let rally = 64u64;
+
+            while !stop.load(Ordering::Relaxed) {
+                let (done, finished) = mpsc::channel::<u64>();
+
+                let ping_side: Arc<OnceLock<TaskHandle<(), Waiting<u64>>>> =
+                    Arc::new(OnceLock::new());
+                let pong_side: Arc<OnceLock<TaskHandle<(), Waiting<u64>>>> =
+                    Arc::new(OnceLock::new());
+
+                Tally::bump(&tally.spawned);
+
+                let ping = {
+                    let pong_side = Arc::clone(&pong_side);
+
+                    Runtime::task(Compute::compute(move |count: u64| match count >= rally {
+                        true => {
+                            let _ = done.send(count);
+                        }
+                        false => {
+                            if let Some(pong) = pong_side.get() {
+                                let _ = pong.give(count + 1);
+                            }
+                        }
+                    }))
+                    .wait_for::<u64>()
+                    .spawn()
+                };
+
+                Tally::bump(&tally.spawned);
+
+                let pong = {
+                    let ping_side = Arc::clone(&ping_side);
+
+                    Runtime::task(Compute::compute(move |count: u64| {
+                        if let Some(ping) = ping_side.get() {
+                            let _ = ping.give(count + 1);
+                        }
+                    }))
+                    .wait_for::<u64>()
+                    .spawn()
+                };
+
+                let _ = ping_side.set(ping.clone());
+                let _ = pong_side.set(pong.clone());
+
+                let began = millis();
+
+                match ping.give(0) {
+                    Ok(()) => {
+                        Tally::bump(&tally.gave);
+
+                        match finished.recv_timeout(STALL) {
+                            Ok(count) => tally.check_value(count, rally, "a rally"),
+                            Err(_) if tally.kill_during(began) => Tally::bump(&tally.lost),
+                            Err(_) => {
+                                Tally::bump(&tally.stalled);
+                                eprintln!("  STALLED: a rally stopped part way");
+                            }
+                        }
+                    }
+                    Err(error) => tally.refusal(error, "a rally's first give"),
+                }
+
+                // Each holds the other, so nothing but a cancel ends them
+                ping.cancel();
+                pong.cancel();
+            }
+        }));
+    }
+
+    // ---- computes asked to panic, among ones that aren't
+    {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            let mut dice = Dice::new(seed, 460);
+
+            while !stop.load(Ordering::Relaxed) {
+                let batch: Vec<(bool, u64, TaskHandle<u64>)> = (0..32)
+                    .map(|_| {
+                        let doomed = dice.below(5) == 0;
+                        let value = dice.below(1_000_000);
+
+                        Tally::bump(&tally.spawned);
+
+                        let handle = Runtime::task(Compute::compute(move |()| {
+                            if doomed {
+                                panic!("asked to panic under stress");
+                            }
+
+                            value ^ 0xFFFF
+                        }))
+                        .spawn();
+
+                        (doomed, value, handle)
+                    })
+                    .collect();
+
+                for (doomed, value, handle) in batch {
+                    match (doomed, handle.join_with_timeout(STALL)) {
+                        (true, Err(RuntimeError::TaskFailed)) => Tally::bump(&tally.panics),
+
+                        (true, other) => {
+                            Tally::bump(&tally.errors);
+                            eprintln!("  ERROR: a compute asked to panic came back {:?}", other);
+                        }
+
+                        (false, Ok(got)) => {
+                            tally.check_value(got, value ^ 0xFFFF, "a compute beside panics")
+                        }
+                        (false, Err(error)) => tally.refusal(error, "a compute beside panics"),
+                    }
+                }
+            }
+        }));
+    }
+
+    // ---- pool threads, killed out from under all of it
+    crews.push({
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        thread::spawn(move || {
+            let mut next = Instant::now() + Duration::from_secs(4);
+
+            while !stop.load(Ordering::Relaxed) {
+                if Instant::now() >= next {
+                    tally.last_kill.store(millis(), Ordering::Relaxed);
+
+                    Runtime::inject_thread_deaths(KILLS_PER_BURST, 1);
+
+                    tally
+                        .killed
+                        .fetch_add(KILLS_PER_BURST as u64 + 1, Ordering::Relaxed);
+
+                    next = Instant::now() + KILL_GAP;
+                }
+
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            // Nothing left owed once the storm is over
+            Runtime::inject_thread_deaths(0, 0);
+        })
+    });
 
     // ---- the manager, killed out from under all of it
     crews.push({
@@ -1204,13 +1859,18 @@ fn everything_at_once() {
     tally.report();
 
     println!(
-        "  peaks: {} live, {} workers, {} sleep threads, {} queued, {} blocking queued",
+        "  peaks: {} live, {} workers, {} sleep threads, {} queued, {} blocking queued, \
+         {} threads, {:.1} MiB footprint",
         peaks.live.load(Ordering::Relaxed),
         peaks.workers.load(Ordering::Relaxed),
         peaks.sleep_threads.load(Ordering::Relaxed),
         peaks.queued.load(Ordering::Relaxed),
         peaks.blocking_queued.load(Ordering::Relaxed),
+        peaks.threads.load(Ordering::Relaxed),
+        mebibytes(peaks.footprint.load(Ordering::Relaxed) as u64),
     );
+
+    println!("  resources now: {}", Resources::now());
 
     // Everything abandoned mid flight gets its chance to end
     let took = settle();
@@ -1252,15 +1912,55 @@ fn everything_at_once() {
     );
 
     // Each part of the storm actually happened
-    assert!(Tally::get(&tally.verified) > 0, "no output was ever checked");
-    assert!(Tally::get(&tally.refused) > 0, "no cancel or race ever refused a read");
+    assert!(
+        Tally::get(&tally.verified) > 0,
+        "no output was ever checked"
+    );
+    assert!(
+        Tally::get(&tally.refused) > 0,
+        "no cancel or race ever refused a read"
+    );
     assert!(Tally::get(&tally.children) > 0, "no child was ever run");
     assert!(Tally::get(&tally.raced) > 0, "no race was ever run");
-    assert!(Tally::get(&tally.watched) > 0, "no watch ever caught a change");
+    assert!(
+        Tally::get(&tally.watched) > 0,
+        "no watch ever caught a change"
+    );
 
     assert!(
         Tally::get(&tally.faults) > 0 || running < Duration::from_secs(3),
         "the manager was never killed",
+    );
+
+    assert!(
+        Tally::get(&tally.computed) > 0,
+        "no compute ever came back right"
+    );
+    assert!(Tally::get(&tally.gave) > 0, "nothing was ever given");
+    assert!(Tally::get(&tally.received) > 0, "nothing was ever received");
+    assert!(Tally::get(&tally.panics) > 0, "no compute ever panicked");
+
+    assert!(
+        Tally::get(&tally.killed) > 0 || running < Duration::from_secs(5),
+        "no pool thread was ever killed",
+    );
+
+    assert_eq!(
+        after.recovering(),
+        0,
+        "threads that were killed were never recovered"
+    );
+
+    assert!(
+        Tally::get(&tally.killed) == 0 || after.deaths() > 0,
+        "threads were killed and no death was recorded",
+    );
+
+    assert!(
+        peaks.threads.load(Ordering::Relaxed) <= after.ceiling() * 2 + 512,
+        "the process reached {} threads against a pool ceiling of {}",
+        peaks.threads.load(Ordering::Relaxed),
+        after.ceiling(),
     );
 
     // ---- what is only true once it has gone quiet
@@ -1342,7 +2042,10 @@ fn everything_at_once() {
             format!("{}\n", token).as_bytes(),
             "a child after the storm came back with somebody else's output",
         ),
-        other => panic!("a child after the storm didn't run: {:?}", other.map(|out| out.map(|out| out.status()))),
+        other => panic!(
+            "a child after the storm didn't run: {:?}",
+            other.map(|out| out.map(|out| out.status()))
+        ),
     }
 
     // Quiet means the cpu is quiet too
@@ -1358,7 +2061,10 @@ fn everything_at_once() {
     let window = window_started.elapsed();
     let share = burnt.as_secs_f64() / window.as_secs_f64() * 100.0;
 
-    println!("idle after the storm: {:?} of cpu over {:?}, {:.2}% of one core", burnt, window, share);
+    println!(
+        "idle after the storm: {:?} of cpu over {:?}, {:.2}% of one core",
+        burnt, window, share
+    );
 
     assert!(
         share < 10.0,
@@ -1372,7 +2078,11 @@ fn everything_at_once() {
     // Still takes work
     match Runtime::task(File::read(small.as_path())).spawn().join() {
         Ok(Ok(bytes)) => {
-            assert_eq!(bytes.as_slice(), small_body.as_slice(), "a read after the storm was wrong");
+            assert_eq!(
+                bytes.as_slice(),
+                small_body.as_slice(),
+                "a read after the storm was wrong"
+            );
             println!("still working: read {} bytes after the storm", bytes.len());
         }
         other => panic!(
@@ -1416,11 +2126,19 @@ fn everything_at_once() {
     println!("shut down cleanly after the storm");
 
     // ---- and starts again
-    assert_eq!(Runtime::init(), None, "the runtime wouldn't start again after the storm");
+    assert_eq!(
+        Runtime::init(),
+        None,
+        "the runtime wouldn't start again after the storm"
+    );
 
     match Runtime::task(File::read(small.as_path())).spawn().join() {
         Ok(Ok(bytes)) => {
-            assert_eq!(bytes.as_slice(), small_body.as_slice(), "a read after starting again was wrong");
+            assert_eq!(
+                bytes.as_slice(),
+                small_body.as_slice(),
+                "a read after starting again was wrong"
+            );
         }
         other => panic!(
             "the runtime took no spawned work after starting again: {:?}",

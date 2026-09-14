@@ -145,7 +145,10 @@ mod tests {
     /// is built around them
     #[test]
     fn roots_that_are_not_certificates_are_refused() {
-        assert_eq!(client_trusting(b"").map(|_| ()), Err(RuntimeError::BadCertificate));
+        assert_eq!(
+            client_trusting(b"").map(|_| ()),
+            Err(RuntimeError::BadCertificate)
+        );
         assert_eq!(
             client_trusting(b"not a certificate").map(|_| ()),
             Err(RuntimeError::BadCertificate),

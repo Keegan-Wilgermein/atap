@@ -20,6 +20,13 @@ pub struct PoolStats {
     sleep_busy: usize,
     slots: usize,
     peak_slots: usize,
+    target: usize,
+    ceiling: usize,
+    sleep_target: usize,
+    peak_workers: usize,
+    peak_sleep_threads: usize,
+    deaths: usize,
+    recovering: usize,
 }
 
 impl PoolStats {
@@ -33,6 +40,13 @@ impl PoolStats {
         sleep_busy: usize,
         slots: usize,
         peak_slots: usize,
+        target: usize,
+        ceiling: usize,
+        sleep_target: usize,
+        peak_workers: usize,
+        peak_sleep_threads: usize,
+        deaths: usize,
+        recovering: usize,
     ) -> Self {
         Self {
             live,
@@ -43,6 +57,13 @@ impl PoolStats {
             sleep_busy,
             slots,
             peak_slots,
+            target,
+            ceiling,
+            sleep_target,
+            peak_workers,
+            peak_sleep_threads,
+            deaths,
+            recovering,
         }
     }
 
@@ -98,6 +119,60 @@ impl PoolStats {
         self.peak_slots
     }
 
+    /// Workers the pool settles around under load
+    ///
+    /// A target rather than a limit. The pool passes it when every
+    /// worker is stuck behind a deep queue, or when a worker is blocked
+    /// or lost, and leans back towards it once that is over
+    pub fn target(&self) -> usize {
+        self.target
+    }
+
+    /// The most threads of either kind the pool will ever run
+    ///
+    /// The lower of the pool's own bound and what the kernel lets the
+    /// process hold, less a reserve for every other thread
+    pub fn ceiling(&self) -> usize {
+        self.ceiling
+    }
+
+    /// Sleep threads the pool settles around under load, a target in
+    /// the same way as [`target`](PoolStats::target)
+    pub fn sleep_target(&self) -> usize {
+        self.sleep_target
+    }
+
+    /// The most workers ever running at once
+    ///
+    /// Never comes down, the same as `peak_slots`
+    pub fn peak_workers(&self) -> usize {
+        self.peak_workers
+    }
+
+    /// The most sleep threads ever running at once
+    ///
+    /// Never comes down, the same as `peak_slots`
+    pub fn peak_sleep_threads(&self) -> usize {
+        self.peak_sleep_threads
+    }
+
+    /// Workers and sleep threads that have died since the process
+    /// started
+    ///
+    /// A thread only dies to a fault in the runtime itself, never to a
+    /// task that panics. The pool recovers from each one
+    pub fn deaths(&self) -> usize {
+        self.deaths
+    }
+
+    /// Threads that have died and haven't been recovered yet
+    ///
+    /// Recovery needs no manager and no live thread, so this comes back
+    /// to zero on its own
+    pub fn recovering(&self) -> usize {
+        self.recovering
+    }
+
     /// Workers running when this was taken
     pub fn len(&self) -> usize {
         self.workers.len()
@@ -142,6 +217,18 @@ impl fmt::Display for PoolStats {
             self.busy(),
             self.sleep_threads,
             self.sleep_busy,
+        )?;
+
+        writeln!(
+            formatter,
+            "workers target {} (peak {}), sleep threads target {} (peak {}), ceiling {}, {} deaths ({} recovering)",
+            self.target,
+            self.peak_workers,
+            self.sleep_target,
+            self.peak_sleep_threads,
+            self.ceiling,
+            self.deaths,
+            self.recovering,
         )?;
 
         writeln!(

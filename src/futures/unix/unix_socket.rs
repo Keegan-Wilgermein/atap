@@ -2,15 +2,15 @@
 //! Unix connections, listeners and datagram sockets, and the
 //! tasks each of them starts
 
-use crate::futures::{
-    net::{
-        socket::Fd,
-        stream::{Pipe, RecvTask, SendTask, Source},
+use crate::{
+    futures::{
+        net::stream::{Pipe, RecvTask, SendTask, Source},
+        unix::{
+            path::Bound,
+            unix_task::{UnixAcceptTask, UnixRecvFromTask, UnixSendToTask},
+        },
     },
-    unix::{
-        path::Bound,
-        unix_task::{UnixAcceptTask, UnixRecvFromTask, UnixSendToTask},
-    },
+    modules::fd::Fd,
 };
 use std::{
     fmt,

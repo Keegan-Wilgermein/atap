@@ -8,10 +8,11 @@ use crate::{
     executor,
     futures::{
         process::exit_status::{ExitStatus, ProcessOutput},
-        task::Task,
         task::sealed,
+        task::{Nothing, Task},
     },
     modules::{
+        fd::Fd,
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
         kqueue::{self, Waited},
@@ -403,6 +404,7 @@ impl sealed::Sealed for OutputTask {}
 
 impl Task for StatusTask {
     type Output = Result<ExitStatus, RuntimeError>;
+    type Input = Nothing;
 
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         // Checked before the spawn, so a cancelled task never runs
@@ -429,7 +431,7 @@ impl Task for StatusTask {
         let (in_read, in_write) = input_pipe()?;
 
         let stdio = Stdio {
-            input: Some(in_read.0),
+            input: Some(in_read.raw()),
             capture: None,
         };
 
@@ -467,6 +469,7 @@ impl Task for StatusTask {
 
 impl Task for OutputTask {
     type Output = Result<ProcessOutput, RuntimeError>;
+    type Input = Nothing;
 
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         if executor::cancelled() {
@@ -485,8 +488,8 @@ impl Task for OutputTask {
         let (err_read, err_write) = pipe()?;
 
         let stdio = Stdio {
-            input: feeding.as_ref().map(|(read, _)| read.0),
-            capture: Some((out_write.0, err_write.0)),
+            input: feeding.as_ref().map(|(read, _)| read.raw()),
+            capture: Some((out_write.raw(), err_write.raw())),
         };
 
         let pid = spawn_child(&self.program, &self.setup, stdio)?;
@@ -515,13 +518,7 @@ impl Task for OutputTask {
         let queue = kqueue::id().ok();
 
         let (stdout, stderr) = match queue {
-            Some(queue) => exchange(
-                queue,
-                &mut in_write,
-                data,
-                Some(&out_read),
-                Some(&err_read),
-            ),
+            Some(queue) => exchange(queue, &mut in_write, data, Some(&out_read), Some(&err_read)),
             None => poll_exchange(&mut in_write, data, Some(&out_read), Some(&err_read)),
         }?;
 
@@ -536,18 +533,6 @@ impl Task for OutputTask {
 
     fn blocking(&self) -> bool {
         true
-    }
-}
-
-/// An open descriptor that closes itself
-///
-/// #### Note
-/// Closing in `Drop` also keeps errno intact
-struct Fd(libc::c_int);
-
-impl Drop for Fd {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.0) };
     }
 }
 
@@ -890,11 +875,11 @@ fn pipe() -> Result<(Fd, Fd), RuntimeError> {
 
     unsafe { libc::pipe(ends.as_mut_ptr()) }.check()?;
 
-    let read = Fd(ends[0]);
-    let write = Fd(ends[1]);
+    let read = Fd::new(ends[0]);
+    let write = Fd::new(ends[1]);
 
-    unsafe { libc::fcntl(read.0, libc::F_SETFD, libc::FD_CLOEXEC) }.check()?;
-    unsafe { libc::fcntl(write.0, libc::F_SETFD, libc::FD_CLOEXEC) }.check()?;
+    unsafe { libc::fcntl(read.raw(), libc::F_SETFD, libc::FD_CLOEXEC) }.check()?;
+    unsafe { libc::fcntl(write.raw(), libc::F_SETFD, libc::FD_CLOEXEC) }.check()?;
 
     Ok((read, write))
 }
@@ -909,10 +894,10 @@ fn pipe() -> Result<(Fd, Fd), RuntimeError> {
 fn input_pipe() -> Result<(Fd, Fd), RuntimeError> {
     let (read, write) = pipe()?;
 
-    unsafe { libc::fcntl(write.0, libc::F_SETFL, libc::O_NONBLOCK) }.check()?;
+    unsafe { libc::fcntl(write.raw(), libc::F_SETFL, libc::O_NONBLOCK) }.check()?;
 
     // Best effort, since a Rust host already ignores `SIGPIPE`
-    let _ = unsafe { libc::fcntl(write.0, F_SETNOSIGPIPE, 1) };
+    let _ = unsafe { libc::fcntl(write.raw(), F_SETNOSIGPIPE, 1) };
 
     Ok((read, write))
 }
@@ -1052,7 +1037,7 @@ impl Feed<'_> {
     /// Whether an event is this one
     fn is(&self, ident: usize, filter: i16) -> bool {
         match self.end.as_ref() {
-            Some(end) => filter == libc::EVFILT_WRITE && ident == end.0 as usize,
+            Some(end) => filter == libc::EVFILT_WRITE && ident == end.raw() as usize,
             None => false,
         }
     }
@@ -1066,7 +1051,7 @@ impl Feed<'_> {
         unsafe {
             KEvent::register(
                 self.queue,
-                end.0 as usize,
+                end.raw() as usize,
                 0,
                 WakeTarget::None.encode(),
                 EventDesc::new_write(),
@@ -1080,7 +1065,7 @@ impl Feed<'_> {
     /// Gives the child one chunk at most, so a large input never
     /// holds the loop away from the streams it is also reading
     fn push(&mut self) -> Result<(), RuntimeError> {
-        let Some(fd) = self.end.as_ref().map(|end| end.0) else {
+        let Some(fd) = self.end.as_ref().map(|end| end.raw()) else {
             return Ok(());
         };
 
@@ -1101,7 +1086,7 @@ impl Feed<'_> {
             return;
         };
 
-        unwatch_write(self.queue, end.0);
+        unwatch_write(self.queue, end.raw());
         self.end.take();
     }
 }
@@ -1153,8 +1138,8 @@ fn exchange(
     err: Option<&Fd>,
 ) -> Result<(Vec<u8>, Vec<u8>), RuntimeError> {
     let ends = [
-        out.map_or(IGNORED, |end| end.0),
-        err.map_or(IGNORED, |end| end.0),
+        out.map_or(IGNORED, |end| end.raw()),
+        err.map_or(IGNORED, |end| end.raw()),
     ];
 
     let mut found = [Vec::new(), Vec::new()];
@@ -1305,8 +1290,8 @@ fn poll_exchange(
     err: Option<&Fd>,
 ) -> Result<(Vec<u8>, Vec<u8>), RuntimeError> {
     let ends = [
-        out.map_or(IGNORED, |end| end.0),
-        err.map_or(IGNORED, |end| end.0),
+        out.map_or(IGNORED, |end| end.raw()),
+        err.map_or(IGNORED, |end| end.raw()),
     ];
 
     let mut found = [Vec::new(), Vec::new()];
@@ -1318,7 +1303,7 @@ fn poll_exchange(
             return Err(RuntimeError::Cancelled);
         }
 
-        let writing = input.as_ref().map_or(IGNORED, |end| end.0);
+        let writing = input.as_ref().map_or(IGNORED, |end| end.raw());
 
         let mut watched = [
             libc::pollfd {
@@ -1423,7 +1408,9 @@ fn read_chunk(fd: libc::c_int, into: &mut Vec<u8>) -> Result<bool, RuntimeError>
     let read = unsafe {
         libc::read(
             fd,
-            into.spare_capacity_mut().as_mut_ptr().cast::<libc::c_void>(),
+            into.spare_capacity_mut()
+                .as_mut_ptr()
+                .cast::<libc::c_void>(),
             FILE_CHUNK,
         )
     }
@@ -1702,7 +1689,10 @@ mod tests {
     #[test]
     fn an_argument_with_a_zero_byte_does_not_convert() {
         assert!(as_c_arg("a\0b").is_none(), "a zero byte must not convert");
-        assert!(as_c_arg("ab").is_some(), "an ordinary argument must convert");
+        assert!(
+            as_c_arg("ab").is_some(),
+            "an ordinary argument must convert"
+        );
     }
 
     /// A bad path and a bad argument report as different errors
@@ -1729,9 +1719,15 @@ mod tests {
     #[test]
     fn the_argument_vector_is_the_shape_exec_reads() {
         let program = Program::new("/bin/echo", ["one", "two"]);
-        let (file, argv) = program.argv(None).expect("an ordinary program must convert");
+        let (file, argv) = program
+            .argv(None)
+            .expect("an ordinary program must convert");
 
-        assert_eq!(file.to_bytes(), b"/bin/echo", "the program is passed as itself");
+        assert_eq!(
+            file.to_bytes(),
+            b"/bin/echo",
+            "the program is passed as itself"
+        );
         assert_eq!(argv.len(), 4, "name, two arguments, and a null");
         assert!(argv[3].is_null(), "the vector must end in a null");
 
@@ -1753,8 +1749,7 @@ mod tests {
             capture: None,
         };
 
-        let pid =
-            spawn_child(&program, &Setup::default(), stdio).expect("sleep must spawn");
+        let pid = spawn_child(&program, &Setup::default(), stdio).expect("sleep must spawn");
 
         let child = Child::new(pid);
         let started = Instant::now();
@@ -1773,7 +1768,11 @@ mod tests {
     fn an_entry_is_split_at_its_first_equals() {
         assert_eq!(key(b"A=B"), b"A", "the ordinary case");
         assert_eq!(key(b"A=B=C"), b"A", "a value may hold more of them");
-        assert_eq!(key(b"NOEQUALS"), b"NOEQUALS", "a malformed entry is its own name");
+        assert_eq!(
+            key(b"NOEQUALS"),
+            b"NOEQUALS",
+            "a malformed entry is its own name"
+        );
         assert_eq!(key(b"=X"), b"", "an empty name is still where the split is");
     }
 
@@ -1800,12 +1799,18 @@ mod tests {
             CString::new("PATH=/bin").unwrap(),
         ];
 
-        let pointers = base.iter().map(|var| var.as_ptr().cast_mut()).collect::<Vec<_>>();
+        let pointers = base
+            .iter()
+            .map(|var| var.as_ptr().cast_mut())
+            .collect::<Vec<_>>();
         let over = [CString::new("HOME=/new").unwrap()];
 
         let merged = merge(&pointers, &over);
 
-        assert!(merged.last().expect("never empty").is_null(), "must end in a null");
+        assert!(
+            merged.last().expect("never empty").is_null(),
+            "must end in a null"
+        );
 
         let entries = merged[..merged.len() - 1]
             .iter()
@@ -1844,8 +1849,14 @@ mod tests {
     /// A directory has to be absolute and free of zero bytes
     #[test]
     fn a_directory_that_cannot_be_used_does_not_convert() {
-        assert!(matches!(as_dir("/usr"), Dir::At(_)), "an absolute path converts");
-        assert!(matches!(as_dir("build"), Dir::Bad), "a relative one does not");
+        assert!(
+            matches!(as_dir("/usr"), Dir::At(_)),
+            "an absolute path converts"
+        );
+        assert!(
+            matches!(as_dir("build"), Dir::Bad),
+            "a relative one does not"
+        );
         assert!(matches!(as_dir("./build"), Dir::Bad), "nor a leading dot");
         assert!(matches!(as_dir("/a\0b"), Dir::Bad), "nor a zero byte");
     }
@@ -1874,12 +1885,20 @@ mod tests {
 
         let name = unsafe { CStr::from_ptr(argv[0]) };
 
-        assert_eq!(name.to_bytes(), b"./sh", "argv[0] is left as the caller wrote it");
+        assert_eq!(
+            name.to_bytes(),
+            b"./sh",
+            "argv[0] is left as the caller wrote it"
+        );
 
         // An absolute program and a bare name are never joined
         let absolute = Program::new("/bin/sh", [""; 0]);
         let (file, _) = absolute.argv(Some(c"/usr")).expect("must convert");
-        assert_eq!(file.to_bytes(), b"/bin/sh", "an absolute program is left alone");
+        assert_eq!(
+            file.to_bytes(),
+            b"/bin/sh",
+            "an absolute program is left alone"
+        );
 
         let looked_up = Program::new("sh", [""; 0]);
         let (file, _) = looked_up.argv(Some(c"/usr")).expect("must convert");
@@ -1894,11 +1913,11 @@ mod tests {
 
         let (_read, write) = pipe().expect("a pipe must be made");
 
-        let set = unsafe { libc::fcntl(write.0, F_SETNOSIGPIPE, 1) };
+        let set = unsafe { libc::fcntl(write.raw(), F_SETNOSIGPIPE, 1) };
 
         assert_eq!(set, 0, "the kernel refused the request outright");
 
-        let read_back = unsafe { libc::fcntl(write.0, F_GETNOSIGPIPE) };
+        let read_back = unsafe { libc::fcntl(write.raw(), F_GETNOSIGPIPE) };
 
         assert_eq!(read_back, 1, "it was accepted but did not stick");
     }

@@ -1,13 +1,13 @@
 //! File task tests
 
-use atap::{File, FileKind, Runtime, RuntimeError, TaskHandle};
+mod common;
+
+use atap::{File, FileKind, Runtime, RuntimeError};
+use common::{TestPath, next_run};
 use std::{
     ffi::OsStr,
     fs,
     path::PathBuf,
-    process,
-    sync::atomic::{AtomicUsize, Ordering},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -16,70 +16,9 @@ use std::{
 /// Written out here since the crate's own is private
 const CHUNK: usize = 64 * 1024;
 
-/// Keeps test file names apart
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-/// A path that cleans itself up
-struct TestPath(PathBuf);
-
-impl TestPath {
-    /// Reserves a name nothing else in this run will use
-    fn new(tag: &str) -> Self {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/files");
-
-        fs::create_dir_all(&root).expect("could not make tests/files");
-
-        let name = format!(
-            "{}-{}-{}.txt",
-            tag,
-            process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-
-        Self(root.join(name))
-    }
-
-    /// The path itself
-    fn path(&self) -> &PathBuf {
-        &self.0
-    }
-}
-
-impl Drop for TestPath {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 /// A buffer whose contents say where in it you are
 fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|index| (index % 251) as u8).collect()
-}
-
-/// Takes the next output a repeat produces
-///
-/// ## Returns
-/// `None` once the series has ended, or once `patience` has
-/// run out
-fn next_run<T>(handle: &TaskHandle<T>, patience: Duration) -> Option<T> {
-    let deadline = Instant::now() + patience;
-
-    while Instant::now() < deadline {
-        match handle.maybe_take() {
-            Ok(value) => return Some(value),
-
-            // Between runs, or one still going
-            Err(RuntimeError::AlreadyTaken) | Err(RuntimeError::NotReady) => {
-                thread::sleep(Duration::from_millis(1))
-            }
-
-            // `Finished` and every other error are endings
-            Err(_) => break,
-        }
-    }
-
-    None
 }
 
 /// A blocking read gives back what was written
@@ -94,7 +33,11 @@ fn read_gives_back_what_was_written() {
 
     println!("read back {} bytes", read.len());
 
-    assert_eq!(read.as_slice(), b"the quick brown fox".as_slice(), "the bytes came back changed");
+    assert_eq!(
+        read.as_slice(),
+        b"the quick brown fox".as_slice(),
+        "the bytes came back changed"
+    );
 }
 
 /// A spawned read joins with the file's contents
@@ -108,7 +51,11 @@ fn a_spawned_read_joins() {
     let handle = Runtime::task(File::read(file.path())).spawn();
     let read = handle.join().expect("join failed").expect("read failed");
 
-    assert_eq!(read.as_slice(), b"through the builder".as_slice(), "the bytes came back changed");
+    assert_eq!(
+        read.as_slice(),
+        b"through the builder".as_slice(),
+        "the bytes came back changed"
+    );
 }
 
 /// A missing file reports `ENOENT`
@@ -172,8 +119,8 @@ fn a_write_bigger_than_one_chunk_lands_whole() {
         let file = TestPath::new("big-write");
         let written = pattern(len);
 
-        let count = Runtime::block(File::write(file.path(), written.as_slice()))
-            .expect("write failed");
+        let count =
+            Runtime::block(File::write(file.path(), written.as_slice())).expect("write failed");
 
         assert_eq!(count, len, "the count came back short at {} bytes", len);
 
@@ -195,7 +142,11 @@ fn append_adds_rather_than_replaces() {
 
     let back = Runtime::block(File::read(file.path())).expect("read failed");
 
-    assert_eq!(back.as_slice(), b"first-second".as_slice(), "append replaced instead of adding");
+    assert_eq!(
+        back.as_slice(),
+        b"first-second".as_slice(),
+        "append replaced instead of adding"
+    );
 }
 
 /// `write_at` changes only the bytes it writes
@@ -210,7 +161,11 @@ fn write_at_leaves_the_rest_alone() {
 
     let back = Runtime::block(File::read(file.path())).expect("read failed");
 
-    assert_eq!(back.as_slice(), b"aaabbaaaaa".as_slice(), "a positional write moved to the end");
+    assert_eq!(
+        back.as_slice(),
+        b"aaabbaaaaa".as_slice(),
+        "a positional write moved to the end"
+    );
 }
 
 /// `read_at` reads a range, and comes back short at the end
@@ -223,12 +178,20 @@ fn read_at_takes_a_range_and_stops_at_the_end() {
 
     let middle = Runtime::block(File::read_at(file.path(), 3, 4)).expect("read_at failed");
 
-    assert_eq!(middle.as_slice(), b"3456".as_slice(), "the wrong range came back");
+    assert_eq!(
+        middle.as_slice(),
+        b"3456".as_slice(),
+        "the wrong range came back"
+    );
 
     // Running off the end is an answer, not a failure
     let tail = Runtime::block(File::read_at(file.path(), 8, 100)).expect("read_at failed");
 
-    assert_eq!(tail.as_slice(), b"89".as_slice(), "a range past the end should come back short");
+    assert_eq!(
+        tail.as_slice(),
+        b"89".as_slice(),
+        "a range past the end should come back short"
+    );
 
     let past = Runtime::block(File::read_at(file.path(), 50, 10)).expect("read_at failed");
 
@@ -244,7 +207,11 @@ fn a_path_with_a_zero_byte_is_refused() {
 
     println!("a path with a zero gave {:?}", read);
 
-    assert_eq!(read, Err(RuntimeError::BadPath), "a zero byte must be refused");
+    assert_eq!(
+        read,
+        Err(RuntimeError::BadPath),
+        "a zero byte must be refused"
+    );
 }
 
 /// Reading a directory errors rather than hanging
@@ -299,7 +266,10 @@ fn read_dir_finds_a_new_file_and_omits_the_dot_entries() {
 
     println!("listed {:?}", listed);
 
-    assert!(listed.contains(&inside), "the file that is there wasn't listed");
+    assert!(
+        listed.contains(&inside),
+        "the file that is there wasn't listed"
+    );
 
     for entry in &listed {
         let name = entry.file_name().expect("an entry with no name");
@@ -324,7 +294,11 @@ fn create_remove_and_rename_do_what_they_say() {
 
     let moved = Runtime::block(File::read(to.path())).expect("read failed");
 
-    assert_eq!(moved.as_slice(), b"moving".as_slice(), "the contents didn't survive the rename");
+    assert_eq!(
+        moved.as_slice(),
+        b"moving".as_slice(),
+        "the contents didn't survive the rename"
+    );
 
     let old = Runtime::block(File::read(from.path()));
 
@@ -406,7 +380,11 @@ fn at_rate_reads_produce_their_output() {
         .take_with_timeout(Duration::from_secs(5))
         .expect("no run landed");
 
-    assert_eq!(first.expect("read failed").as_slice(), b"at a rate".as_slice(), "wrong contents");
+    assert_eq!(
+        first.expect("read failed").as_slice(),
+        b"at a rate".as_slice(),
+        "wrong contents"
+    );
 
     handle.cancel();
 }
@@ -450,5 +428,9 @@ fn cancelling_a_read_settles_its_listeners() {
 
     let after = Runtime::block(File::read(file.path())).expect("read failed");
 
-    assert_eq!(after.as_slice(), b"still working".as_slice(), "the runtime stopped working");
+    assert_eq!(
+        after.as_slice(),
+        b"still working".as_slice(),
+        "the runtime stopped working"
+    );
 }

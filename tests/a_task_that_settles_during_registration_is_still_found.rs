@@ -1,11 +1,9 @@
-use atap::{JoinPolicy, Runtime, Sleep, SleepMode, TaskHandle};
+mod common;
+
+use atap::{JoinPolicy, Runtime};
+use common::sleeping;
 use std::time::Duration;
 use std::time::Instant;
-
-/// A sleep of a given length, spawned
-fn sleeping(millis: u64) -> TaskHandle<Duration> {
-    Runtime::task(Sleep::sleep(Duration::from_millis(millis)).mode(SleepMode::Relaxed)).spawn()
-}
 
 /// A task that settles while `join_first` is registering is
 /// still found promptly
@@ -20,10 +18,8 @@ fn a_task_that_settles_during_registration_is_still_found() {
 
         let started = Instant::now();
 
-        let (first, _) = Runtime::join_first(
-            std::iter::once(racing).chain(slow),
-            JoinPolicy::Cancel,
-        );
+        let (first, _) =
+            Runtime::join_first(std::iter::once(racing).chain(slow), JoinPolicy::Cancel);
 
         let waited = started.elapsed();
 

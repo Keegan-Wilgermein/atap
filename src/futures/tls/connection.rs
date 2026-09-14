@@ -5,7 +5,10 @@
 use crate::{
     RuntimeError,
     futures::{
-        net::stream::{Io, Pipe, RecvTask, SendTask, Source},
+        net::{
+            exchange::Sends,
+            stream::{Io, Pipe, RecvTask, SendTask, Source},
+        },
         tcp::{Connection, Listener},
         tls::{
             fd_io::FdIo,
@@ -54,7 +57,10 @@ const DRAIN_READS: usize = 16;
 impl Drop for TlsStream {
     fn drop(&mut self) {
         let fd = self.tcp.pipe().fd();
-        let tls = self.tls.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tls = self
+            .tls
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         drain(tls, fd);
 
@@ -413,5 +419,12 @@ impl fmt::Debug for TlsListener {
             .debug_struct("TlsListener")
             .field("local", &self.local_addr())
             .finish()
+    }
+}
+
+/// A request sends its bytes the same way `send` does
+impl Sends for TlsConnection {
+    fn send_all(&self, data: Arc<[u8]>) -> SendTask {
+        self.send(data)
     }
 }

@@ -2,10 +2,17 @@
 //! A handle that allows operations
 //! on unfinished tasks across threads
 
-use crate::{RuntimeError, TaskState, executor::Executor};
+use crate::{
+    RuntimeError, TaskState,
+    constants::MAX_TASK_ID,
+    executor::Executor,
+    modules::handle_kind::{HandleKind, Plain, Waiting},
+};
 use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
+    mem::ManuallyDrop,
+    ptr,
     time::{Duration, Instant},
 };
 
@@ -13,15 +20,24 @@ use std::{
 ///
 /// Can be cloned freely, sent between threads, and read from
 /// any of them
-pub struct TaskHandle<T>
+///
+/// `W` says what else the handle can do. A handle to a task spawned
+/// with `wait_for` is a `TaskHandle<T, Waiting<I>>`, which can
+/// [`give`](TaskHandle::give) it input
+pub struct TaskHandle<T, W = Plain>
 where
     T: Sized,
+    W: HandleKind,
 {
     id: usize,
+
+    /// What this kind of handle carries beside the id
+    extra: W::Extra,
+
     _pd: PhantomData<T>,
 }
 
-impl<T> TaskHandle<T>
+impl<T> TaskHandle<T, Plain>
 where
     T: Sized,
 {
@@ -29,6 +45,69 @@ where
     pub(crate) fn new(id: usize) -> Self {
         Self {
             id,
+            extra: (),
+            _pd: PhantomData,
+        }
+    }
+
+    /// Turns this handle into one of another kind, keeping its claim
+    /// on the task
+    pub(crate) fn into_kind<W>(self, extra: W::Extra) -> TaskHandle<T, W>
+    where
+        W: HandleKind,
+    {
+        // Its claim moves to the new handle, so its drop never runs
+        let plain = ManuallyDrop::new(self);
+
+        TaskHandle {
+            id: plain.id,
+            extra,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<T, W> TaskHandle<T, W>
+where
+    T: Sized,
+    W: HandleKind,
+{
+    /// A handle to no task, which reads `NoSuchTask`
+    pub(crate) fn detached() -> Self {
+        Self {
+            id: MAX_TASK_ID,
+            extra: W::detached(),
+            _pd: PhantomData,
+        }
+    }
+
+    /// Another handle of the same kind on the same task, naming a
+    /// different output
+    ///
+    /// Only for the crate's own links, which never read through it
+    pub(crate) fn retyped<O>(&self) -> TaskHandle<O, W> {
+        Executor::add_listener(self.id);
+
+        TaskHandle {
+            id: self.id,
+            extra: W::cloned(&self.extra),
+            _pd: PhantomData,
+        }
+    }
+
+    /// A plain handle on the same task, keeping this handle's claim
+    /// on it but not its way to give
+    pub(crate) fn into_plain(self) -> TaskHandle<T, Plain> {
+        let handle = ManuallyDrop::new(self);
+
+        W::dropped(handle.id, &handle.extra);
+
+        // Moved out whole, since the handle's own drop never runs
+        drop(unsafe { ptr::read(&handle.extra) });
+
+        TaskHandle {
+            id: handle.id,
+            extra: (),
             _pd: PhantomData,
         }
     }
@@ -60,6 +139,9 @@ where
     }
 
     /// Whether the task is queued and waiting to start
+    ///
+    /// A task spawned with `wait_for` that has never been given
+    /// anything reads this too
     pub fn is_pending(&self) -> bool {
         self.state() == TaskState::Pending
     }
@@ -95,6 +177,9 @@ where
     /// For a repeat, `settled` is also true between runs. This is
     /// only true once a bounded series has run out, or the series
     /// was cancelled or failed. A settled one shot reads true too
+    ///
+    /// A task spawned with `wait_for` is only finished once it
+    /// takes no more gives
     ///
     /// A series that ran out keeps its last output, so `join` and
     /// `take` still return it
@@ -194,6 +279,60 @@ where
     }
 }
 
+impl<T, I> TaskHandle<T, Waiting<I>>
+where
+    T: Sized,
+    I: Send + 'static,
+{
+    /// Gives the task the value its next run is handed
+    ///
+    /// ## Behaviour
+    /// A task waiting for a give starts its next run, or its next
+    /// series, with it. Gives don't queue: one while a run is waiting
+    /// to start or under way leaves only the newest value. A give
+    /// during a single run owes the task one more run, and a give
+    /// during a series only changes what the rest of the series is
+    /// handed
+    ///
+    /// Only a give that starts something counts against the task's
+    /// `count`
+    ///
+    /// ## Returns
+    /// `Finished` once the task takes no more gives, and `Cancelled`
+    /// or `TaskFailed` once it has ended another way. The value is
+    /// dropped in those cases
+    ///
+    /// A handle from a plain `spawn` can't give:
+    ///
+    /// ```compile_fail,E0599
+    /// use atap::{Compute, Runtime};
+    ///
+    /// let handle = Runtime::task(Compute::compute(|()| 1)).spawn();
+    /// let _ = handle.give(());
+    /// ```
+    pub fn give(&self, value: I) -> Result<(), RuntimeError> {
+        Executor::give(self.id, &self.extra, value)
+    }
+
+    /// Whether the task is waiting for a give, with nothing owed
+    ///
+    /// False while a run or series a give started is queued or under
+    /// way, and once the task takes no more gives. A give while this
+    /// reads true starts something
+    ///
+    /// #### Note
+    /// A snapshot. A give from another thread can change it at once
+    pub fn is_waiting(&self) -> bool {
+        self.extra.gate().waiting()
+    }
+
+    /// Whether the task still takes gives
+    #[inline(always)]
+    pub(crate) fn takes_gives(&self) -> bool {
+        !self.extra.gate().finished()
+    }
+}
+
 /// Turns a timeout into the moment it runs out, or `None` if
 /// the clock can't hold it
 #[inline(always)]
@@ -201,40 +340,46 @@ fn deadline(timeout: Duration) -> Option<Instant> {
     Instant::now().checked_add(timeout)
 }
 
-impl<T> Clone for TaskHandle<T>
+impl<T, W> Clone for TaskHandle<T, W>
 where
     T: Sized,
+    W: HandleKind,
 {
     /// Duplicates the `TaskHandle`
-    ///
-    /// Written out rather than derived, because every handle holds
-    /// its own claim on the task
     fn clone(&self) -> Self {
         Executor::add_listener(self.id);
 
         Self {
             id: self.id,
+            extra: W::cloned(&self.extra),
             _pd: PhantomData,
         }
     }
 }
 
 /// Two handles are equal when they point at the same task
-impl<T> PartialEq for TaskHandle<T>
+impl<T, W> PartialEq for TaskHandle<T, W>
 where
     T: Sized,
+    W: HandleKind,
 {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl<T> Eq for TaskHandle<T> where T: Sized {}
-
-/// Hashed on the task, the same as equality
-impl<T> Hash for TaskHandle<T>
+impl<T, W> Eq for TaskHandle<T, W>
 where
     T: Sized,
+    W: HandleKind,
+{
+}
+
+/// Hashed on the task, the same as equality
+impl<T, W> Hash for TaskHandle<T, W>
+where
+    T: Sized,
+    W: HandleKind,
 {
     fn hash<H>(&self, state: &mut H)
     where
@@ -244,9 +389,10 @@ where
     }
 }
 
-impl<T> std::fmt::Debug for TaskHandle<T>
+impl<T, W> std::fmt::Debug for TaskHandle<T, W>
 where
     T: Sized,
+    W: HandleKind,
 {
     /// The id and the task's current state
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -258,14 +404,16 @@ where
     }
 }
 
-impl<T> Drop for TaskHandle<T>
+impl<T, W> Drop for TaskHandle<T, W>
 where
     T: Sized,
+    W: HandleKind,
 {
     /// Gives up this handle's claim on the task
-    /// 
+    ///
     /// Dropping all handles clears the task entirely
     fn drop(&mut self) {
+        W::dropped(self.id, &self.extra);
         Executor::drop_listener(self.id);
     }
 }

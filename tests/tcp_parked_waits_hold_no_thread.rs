@@ -4,7 +4,7 @@
 mod common;
 
 use atap::{Connection, Runtime, Tcp};
-use common::{cores, report};
+use common::{cores, raise_descriptor_limit, report};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -15,22 +15,6 @@ const WAITING: usize = 500;
 
 /// How long the test waits for anything that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(20);
-
-/// Lets the process hold two descriptors per connection, since
-/// the default soft limit is 256
-fn raise_descriptor_limit() {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-
-    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
-
-    let wanted = (WAITING as libc::rlim_t) * 2 + 256;
-    limit.rlim_cur = limit.rlim_cur.max(wanted.min(limit.rlim_max));
-
-    unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
-}
 
 /// Hundreds of receives waiting on silent connections hold no
 /// worker and no sleep thread, and every one of them still
@@ -76,14 +60,24 @@ fn parked_receives_hold_no_thread() {
     );
 
     assert_eq!(parked, WAITING, "every receive is waiting on the network");
-    assert_eq!(stats.busy(), 0, "parked receives held {} workers", stats.busy());
+    assert_eq!(
+        stats.busy(),
+        0,
+        "parked receives held {} workers",
+        stats.busy()
+    );
     assert_eq!(
         stats.sleep_busy(),
         0,
         "parked receives held {} sleep threads",
         stats.sleep_busy(),
     );
-    assert_eq!(stats.backlog(), 0, "parked receives left {} queued", stats.backlog());
+    assert_eq!(
+        stats.backlog(),
+        0,
+        "parked receives left {} queued",
+        stats.backlog()
+    );
 
     for (client, _) in &pairs {
         Runtime::block(client.send(b"x".as_slice())).unwrap();

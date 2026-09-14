@@ -7,20 +7,28 @@
 //! behind to be recovered
 
 use crate::{
-    constants::{LOCAL_QUEUE, LOCAL_QUEUE_MASK, NO_TASK},
+    constants::{HELP_DEPTH, LOCAL_QUEUE, LOCAL_QUEUE_MASK, NO_TASK, WORKER_STACK},
     executor,
-    modules::{address_lock, worker_pool::POOL, worker_state::WorkerState},
+    modules::{
+        exit_guard::ExitGuard,
+        faults, help,
+        task_data::QUEUED_LOCAL,
+        thread_slot::{PoolThread, ThreadSlot},
+        worker_pool::POOL,
+        worker_state::WorkerState,
+    },
 };
 use std::{
+    mem,
     sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
-    thread,
 };
 
 /// One worker and everything it is holding
 #[repr(C)]
 pub(crate) struct Worker {
-    /// Where the worker is, and the address it parks on
-    state: AtomicU32,
+    /// Where the thread is, the task it is holding, and how long it
+    /// has been idle
+    slot: ThreadSlot,
 
     /// The oldest task in the ring
     ///
@@ -33,9 +41,6 @@ pub(crate) struct Worker {
     /// Only ever moved by the owner
     tail: AtomicU32,
 
-    /// The task being run right now, or `NO_TASK`
-    current: AtomicUsize,
-
     /// Tasks finished since the worker started
     ///
     /// How the manager tells a busy worker from a stuck one
@@ -44,8 +49,33 @@ pub(crate) struct Worker {
     /// What `completed` read when the manager last looked
     watched: AtomicU64,
 
-    /// Manager ticks this worker has been idle for
-    idle_ticks: AtomicU32,
+    /// The first task the running task spawned that nobody has taken
+    /// yet, as its id plus one, taken before anything in the ring
+    ///
+    /// Taken with a swap, by the worker or a thief, so it only ever runs
+    /// once. The first rather than the newest, since a task that spawns
+    /// several and then joins them in order waits on the first, so a
+    /// worker helping while it waits runs the very task it waits on
+    lifo: AtomicU32,
+
+    /// Tasks taken from `lifo` in a row
+    streak: AtomicU32,
+
+    /// The kernel's port for the thread, or zero with no thread
+    port: AtomicU32,
+
+    /// Waits on other tasks this worker is inside right now
+    ///
+    /// A worker in one looks for work to help with between short
+    /// sleeps, so it isn't blocked the way a thread stuck in a call is
+    waits: AtomicU32,
+
+    /// The tasks run while helping, each as its id plus one, by how
+    /// deep it was run
+    ///
+    /// Kept here, beside the task the loop holds, so a worker that dies
+    /// part way through helping leaves a note of all of them
+    nested: [AtomicUsize; HELP_DEPTH],
 
     /// Task ids waiting on this worker, each as its id plus one
     ring: [AtomicU32; LOCAL_QUEUE],
@@ -55,36 +85,132 @@ impl Worker {
     /// A worker with no thread behind it
     pub(crate) const fn new() -> Self {
         Self {
-            state: AtomicU32::new(WorkerState::Empty as u32),
+            slot: ThreadSlot::new(),
             head: AtomicU32::new(0),
             tail: AtomicU32::new(0),
-            current: AtomicUsize::new(NO_TASK),
             completed: AtomicU64::new(0),
             watched: AtomicU64::new(0),
-            idle_ticks: AtomicU32::new(0),
+            lifo: AtomicU32::new(0),
+            streak: AtomicU32::new(0),
+            port: AtomicU32::new(0),
+            waits: AtomicU32::new(0),
+            nested: [const { AtomicUsize::new(0) }; HELP_DEPTH],
             ring: [const { AtomicU32::new(0) }; LOCAL_QUEUE],
         }
     }
 
-    /// The current state
-    #[inline(always)]
-    pub(crate) fn state(&self) -> WorkerState {
-        WorkerState::from_u32(self.state.load(Ordering::Acquire))
-    }
-
-    /// Whether the worker is on a task right now
-    #[inline(always)]
-    pub(crate) fn busy(&self) -> bool {
-        self.state().busy()
-    }
-
-    /// Tasks waiting in this worker's ring
+    /// Tasks waiting in this worker's ring and its LIFO slot
     #[inline(always)]
     pub(crate) fn backlog(&self) -> usize {
         let tail = self.tail.load(Ordering::Acquire);
         let head = self.head.load(Ordering::Acquire);
 
-        tail.wrapping_sub(head) as usize
+        tail.wrapping_sub(head) as usize + (self.lifo.load(Ordering::SeqCst) != 0) as usize
+    }
+
+    /// Whether the ring has room for another task
+    ///
+    /// Only the owner adds to the ring, so on the owner's thread a yes
+    /// holds until it pushes
+    #[inline(always)]
+    pub(crate) fn has_room(&self) -> bool {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+
+        tail.wrapping_sub(head) < LOCAL_QUEUE as u32
+    }
+
+    /// Puts a task in the LIFO slot, if the slot is empty
+    ///
+    /// ## Returns
+    /// Whether it went in
+    #[inline(always)]
+    pub(crate) fn put_lifo(&self, id: usize) -> bool {
+        self.lifo
+            .compare_exchange(0, id as u32 + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Empties the LIFO slot
+    ///
+    /// Safe from any thread, since the swap hands it to one taker only
+    ///
+    /// ## Returns
+    /// What the slot held, and whether this caller claimed its task. A
+    /// task already run by a worker waiting on it isn't claimed
+    #[inline(always)]
+    pub(crate) fn take_lifo(&self) -> Option<(usize, bool)> {
+        match self.lifo.swap(0, Ordering::SeqCst) {
+            0 => None,
+            raw => {
+                let id = raw as usize - 1;
+                let claimed =
+                    executor::slot(id).is_some_and(|data| data.claim_queued(QUEUED_LOCAL));
+
+                Some((id, claimed))
+            }
+        }
+    }
+
+    /// Tasks taken from the LIFO slot in a row
+    #[inline(always)]
+    pub(crate) fn streak(&self) -> u32 {
+        self.streak.load(Ordering::Relaxed)
+    }
+
+    /// Counts a task taken from the LIFO slot, or starts the count again
+    /// for one taken from anywhere else
+    #[inline(always)]
+    pub(crate) fn took(&self, from_lifo: bool) {
+        match from_lifo {
+            true => self.streak.fetch_add(1, Ordering::Relaxed),
+            false => self.streak.swap(0, Ordering::Relaxed),
+        };
+    }
+
+    /// Notes that a task this worker runs has started waiting on another
+    #[inline(always)]
+    pub(crate) fn wait_began(&self) {
+        self.waits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Notes that a wait on another task is over
+    #[inline(always)]
+    pub(crate) fn wait_ended(&self) {
+        self.waits.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Whether this worker is blocked in a call rather than waiting on
+    /// another task, which it helps with work while it does
+    #[inline(always)]
+    pub(crate) fn blocked_in_a_call(&self) -> bool {
+        self.waits.load(Ordering::Relaxed) == 0 && self.waiting_in_kernel()
+    }
+
+    /// Whether this worker's thread is waiting in the kernel rather
+    /// than running, at this moment
+    ///
+    /// A worker stuck like that isn't using a core
+    pub(crate) fn waiting_in_kernel(&self) -> bool {
+        let port = self.port.load(Ordering::Relaxed);
+
+        if port == 0 {
+            return false;
+        }
+
+        let mut info: libc::thread_basic_info = unsafe { mem::zeroed() };
+        let mut count = libc::THREAD_BASIC_INFO_COUNT;
+
+        let read = unsafe {
+            libc::thread_info(
+                port,
+                libc::THREAD_BASIC_INFO as _,
+                (&mut info as *mut libc::thread_basic_info).cast(),
+                &mut count,
+            )
+        };
+
+        read == libc::KERN_SUCCESS && info.run_state == libc::TH_STATE_WAITING
     }
 
     /// Tasks finished since this worker started
@@ -102,87 +228,31 @@ impl Worker {
         self.watched.swap(completed, Ordering::Relaxed) != completed
     }
 
-    /// Notes another idle tick, and says how many in a row
-    #[inline(always)]
-    pub(crate) fn idled(&self) -> u32 {
-        self.idle_ticks.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// Forgets how long the worker has been idle
-    #[inline(always)]
-    pub(crate) fn busied(&self) {
-        self.idle_ticks.store(0, Ordering::Relaxed);
-    }
-
-    /// Claims this slot so a thread can be started into it
-    pub(crate) fn claim(&self) -> bool {
-        self.state
-            .compare_exchange(
-                WorkerState::Empty as u32,
-                WorkerState::Starting as u32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }
-
     /// Puts a thread behind this slot
     ///
     /// ## Returns
     /// Whether the thread started. If it didn't, the slot is freed
     /// again
     pub(crate) fn start(&'static self) -> bool {
-        if thread::Builder::new()
-            .name(String::from("atap-worker"))
-            .spawn(move || self.run())
-            .is_ok()
-        {
-            return true;
-        }
-
-        self.state
-            .store(WorkerState::Empty as u32, Ordering::Release);
-
-        false
+        self.slot
+            .start("atap-worker", Some(WORKER_STACK), self, Self::run)
     }
 
-    /// Asks the worker to stop between tasks
-    ///
-    /// A task already running finishes normally
-    pub(crate) fn stop(&self) {
-        if !self.state().alive() {
-            return;
-        }
-
-        self.state
-            .store(WorkerState::Stopping as u32, Ordering::Release);
-
-        let _ = self.wake();
-    }
-
-    /// Wakes the worker if it is asleep
-    ///
-    /// The state leaves `Parked` before the wake goes out, so a
-    /// worker about to sleep doesn't
-    ///
-    /// ## Returns
-    /// Whether this caller took the worker out of its park. Only
-    /// one caller can, per park
+    /// Records a task this worker is about to run while helping, `depth`
+    /// runs down
     #[inline(always)]
-    pub(crate) fn wake(&self) -> bool {
-        let claimed = self
-            .state
-            .compare_exchange(
-                WorkerState::Parked as u32,
-                WorkerState::Idle as u32,
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            )
-            .is_ok();
+    pub(crate) fn hold_nested(&self, depth: usize, id: usize) {
+        self.nested[depth].store(id + 1, Ordering::Release);
+    }
 
-        address_lock::wake(address_lock::address(&self.state));
-
-        claimed
+    /// Records that the task run `depth` down is over
+    ///
+    /// Counted as finished work, so the manager doesn't take a worker
+    /// that is helping for one that is stuck
+    #[inline(always)]
+    pub(crate) fn put_down_nested(&self, depth: usize) {
+        self.nested[depth].store(0, Ordering::Release);
+        self.completed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Queues a task on this worker
@@ -240,9 +310,16 @@ impl Worker {
                     Ordering::AcqRel,
                     Ordering::Relaxed,
                 )
-                .is_ok()
+                .is_err()
             {
-                return Some(raw as usize - 1);
+                continue;
+            }
+
+            let id = raw as usize - 1;
+
+            // Stepped over if a worker waiting on it already ran it
+            if executor::slot(id).is_some_and(|data| data.claim_queued(QUEUED_LOCAL)) {
+                return Some(id);
             }
         }
     }
@@ -295,9 +372,19 @@ impl Worker {
 
             let id = *raw as usize - 1;
 
-            // The thief's ring filled up, so the rest go back to the
-            // shared queue
-            if !thief.push(id) && !POOL.injector().push(id) {
+            // Still local, so the entry moves as it is
+            if thief.push(id) {
+                moved += 1;
+                continue;
+            }
+
+            // The thief's ring filled up, so the rest go back to the shared
+            // queue, unless a worker waiting on one already ran it
+            if !executor::slot(id).is_some_and(|data| data.claim_queued(QUEUED_LOCAL)) {
+                continue;
+            }
+
+            if !POOL.injector().push(id) {
                 executor::fail(id);
                 continue;
             }
@@ -308,29 +395,28 @@ impl Worker {
         moved
     }
 
-    /// Takes responsibility for clearing up after a dead thread
-    ///
-    /// ## Returns
-    /// Whether this caller should do it. Only one caller ever gets
-    /// `true` per death
-    pub(crate) fn claim_recovery(&self) -> bool {
-        self.state
-            .compare_exchange(
-                WorkerState::Dead as u32,
-                WorkerState::Recovering as u32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }
-
     /// Everything this worker was holding when it went down
     ///
     /// ## Returns
-    /// The tasks still queued, which can be run, and the one it
-    /// was running, which can't
-    pub(crate) fn recover(&self) -> (Vec<usize>, usize) {
-        let stranded = self.current.swap(NO_TASK, Ordering::AcqRel);
+    /// The tasks still queued, which can be run, and the ones it was
+    /// running, which can't: the task its loop held, and every task it
+    /// was helping with inside that one
+    pub(crate) fn recover(&self) -> (Vec<usize>, Vec<usize>) {
+        let mut stranded = Vec::new();
+
+        let held = self.slot.take_held();
+
+        if held != NO_TASK {
+            stranded.push(held);
+        }
+
+        for nested in &self.nested {
+            match nested.swap(0, Ordering::AcqRel) {
+                0 => {}
+                held => stranded.push(held - 1),
+            }
+        }
+
         let mut queued = Vec::new();
 
         while let Some(id) = self.pop() {
@@ -348,10 +434,11 @@ impl Worker {
         self.tail.store(0, Ordering::Release);
         self.completed.store(0, Ordering::Relaxed);
         self.watched.store(0, Ordering::Relaxed);
-        self.idle_ticks.store(0, Ordering::Relaxed);
+        self.streak.store(0, Ordering::Relaxed);
+        self.port.store(0, Ordering::Relaxed);
 
-        self.state
-            .store(WorkerState::Empty as u32, Ordering::Release);
+        self.slot.busied();
+        self.slot.empty();
     }
 
     /// The loop the worker follows
@@ -359,24 +446,25 @@ impl Worker {
     /// The guard marks the slot dead if a panic unwinds through
     /// here
     fn run(&'static self) {
-        let mut guard = Exit {
-            worker: self,
-            clean: false,
-        };
+        let mut guard = ExitGuard::new(self);
 
-        // Exchanged, so a stop that arrived before the thread was up
-        // isn't lost
-        let _ = self.state.compare_exchange(
-            WorkerState::Starting as u32,
-            WorkerState::Idle as u32,
-            Ordering::AcqRel,
+        self.slot.started();
+
+        // So the manager can ask whether the thread is blocked
+        self.port.store(
+            unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) },
             Ordering::Relaxed,
         );
 
+        // So a task this worker runs can help while it waits
+        help::enter(self);
+
         loop {
-            if self.state() == WorkerState::Stopping {
+            if self.slot.state() == WorkerState::Stopping {
                 break;
             }
+
+            faults::worker_dies();
 
             let Some(id) = POOL.find_work(self) else {
                 // Also clears up after dead peers, so the pool recovers
@@ -388,23 +476,11 @@ impl Worker {
 
             // Recorded so a worker that dies inside the task leaves a note
             // of which one
-            //
-            // Nothing between the pop and this store may unwind, or the id
-            // would be lost with the thread
-            self.current.store(id, Ordering::Release);
+            self.slot.hold(id);
 
             // Lost to a stop, so the task goes back to the shared queue
-            if self
-                .state
-                .compare_exchange(
-                    WorkerState::Idle as u32,
-                    WorkerState::Running as u32,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_err()
-            {
-                self.current.store(NO_TASK, Ordering::Release);
+            if !self.slot.begin_task() {
+                self.slot.put_down();
 
                 // Refused only when the task's slot has already gone
                 if !POOL.injector().push(id) {
@@ -414,101 +490,55 @@ impl Worker {
                 break;
             }
 
+            faults::worker_dies();
+
             executor::run(id);
 
-            self.current.store(NO_TASK, Ordering::Release);
+            self.slot.put_down();
             self.completed.fetch_add(1, Ordering::Relaxed);
 
-            let _ = self.state.compare_exchange(
-                WorkerState::Running as u32,
-                WorkerState::Idle as u32,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            );
+            self.slot.end_task();
         }
 
-        guard.clean = true;
+        guard.mark_clean();
     }
 
     /// Blocks until there is something to do or somebody says to
     /// stop
     ///
-    /// Publishes that it is parking before its last look at the
-    /// queue, and a submission queues before it checks for parked
-    /// workers, so a task can't slip between the two
+    /// A submission queues before it checks for parked workers, so a
+    /// task can't slip between the park and the last look
     fn park(&self) {
-        POOL.parked_in();
-
-        // Exchanged, so a stop that already spent its wake isn't
-        // written over. `SeqCst`, as the handshake above needs
-        if self
-            .state
-            .compare_exchange(
-                WorkerState::Idle as u32,
-                WorkerState::Parked as u32,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            .is_err()
-        {
-            POOL.parked_out();
-            return;
-        }
-
-        if !POOL.injector().is_empty() || self.backlog() > 0 {
-            // Compared, so a stop that landed in this window survives too
-            let _ = self.state.compare_exchange(
-                WorkerState::Parked as u32,
-                WorkerState::Idle as u32,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
-
-            POOL.parked_out();
-            return;
-        }
-
-        let _ = address_lock::wait(
-            address_lock::address(&self.state),
-            WorkerState::Parked as u32,
-        );
-
-        POOL.parked_out();
-
-        // Only back to idle if nothing else changed the state while
-        // it slept
-        let _ = self.state.compare_exchange(
-            WorkerState::Parked as u32,
-            WorkerState::Idle as u32,
-            Ordering::AcqRel,
-            Ordering::Relaxed,
+        self.slot.park(
+            || POOL.parked_in(),
+            || POOL.parked_out(),
+            || !POOL.injector().is_empty() || self.backlog() > 0 || POOL.lifo_waiting(),
         );
     }
 }
 
-/// Marks the slot on the way out of the loop, including when a
-/// panic unwinds through it
-struct Exit {
-    /// The worker being left
-    worker: &'static Worker,
+impl PoolThread for Worker {
+    #[inline(always)]
+    fn slot(&self) -> &ThreadSlot {
+        &self.slot
+    }
 
-    /// Whether the loop broke rather than unwound
-    clean: bool,
-}
+    /// Empties the slot and gives the worker's place back
+    fn left(&'static self) {
+        // Tasks spawned into the slot or the ring just before a stop, which
+        // nobody else would ever come for
+        let leftover = POOL
+            .take_lifo(self)
+            .into_iter()
+            .chain(std::iter::from_fn(|| self.pop()));
 
-impl Drop for Exit {
-    fn drop(&mut self) {
-        if self.clean {
-            self.worker.release();
-            POOL.left();
-
-            return;
+        for id in leftover {
+            if !POOL.injector().push(id) {
+                executor::fail(id);
+            }
         }
 
-        self.worker
-            .state
-            .store(WorkerState::Dead as u32, Ordering::Release);
-
-        address_lock::wake(address_lock::address(&self.worker.state));
+        self.release();
+        POOL.left();
     }
 }

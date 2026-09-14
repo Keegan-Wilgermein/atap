@@ -237,7 +237,10 @@ mod tests {
     /// A signal the list doesn't name keeps its number
     #[test]
     fn an_unnamed_signal_keeps_its_number() {
-        assert_eq!(SignalKind::from_number(libc::SIGALRM), SignalKind::Other(libc::SIGALRM));
+        assert_eq!(
+            SignalKind::from_number(libc::SIGALRM),
+            SignalKind::Other(libc::SIGALRM)
+        );
     }
 
     /// Releasing something that was never a signal says so

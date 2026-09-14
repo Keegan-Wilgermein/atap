@@ -1,7 +1,10 @@
 //! # Idle CPU Usage
 //! What the runtime costs while it has nothing to do but wait
 
+mod common;
+
 use atap::{Runtime, Sleep};
+use common::cpu_time;
 use std::{
     thread,
     time::{Duration, Instant},
@@ -77,19 +80,4 @@ fn idle_cpu_usage() {
         burnt,
         share,
     );
-}
-
-/// Cpu time this process has been charged, user and system
-fn cpu_time() -> Duration {
-    let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
-
-    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
-        return Duration::ZERO;
-    }
-
-    let seconds = |time: libc::timeval| {
-        Duration::from_secs(time.tv_sec as u64) + Duration::from_micros(time.tv_usec as u64)
-    };
-
-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
 }

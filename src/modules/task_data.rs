@@ -11,15 +11,18 @@ use crate::{
         PRIORITY_CLASS_SHIFT, PRIORITY_SEQUENCE_MASK,
     },
     modules::{
-        erased_task::ErasedTask, mapping, series::SeriesTask, task_kind::TaskKind,
+        erased_task::ErasedTask, extras::Extras, gate::Gate, mapping, task_kind::TaskKind,
         task_setup::TaskSetup, task_state::TaskState,
     },
 };
 use libc::c_void;
 use std::{
     mem, ptr,
-    sync::atomic::{
-        AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering,
+    sync::{
+        OnceLock,
+        atomic::{
+            AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering,
+        },
     },
     thread,
     time::{Duration, Instant},
@@ -102,6 +105,14 @@ pub(crate) struct TaskData {
     /// Whether the park has a deadline timer beside its watch
     park_timed: AtomicBool,
 
+    /// Which kind of queue holds this task: none, the shared queue, or
+    /// a worker's own ring or LIFO slot
+    ///
+    /// Moved to none by whoever takes the task out, with an exchange, so
+    /// an entry left behind after the task was taken from somewhere else
+    /// is stepped over rather than run twice
+    queued: AtomicU8,
+
     /// Runs still allowed, or `u32::MAX` for no limit
     runs_left: AtomicU32,
 
@@ -112,11 +123,12 @@ pub(crate) struct TaskData {
     /// claims the park
     park_ident: AtomicI32,
 
-    /// The moment this stops repeating, if it does
+    /// The moment this stops repeating, if it does, as nanoseconds
+    /// past the deadline epoch plus one, or zero for never
     ///
-    /// Plain rather than atomic: written in `init` before the state
-    /// is published, and never again
-    until: Option<Instant>,
+    /// Atomic, since a task that waits for gives starts every series
+    /// with a deadline of its own
+    until: AtomicU64,
 
     /// Nanoseconds to wait before the first run, or zero
     ///
@@ -155,15 +167,28 @@ pub(crate) struct TaskData {
     /// An output too big to sit beside the header, or null
     payload: AtomicPtr<u8>,
 
-    /// The task a `Series` clones its runs from, or null
+    /// What only some tasks carry: a schedule's prototype and the
+    /// gate of a task that waits for gives. Null for every other
+    /// task
     ///
     /// A series slot's `task` is null, which is also what stops it
     /// ever being run
-    prototype: AtomicPtr<c_void>,
+    extras: AtomicPtr<Extras>,
 }
 
 /// The header has to fit in front of the payload
 const _: () = assert!(mem::size_of::<TaskData>() <= PAYLOAD_OFFSET);
+
+/// In no queue
+pub(crate) const QUEUED_NOWHERE: u8 = 0;
+
+/// In the shared queue or the blocking queue, which link their tasks
+/// through the header, so a task there is only ever taken from there
+pub(crate) const QUEUED_SHARED: u8 = 1;
+
+/// In a worker's ring or LIFO slot, which hold ids, so a task there can
+/// be taken from anywhere and the entry left behind stepped over
+pub(crate) const QUEUED_LOCAL: u8 = 2;
 
 impl TaskData {
     /// Fills in an empty slot ready for a task
@@ -207,16 +232,19 @@ impl TaskData {
                 next: AtomicU32::new(0),
                 queue_next: AtomicU32::new(0),
                 filled: AtomicBool::new(false),
-                kind: AtomicU8::new(setup.kind as u8),
+                kind: AtomicU8::new(
+                    setup.kind as u8 | if setup.waits { TaskKind::WAITS } else { 0 },
+                ),
                 blocking: AtomicBool::new(setup.blocking),
                 held: AtomicBool::new(true),
                 armed: AtomicBool::new(false),
                 parked: AtomicBool::new(false),
                 park_filter: AtomicI8::new(0),
                 park_timed: AtomicBool::new(false),
+                queued: AtomicU8::new(QUEUED_NOWHERE),
                 runs_left: AtomicU32::new(setup.runs),
                 park_ident: AtomicI32::new(-1),
-                until: setup.until(),
+                until: AtomicU64::new(encode_until(setup.until())),
                 start_delay: AtomicU64::new(setup.start_delay.as_nanos() as u64),
                 interval: AtomicU64::new(setup.interval.as_nanos() as u64),
                 waiting: AtomicI32::new(NOT_WAITING),
@@ -225,7 +253,7 @@ impl TaskData {
                 task: AtomicPtr::new(task),
                 drop_glue: glue::<T>,
                 payload: AtomicPtr::new(payload),
-                prototype: AtomicPtr::new(ptr::null_mut()),
+                extras: AtomicPtr::new(ptr::null_mut()),
             })
         };
 
@@ -398,12 +426,9 @@ impl TaskData {
     /// Never overwrites a cancel in progress
     #[inline(always)]
     pub(crate) fn set_waiting(&self, queue: i32) {
-        let _ = self.waiting.compare_exchange(
-            NOT_WAITING,
-            queue,
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        );
+        let _ =
+            self.waiting
+                .compare_exchange(NOT_WAITING, queue, Ordering::AcqRel, Ordering::Relaxed);
     }
 
     /// Registers `queue` to be poked when this settles
@@ -491,6 +516,70 @@ impl TaskData {
         TaskKind::from_u8(self.kind.load(Ordering::Acquire))
     }
 
+    /// Says which kind of queue now holds this task
+    #[inline(always)]
+    pub(crate) fn mark_queued(&self, place: u8) {
+        self.queued.store(place, Ordering::SeqCst);
+    }
+
+    /// Takes this task out of the kind of queue `place` names, if that is
+    /// where it is
+    ///
+    /// ## Returns
+    /// Whether the caller now owns running it. An entry left behind after
+    /// its task was taken from somewhere else gets `false`
+    #[inline(always)]
+    pub(crate) fn claim_queued(&self, place: u8) -> bool {
+        self.queued
+            .compare_exchange(place, QUEUED_NOWHERE, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Whether this task was spawned with `wait_for`, and so waits
+    /// for a give before each run or series
+    #[inline(always)]
+    pub(crate) fn takes_input(&self) -> bool {
+        self.kind.load(Ordering::Acquire) & TaskKind::WAITS != 0
+    }
+
+    /// Whether this task will never publish again: it ended, or it has
+    /// published its last run and takes no more gives
+    ///
+    /// `SeqCst`, against the task ending. Each side writes its word,
+    /// then reads the other's, so one of them always sees the other
+    pub(crate) fn publishes_nothing_more(&self) -> bool {
+        match TaskState::from_u32(self.state.load(Ordering::SeqCst)) {
+            TaskState::Cancelled | TaskState::Failed | TaskState::Free => true,
+            TaskState::Pending | TaskState::Running => false,
+
+            TaskState::Ready | TaskState::Taken => {
+                let kind = self.kind.load(Ordering::SeqCst);
+
+                match kind & TaskKind::WAITS != 0 {
+                    true => self.gate().is_some_and(|gate| gate.finished()),
+                    false => TaskKind::from_u8(kind) == TaskKind::Once,
+                }
+            }
+        }
+    }
+
+    /// Whether this task still takes gives
+    #[inline(always)]
+    pub(crate) fn open_for_gives(&self) -> bool {
+        self.takes_input() && self.gate().is_some_and(|gate| !gate.finished())
+    }
+
+    /// The gate a task that waits for gives is started through
+    ///
+    /// Lives as long as the slot does, which the caller's claim on
+    /// the task keeps
+    #[inline(always)]
+    pub(crate) fn gate(&self) -> Option<&Gate> {
+        let extras = self.extras.load(Ordering::Acquire);
+
+        unsafe { extras.as_ref() }.and_then(Extras::gate)
+    }
+
     /// Whether this task wants a thread it can block
     #[inline(always)]
     pub(crate) fn blocking(&self) -> bool {
@@ -538,7 +627,7 @@ impl TaskData {
     /// `gap` is the wait before that run: the interval for anything
     /// that waits, zero otherwise
     pub(crate) fn past_deadline(&self, gap: Duration) -> bool {
-        let Some(until) = self.until else {
+        let Some(until) = decode_until(self.until.load(Ordering::Acquire)) else {
             return false;
         };
 
@@ -553,7 +642,8 @@ impl TaskData {
     /// Only meaningful once the kind says the task is over
     #[inline(always)]
     pub(crate) fn spent(&self) -> bool {
-        self.runs_left.load(Ordering::Acquire) != u32::MAX || self.until.is_some()
+        self.runs_left.load(Ordering::Acquire) != u32::MAX
+            || self.until.load(Ordering::Acquire) != 0
     }
 
     /// Says this task will not run again
@@ -562,7 +652,11 @@ impl TaskData {
     /// last output
     #[inline(always)]
     pub(crate) fn finish_series(&self) {
-        self.kind.store(TaskKind::Once as u8, Ordering::Release);
+        let waits = self.kind.load(Ordering::SeqCst) & TaskKind::WAITS;
+
+        // `SeqCst`, against a registration asking whether the task is over
+        self.kind
+            .store(TaskKind::Once as u8 | waits, Ordering::SeqCst);
     }
 
     /// Nanoseconds still owed before the first run, or zero
@@ -577,20 +671,93 @@ impl TaskData {
         self.start_delay.store(0, Ordering::Release);
     }
 
+    /// Owes a delay before the next run, for a give that waits one
+    /// out
+    #[inline(always)]
+    pub(crate) fn set_start_delay(&self, nanos: u64) {
+        self.start_delay.store(nanos, Ordering::Release);
+    }
+
+    /// Starts a new series with its runs and deadline back to full
+    ///
+    /// Only for a task that waits for gives, as a give starts a
+    /// series, so nothing is counting them down
+    pub(crate) fn reset_series(&self, runs: u32, until: Option<Instant>) {
+        self.runs_left.store(runs, Ordering::Release);
+        self.until.store(encode_until(until), Ordering::Release);
+    }
+
     /// The task a series clones its runs from, or null
     #[inline(always)]
     pub(crate) fn prototype(&self) -> *mut c_void {
-        self.prototype.load(Ordering::Acquire)
+        let extras = self.extras.load(Ordering::Acquire);
+
+        match unsafe { extras.as_ref() } {
+            Some(extras) => extras.prototype(),
+            None => ptr::null_mut(),
+        }
     }
 
     /// Gives a series the task it makes copies of
     ///
     /// ## Safety
-    /// Only before anything else can reach the slot. The pointer
-    /// must be a `Box<Box<dyn SeriesTask>>`
+    /// Only before anything else can reach the slot, and after
+    /// `attach_extras`. The pointer must be a
+    /// `Box<Box<dyn SeriesTask>>`
     #[inline(always)]
     pub(crate) fn set_prototype(&self, prototype: *mut c_void) {
-        self.prototype.store(prototype, Ordering::Release);
+        let extras = self.extras.load(Ordering::Acquire);
+
+        debug_assert!(!extras.is_null(), "a prototype needs extras to live in");
+
+        if let Some(extras) = unsafe { extras.as_ref() } {
+            extras.set_prototype(prototype);
+        }
+    }
+
+    /// Gives the slot what only some tasks carry
+    ///
+    /// ## Safety
+    /// Only before anything else can reach the slot
+    #[inline(always)]
+    pub(crate) fn attach_extras(&self, extras: Box<Extras>) {
+        self.extras.store(Box::into_raw(extras), Ordering::Release);
+    }
+
+    /// What only some tasks carry, if this one carries any
+    ///
+    /// `SeqCst`, against a registration making them: each writes one
+    /// word, then reads the other
+    #[inline(always)]
+    pub(crate) fn extras(&self) -> Option<&Extras> {
+        unsafe { self.extras.load(Ordering::SeqCst).as_ref() }
+    }
+
+    /// The extras, made now for a task that never needed any
+    ///
+    /// Two callers racing to make them both go ahead, and the loser's
+    /// are dropped unused
+    pub(crate) fn extras_or_attach(&self) -> &Extras {
+        if let Some(extras) = self.extras() {
+            return extras;
+        }
+
+        let fresh = Box::into_raw(Box::new(Extras::new(None)));
+
+        match self.extras.compare_exchange(
+            ptr::null_mut(),
+            fresh,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => unsafe { &*fresh },
+
+            Err(existing) => {
+                drop(unsafe { Box::from_raw(fresh) });
+
+                unsafe { &*existing }
+            }
+        }
     }
 
     /// Takes the `Executor`'s reference on this task
@@ -688,7 +855,9 @@ impl TaskData {
             return true;
         }
 
-        if !self.kind().repeats() {
+        // A task that waits for gives runs again after each give, as a
+        // repeat does after each run
+        if !self.kind().repeats() && !self.takes_input() {
             return false;
         }
 
@@ -767,6 +936,14 @@ impl TaskData {
     /// Only the last listener may call this, and nothing may touch
     /// the slot afterwards
     pub(crate) unsafe fn destroy(&self) {
+        let extras = self.extras.swap(ptr::null_mut(), Ordering::AcqRel);
+
+        // A task that waits for gives is over once its slot is, so what
+        // it was given can go with it
+        if let Some(gate) = unsafe { extras.as_ref() }.and_then(Extras::gate) {
+            gate.finish();
+        }
+
         // A task that never ran still owns itself
         let task = self.claim();
 
@@ -779,11 +956,9 @@ impl TaskData {
             unsafe { (self.drop_glue)(self.payload()) };
         }
 
-        // A series owns its prototype
-        let prototype = self.prototype.swap(ptr::null_mut(), Ordering::AcqRel);
-
-        if !prototype.is_null() {
-            drop(unsafe { Box::from_raw(prototype.cast::<Box<dyn SeriesTask>>()) });
+        // A series owns its prototype, which goes with the extras
+        if !extras.is_null() {
+            drop(unsafe { Box::from_raw(extras) });
         }
 
         let oversized = self.payload.swap(ptr::null_mut(), Ordering::AcqRel);
@@ -815,4 +990,37 @@ const fn pack(class: u8, sequence: u64) -> u64 {
 /// longer name `T`
 unsafe fn glue<T>(payload: *mut u8) {
     unsafe { ptr::drop_in_place(payload.cast::<T>()) };
+}
+
+/// The instant every stored deadline is counted from
+///
+/// Started with the runtime, so no deadline worth storing comes
+/// before it
+pub(crate) fn deadline_epoch() -> Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+    *EPOCH.get_or_init(Instant::now)
+}
+
+/// A deadline as one word: zero for none, otherwise nanoseconds
+/// past the epoch, plus one
+///
+/// A moment before the epoch has already passed, so it is stored
+/// as the epoch itself
+fn encode_until(until: Option<Instant>) -> u64 {
+    let Some(when) = until else {
+        return 0;
+    };
+
+    let nanos = when.saturating_duration_since(deadline_epoch()).as_nanos();
+
+    nanos.min(u64::MAX as u128 - 1) as u64 + 1
+}
+
+/// Reads a deadline back out of its word
+fn decode_until(raw: u64) -> Option<Instant> {
+    match raw {
+        0 => None,
+        raw => deadline_epoch().checked_add(Duration::from_nanos(raw - 1)),
+    }
 }

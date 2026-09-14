@@ -1,10 +1,7 @@
-use atap::{JoinPolicy, Runtime, Sleep, SleepMode, TaskHandle};
-use std::time::Duration;
+mod common;
 
-/// A sleep of a given length, spawned
-fn sleeping(millis: u64) -> TaskHandle<Duration> {
-    Runtime::task(Sleep::sleep(Duration::from_millis(millis)).mode(SleepMode::Relaxed)).spawn()
-}
+use atap::{JoinPolicy, Runtime};
+use common::sleeping;
 
 /// `PassBack` hands the losing handles back in the order they
 /// were given
@@ -18,10 +15,8 @@ fn pass_back_hands_the_losers_over_in_order() {
     let slow: Vec<_> = (0..4).map(|_| sleeping(300)).collect();
     let order: Vec<_> = slow.iter().map(|handle| handle.id()).collect();
 
-    let (first, rest) = Runtime::join_first(
-        std::iter::once(quick).chain(slow),
-        JoinPolicy::PassBack,
-    );
+    let (first, rest) =
+        Runtime::join_first(std::iter::once(quick).chain(slow), JoinPolicy::PassBack);
 
     assert_eq!(first.id(), quick_id, "the wrong task won");
 

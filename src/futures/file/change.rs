@@ -8,7 +8,7 @@
 
 use crate::{
     RuntimeError,
-    futures::file::file_task::{Fd, retried},
+    modules::{fd::Fd, retried::retried},
 };
 use std::{
     ffi::CString,
@@ -368,7 +368,9 @@ mod tests {
         chowned.owner = (0, 0);
 
         for now in [chmodded, chowned] {
-            let change = seen.against(&now, EVERY_NOTE).expect("an attribute must report");
+            let change = seen
+                .against(&now, EVERY_NOTE)
+                .expect("an attribute must report");
 
             assert!(change.attributes(), "an attribute moved");
             assert!(!change.written(), "the write time stayed where it was");
@@ -386,7 +388,9 @@ mod tests {
         now.at_path = None;
         now.mtime = (1001, 0);
 
-        let change = seen.against(&now, EVERY_NOTE).expect("a removal must report");
+        let change = seen
+            .against(&now, EVERY_NOTE)
+            .expect("a removal must report");
 
         assert_eq!(change, Change::REMOVED, "a removal is the whole answer");
     }
@@ -404,7 +408,9 @@ mod tests {
         replaced.at_path = Some(9);
 
         for now in [moved, replaced] {
-            let change = seen.against(&now, EVERY_NOTE).expect("a rename must report");
+            let change = seen
+                .against(&now, EVERY_NOTE)
+                .expect("a rename must report");
 
             assert!(change.renamed(), "the path stopped leading to the file");
             assert!(!change.removed(), "the file itself is still there");
@@ -422,7 +428,11 @@ mod tests {
         gone.at_path = None;
 
         assert_eq!(seen.against(&gone, EVERY_NOTE), Some(Change::REMOVED));
-        assert_eq!(gone.against(&gone, EVERY_NOTE), None, "still gone is not news");
+        assert_eq!(
+            gone.against(&gone, EVERY_NOTE),
+            None,
+            "still gone is not news"
+        );
     }
 
     /// The same for a rename: a path that is still away from its
@@ -434,10 +444,16 @@ mod tests {
 
         moved.at_path = None;
 
-        let change = seen.against(&moved, EVERY_NOTE).expect("a rename must report");
+        let change = seen
+            .against(&moved, EVERY_NOTE)
+            .expect("a rename must report");
 
         assert!(change.renamed(), "the path stopped leading to the file");
-        assert_eq!(moved.against(&moved, EVERY_NOTE), None, "still away is not news");
+        assert_eq!(
+            moved.against(&moved, EVERY_NOTE),
+            None,
+            "still away is not news"
+        );
     }
 
     /// A hard link coming or going moves the count

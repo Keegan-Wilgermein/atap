@@ -1,9 +1,12 @@
 //! Its own binary with a single test: it takes `SIGINT` over for
 //! the whole process, which would otherwise end the test run
 
+mod common;
+
 use atap::{Runtime, RuntimeError, Signal, SignalKind};
+use common::taken_over;
 use std::{
-    mem, process, ptr, thread,
+    process, thread,
     time::{Duration, Instant},
 };
 
@@ -12,15 +15,6 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 /// Ctrl-C, which normally ends the program
 const KIND: SignalKind = SignalKind::Interrupt;
-
-/// Whether anything but the signal's own behaviour is installed
-fn taken_over(kind: SignalKind) -> bool {
-    let mut action: libc::sigaction = unsafe { mem::zeroed() };
-
-    unsafe { libc::sigaction(kind.number(), ptr::null(), &mut action) };
-
-    action.sa_sigaction != libc::SIG_DFL
-}
 
 /// Watching Ctrl-C takes it over, so sending it wakes the task
 /// instead of ending the program, and releasing gives it back
@@ -56,7 +50,10 @@ fn watching_an_interrupt_takes_it_over() {
 
     // Held by default, so it stays taken over with nothing watching
     thread::sleep(Duration::from_millis(20));
-    assert!(taken_over(KIND), "the default is to keep a signal once watched");
+    assert!(
+        taken_over(KIND),
+        "the default is to keep a signal once watched"
+    );
 
     Signal::release(KIND).expect("releasing a real signal works");
 

@@ -36,7 +36,8 @@ impl Clock {
 
     /// Whether the run is out of time
     pub(crate) fn expired(&self) -> bool {
-        self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     /// When the run has to be done by, if it has a limit
@@ -117,7 +118,10 @@ mod tests {
         open.start();
 
         assert!(!open.expired());
-        assert!(matches!(open.wait::<()>(0, libc::EVFILT_READ), Ok(Step::Park(_))));
+        assert!(matches!(
+            open.wait::<()>(0, libc::EVFILT_READ),
+            Ok(Step::Park(_))
+        ));
 
         let mut spent = Clock::default();
         spent.limit(Duration::ZERO);

@@ -2,9 +2,9 @@
 //! A Unix socket's address, which is a path, in the form the
 //! kernel takes it, and the socket file a bind leaves behind
 
-use crate::RuntimeError;
+use crate::{RuntimeError, modules::c_path::c_path};
 use std::{
-    ffi::{CString, OsString},
+    ffi::OsString,
     mem,
     os::unix::ffi::{OsStrExt, OsStringExt},
     path::{self, Path, PathBuf},
@@ -125,11 +125,6 @@ impl Drop for Bound {
     }
 }
 
-/// A path in the form `lstat` and `unlink` take
-fn c_path(path: &Path) -> Option<CString> {
-    CString::new(path.as_os_str().as_bytes()).ok()
-}
-
 /// Which file is at `path` right now, as its device and inode
 ///
 /// A symbolic link is itself, not whatever it points at
@@ -187,8 +182,14 @@ mod tests {
         let long = "/".repeat(104);
 
         assert!(matches!(to_raw(Path::new("")), Err(RuntimeError::BadPath)));
-        assert!(matches!(to_raw(Path::new("a\0b")), Err(RuntimeError::BadPath)));
-        assert!(matches!(to_raw(Path::new(&long)), Err(RuntimeError::BadPath)));
+        assert!(matches!(
+            to_raw(Path::new("a\0b")),
+            Err(RuntimeError::BadPath)
+        ));
+        assert!(matches!(
+            to_raw(Path::new(&long)),
+            Err(RuntimeError::BadPath)
+        ));
         assert!(to_raw(Path::new(&long[..103])).is_ok());
     }
 }

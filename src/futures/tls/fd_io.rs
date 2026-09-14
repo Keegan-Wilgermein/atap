@@ -13,7 +13,14 @@ pub(crate) struct FdIo(pub(crate) libc::c_int);
 
 impl io::Read for FdIo {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let got = unsafe { libc::recv(self.0, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len(), 0) };
+        let got = unsafe {
+            libc::recv(
+                self.0,
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                buf.len(),
+                0,
+            )
+        };
 
         if got < 0 {
             return Err(io::Error::last_os_error());

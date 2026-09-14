@@ -2,11 +2,11 @@
 //!
 //! Everything runs over loopback, on sockets bound to port 0
 
-use atap::{Runtime, RuntimeError, TaskHandle, Udp, UdpSocket};
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+mod common;
+
+use atap::{Runtime, RuntimeError, Udp, UdpSocket};
+use common::until_started;
+use std::time::{Duration, Instant};
 
 /// How long a test waits for something that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -16,19 +16,6 @@ fn socket() -> UdpSocket {
     Runtime::init();
 
     Runtime::block(Udp::bind("127.0.0.1:0")).expect("a loopback socket must bind")
-}
-
-/// Waits until a spawned task is parked or running, so what the
-/// test does next lands while it waits
-fn until_started<T>(handle: &TaskHandle<T>) {
-    let deadline = Instant::now() + PATIENCE;
-
-    while handle.is_pending() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    // Long enough for it to reach its park
-    thread::sleep(Duration::from_millis(20));
 }
 
 /// A datagram arrives whole, with the address it came from
@@ -55,8 +42,14 @@ fn datagrams_keep_their_boundaries() {
     Runtime::block(a.send_to(b.local_addr(), b"one".as_slice())).unwrap();
     Runtime::block(a.send_to(b.local_addr(), b"two".as_slice())).unwrap();
 
-    assert_eq!(Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0, b"one");
-    assert_eq!(Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0, b"two");
+    assert_eq!(
+        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
+        b"one"
+    );
+    assert_eq!(
+        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
+        b"two"
+    );
 }
 
 /// An empty datagram is a real one, and arrives as one
@@ -65,7 +58,10 @@ fn an_empty_datagram_is_a_real_one() {
     let a = socket();
     let b = socket();
 
-    assert_eq!(Runtime::block(a.send_to(b.local_addr(), b"".as_slice())).unwrap(), 0);
+    assert_eq!(
+        Runtime::block(a.send_to(b.local_addr(), b"".as_slice())).unwrap(),
+        0
+    );
 
     let (data, from) = Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap();
 
@@ -85,7 +81,10 @@ fn a_large_datagram_arrives_whole() {
 
     Runtime::block(a.send_to(b.local_addr(), data.clone())).unwrap();
 
-    assert_eq!(Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0, data);
+    assert_eq!(
+        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
+        data
+    );
 }
 
 /// A spawned receive parks until a datagram comes, then finishes
@@ -95,7 +94,7 @@ fn a_spawned_receive_waits_for_a_datagram() {
     let b = socket();
 
     let reading = Runtime::task(b.recv_from()).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     assert!(
         reading.is_running(),
@@ -125,8 +124,14 @@ fn a_blocking_receive_times_out() {
     let took = started.elapsed();
 
     assert_eq!(got, Err(RuntimeError::TimedOut));
-    assert!(took >= Duration::from_millis(100), "gave up early, after {took:?}");
-    assert!(took < Duration::from_secs(2), "gave up late, after {took:?}");
+    assert!(
+        took >= Duration::from_millis(100),
+        "gave up early, after {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(2),
+        "gave up late, after {took:?}"
+    );
 }
 
 /// So does a spawned one
@@ -137,7 +142,9 @@ fn a_spawned_receive_times_out() {
     let handle = Runtime::task(b.recv_from().timeout(Duration::from_millis(100))).spawn();
 
     assert_eq!(
-        handle.take_with_timeout(PATIENCE).expect("the timeout must settle it"),
+        handle
+            .take_with_timeout(PATIENCE)
+            .expect("the timeout must settle it"),
         Err(RuntimeError::TimedOut),
     );
 }
@@ -148,7 +155,7 @@ fn a_parked_receive_can_be_cancelled() {
     let b = socket();
 
     let reading = Runtime::task(b.recv_from()).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     reading.clone().cancel();
 
@@ -171,7 +178,10 @@ fn a_name_is_looked_up_in_the_sockets_family() {
     Runtime::block(a.send_to(format!("localhost:{port}"), b"named".as_slice()))
         .expect("localhost has an IPv4 address to send to");
 
-    assert_eq!(Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0, b"named");
+    assert_eq!(
+        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
+        b"named"
+    );
 }
 
 /// Something that isn't an address fails as one
@@ -206,10 +216,13 @@ fn a_receive_in_flight_outlives_a_close() {
     let to = b.local_addr();
 
     let reading = Runtime::task(b.recv_from()).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     b.close();
     Runtime::block(a.send_to(to, b"still".as_slice())).unwrap();
 
-    assert_eq!(reading.take_with_timeout(PATIENCE).unwrap().unwrap().0, b"still");
+    assert_eq!(
+        reading.take_with_timeout(PATIENCE).unwrap().unwrap().0,
+        b"still"
+    );
 }

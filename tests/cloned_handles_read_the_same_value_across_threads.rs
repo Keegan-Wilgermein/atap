@@ -1,7 +1,7 @@
 use atap::{Runtime, Sleep, SleepMode};
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
-use std::sync::{Arc, Barrier};
 
 /// Clones of a handle read the same value from any thread
 #[test]

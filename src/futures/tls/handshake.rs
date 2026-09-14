@@ -14,7 +14,10 @@ use std::io;
 /// `None` once the handshake is done and everything it had to
 /// send has gone. Otherwise the filter to park on, `EVFILT_READ`
 /// or `EVFILT_WRITE`
-pub(crate) fn handshake(tls: &mut rustls::Connection, fd: libc::c_int) -> Result<Option<i16>, RuntimeError> {
+pub(crate) fn handshake(
+    tls: &mut rustls::Connection,
+    fd: libc::c_int,
+) -> Result<Option<i16>, RuntimeError> {
     loop {
         if let Some(filter) = send_pending(tls, fd)? {
             return Ok(Some(filter));
@@ -45,7 +48,10 @@ pub(crate) fn handshake(tls: &mut rustls::Connection, fd: libc::c_int) -> Result
 /// ## Returns
 /// `None` once it has all gone, or `EVFILT_WRITE` when the socket
 /// is full
-pub(crate) fn send_pending(tls: &mut rustls::Connection, fd: libc::c_int) -> Result<Option<i16>, RuntimeError> {
+pub(crate) fn send_pending(
+    tls: &mut rustls::Connection,
+    fd: libc::c_int,
+) -> Result<Option<i16>, RuntimeError> {
     while tls.wants_write() {
         match tls.write_tls(&mut FdIo(fd)) {
             Ok(_) => {}

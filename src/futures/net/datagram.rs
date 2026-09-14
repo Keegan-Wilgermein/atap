@@ -67,7 +67,9 @@ pub(crate) fn recv_datagram(
         let got = unsafe {
             libc::recvfrom(
                 fd,
-                data.spare_capacity_mut().as_mut_ptr().cast::<libc::c_void>(),
+                data.spare_capacity_mut()
+                    .as_mut_ptr()
+                    .cast::<libc::c_void>(),
                 MAX_DATAGRAM,
                 0,
                 (&mut storage as *mut libc::sockaddr_storage).cast::<libc::sockaddr>(),

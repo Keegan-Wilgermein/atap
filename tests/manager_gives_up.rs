@@ -6,7 +6,10 @@
 //! Six panics are printed as they unwind. That is the test
 //! working
 
+mod common;
+
 use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use common::settles;
 use std::{thread, time::Duration};
 
 /// A manager that gives up settles every repeat that depended
@@ -63,7 +66,8 @@ fn a_manager_that_gives_up_strands_nothing() {
     );
 
     // The pool outlives its manager
-    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).spawn()
+    let slept = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed))
+        .spawn()
         .join()
         .expect("the pool still runs tasks with no manager at all");
 
@@ -84,19 +88,4 @@ fn a_manager_that_gives_up_strands_nothing() {
          live back to {}",
         Runtime::workers().live(),
     );
-}
-
-/// Waits for something to become true, with a cap
-fn settles(mut condition: impl FnMut() -> bool) -> bool {
-    let waited = std::time::Instant::now();
-
-    while waited.elapsed() < Duration::from_secs(5) {
-        if condition() {
-            return true;
-        }
-
-        thread::sleep(Duration::from_millis(10));
-    }
-
-    condition()
 }

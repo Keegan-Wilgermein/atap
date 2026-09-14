@@ -1,11 +1,12 @@
 //! File watch task tests
 
+mod common;
+
 use atap::{Change, File, Runtime, RuntimeError, TaskHandle};
+use common::{TestPath, next_run, until_started};
 use std::{
     fs,
     path::PathBuf,
-    process,
-    sync::atomic::{AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -13,79 +14,14 @@ use std::{
 /// How long a test waits for anything that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(10);
 
-/// Keeps test file names apart
-static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-/// A path that cleans itself up
-struct TestPath(PathBuf);
-
-impl TestPath {
-    /// Reserves a name nothing else in this run will use
-    fn new(tag: &str) -> Self {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/files");
-
-        fs::create_dir_all(&root).expect("could not make tests/files");
-
-        let name = format!(
-            "{}-{}-{}.txt",
-            tag,
-            process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-
-        Self(root.join(name))
-    }
-
-    /// The path itself
-    fn path(&self) -> &PathBuf {
-        &self.0
-    }
-}
-
-impl Drop for TestPath {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Waits until a spawned task has reached its park
 ///
 /// The extra pause afterwards is for the registration itself,
 /// which happens after the task stops being pending
 fn until_parked<T>(handle: &TaskHandle<T>) {
-    let deadline = Instant::now() + PATIENCE;
+    until_started(handle, PATIENCE);
 
-    while handle.is_pending() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    thread::sleep(Duration::from_millis(30));
-}
-
-/// Takes the next output a repeat produces
-///
-/// ## Returns
-/// `None` once the series has ended, or once `PATIENCE` has run
-/// out
-fn next_run<T>(handle: &TaskHandle<T>) -> Option<T> {
-    let deadline = Instant::now() + PATIENCE;
-
-    while Instant::now() < deadline {
-        match handle.maybe_take() {
-            Ok(value) => return Some(value),
-
-            // Between runs, or one still going
-            Err(RuntimeError::AlreadyTaken) | Err(RuntimeError::NotReady) => {
-                thread::sleep(Duration::from_millis(1))
-            }
-
-            // `Finished` and every other error are endings
-            Err(_) => break,
-        }
-    }
-
-    None
+    thread::sleep(Duration::from_millis(10));
 }
 
 /// Adds bytes to the end of a file, which is what every test
@@ -104,7 +40,8 @@ fn touch(path: &PathBuf, bytes: &[u8]) {
         .open(path)
         .expect("could not open the watched file");
 
-    file.write_all(bytes).expect("could not write the watched file");
+    file.write_all(bytes)
+        .expect("could not write the watched file");
 }
 
 /// A write to a watched file wakes the task waiting on it
@@ -146,9 +83,17 @@ fn a_watch_gives_up_when_asked_to() {
     let started = Instant::now();
     let change = Runtime::block(watch);
 
-    println!("giving up took {:?} and gave {:?}", started.elapsed(), change);
+    println!(
+        "giving up took {:?} and gave {:?}",
+        started.elapsed(),
+        change
+    );
 
-    assert_eq!(change, Err(RuntimeError::TimedOut), "nothing touched the file");
+    assert_eq!(
+        change,
+        Err(RuntimeError::TimedOut),
+        "nothing touched the file"
+    );
     assert!(started.elapsed() < PATIENCE, "giving up took too long");
 }
 
@@ -173,7 +118,7 @@ fn a_repeating_watch_reports_every_change() {
     for round in 0..3 {
         touch(file.path(), b" more");
 
-        let change = next_run(&handle)
+        let change = next_run(&handle, PATIENCE)
             .unwrap_or_else(|| panic!("run {} never reported", round))
             .expect("the watch failed");
 
@@ -206,7 +151,7 @@ fn a_change_between_runs_is_not_lost() {
 
     touch(file.path(), b" two");
 
-    let first = next_run(&handle)
+    let first = next_run(&handle, PATIENCE)
         .expect("the first run never reported")
         .expect("the watch failed");
 
@@ -216,7 +161,7 @@ fn a_change_between_runs_is_not_lost() {
     // on the file to see it
     touch(file.path(), b" three");
 
-    let second = next_run(&handle)
+    let second = next_run(&handle, PATIENCE)
         .expect("the change between runs was lost")
         .expect("the watch failed");
 
@@ -267,7 +212,7 @@ fn a_repeating_watch_reports_a_removal_once() {
 
     fs::remove_file(file.path()).expect("could not remove the watched file");
 
-    let change = next_run(&handle)
+    let change = next_run(&handle, PATIENCE)
         .expect("the removal was never reported")
         .expect("the watch failed");
 
@@ -332,7 +277,10 @@ fn a_new_entry_wakes_a_directory_watch() {
 
     println!("a new entry reported {:?}", change);
 
-    assert!(change.written(), "an entry coming is a write to the directory");
+    assert!(
+        change.written(),
+        "an entry coming is a write to the directory"
+    );
 }
 
 /// A watch narrowed to removals sits through a write and settles
@@ -352,7 +300,10 @@ fn a_narrowed_watch_ignores_what_it_did_not_ask_for() {
     touch(file.path(), b" written to");
     thread::sleep(Duration::from_millis(200));
 
-    assert!(handle.is_running(), "a write is not what this watch asked for");
+    assert!(
+        handle.is_running(),
+        "a write is not what this watch asked for"
+    );
 
     fs::remove_file(file.path()).expect("could not remove the watched file");
 

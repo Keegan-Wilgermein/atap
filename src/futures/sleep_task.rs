@@ -8,7 +8,12 @@ use crate::{
     EventDesc,
     constants::SLEEP_TOLERANCE,
     executor,
-    futures::{kernel_wait::KernelWait, sleep::SleepMode, task::Task, task::sealed},
+    futures::{
+        kernel_wait::KernelWait,
+        sleep::SleepMode,
+        task::sealed,
+        task::{Nothing, Task},
+    },
     modules::{
         int_check::IntCheck,
         kevent::KEvent,
@@ -190,6 +195,7 @@ impl sealed::Sealed for SleepTask {}
 
 impl Task for SleepTask {
     type Output = Duration;
+    type Input = Nothing;
 
     #[inline(always)]
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {

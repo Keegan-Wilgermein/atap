@@ -16,26 +16,25 @@ use crate::{
     futures::{
         net::{
             address::{Target, family, from_raw, local_of, peer_of, to_raw},
-            socket::{Fd, begin_connect, configure, finished_connecting, open, set_flag},
+            exchange::{self, Stage},
+            socket::{begin_connect, configure, finished_connecting, open, set_flag},
             step::{Clock, Progress, settle},
-            stream::{RecvTask, SendTask},
         },
         task::{
-            Task,
+            Nothing, Task,
             sealed::{self, Step},
         },
         tcp::connection::{Connection, Listener},
     },
-    modules::{int_check::IntCheck, park},
+    modules::{fd::Fd, int_check::IntCheck, park},
 };
 use std::{mem, net::SocketAddr, sync::Arc, time::Duration};
 
 // Anything larger costs a page mapping per task
 const _: () = assert!(mem::size_of::<Result<Connection, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<Listener, RuntimeError>>() <= INLINE_PAYLOAD);
-const _: () = assert!(
-    mem::size_of::<Result<(Connection, SocketAddr), RuntimeError>>() <= INLINE_PAYLOAD
-);
+const _: () =
+    assert!(mem::size_of::<Result<(Connection, SocketAddr), RuntimeError>>() <= INLINE_PAYLOAD);
 
 /// Opens a connection
 ///
@@ -394,20 +393,6 @@ pub struct RequestTask {
     stage: Progress<Stage>,
 }
 
-/// Where a request is
-#[derive(Default)]
-enum Stage {
-    /// Opening the connection
-    #[default]
-    Connecting,
-
-    /// Sending the request down it
-    Sending(SendTask),
-
-    /// Reading the answer
-    Reading(RecvTask),
-}
-
 impl RequestTask {
     /// Sends `data` to `target` and reads what comes back
     pub(crate) fn new(target: Target, data: Arc<[u8]>) -> Self {
@@ -436,33 +421,14 @@ impl RequestTask {
 
     /// Takes the exchange as far as it can go without waiting
     fn advance(&mut self, reactor_id: i32, task_id: usize) -> Step<Result<Vec<u8>, RuntimeError>> {
-        loop {
-            match &mut self.stage.0 {
-                Stage::Connecting => match settle(self.connect.advance()) {
-                    Step::Done(Ok(conn)) => {
-                        let send = conn.send(self.data.clone()).timed(self.clock);
-
-                        self.stage.0 = Stage::Sending(send);
-                    }
-
-                    Step::Done(Err(error)) => return Step::Done(Err(error)),
-                    Step::Park(park) => return Step::Park(park),
-                },
-
-                Stage::Sending(send) => match send.step(reactor_id, task_id) {
-                    Step::Done(Ok(_)) => {
-                        let read = RecvTask::to_end(send.source().clone()).timed(self.clock);
-
-                        self.stage.0 = Stage::Reading(read);
-                    }
-
-                    Step::Done(Err(error)) => return Step::Done(Err(error)),
-                    Step::Park(park) => return Step::Park(park),
-                },
-
-                Stage::Reading(read) => return read.step(reactor_id, task_id),
-            }
-        }
+        exchange::advance(
+            &mut self.connect,
+            &mut self.stage.0,
+            &self.data,
+            self.clock,
+            reactor_id,
+            task_id,
+        )
     }
 }
 
@@ -473,6 +439,7 @@ impl sealed::Sealed for RequestTask {}
 
 impl Task for ConnectTask {
     type Output = Result<Connection, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -497,6 +464,7 @@ impl Task for ConnectTask {
 
 impl Task for ListenTask {
     type Output = Result<Listener, RuntimeError>;
+    type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
@@ -516,6 +484,7 @@ impl Task for ListenTask {
 
 impl Task for AcceptTask {
     type Output = Result<(Connection, SocketAddr), RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -533,6 +502,7 @@ impl Task for AcceptTask {
 
 impl Task for RequestTask {
     type Output = Result<Vec<u8>, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {

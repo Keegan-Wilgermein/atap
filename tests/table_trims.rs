@@ -54,7 +54,13 @@ fn gives_the_table_back() {
 
     println!(
         "{} passes gave back {} bytes, table {} -> {} slots (peak {} -> {}), {} live",
-        done, released, before.slots(), after.slots(), before.peak_slots(), after.peak_slots(), after.live(),
+        done,
+        released,
+        before.slots(),
+        after.slots(),
+        before.peak_slots(),
+        after.peak_slots(),
+        after.live(),
     );
 
     report("trimmed");
@@ -69,9 +75,11 @@ fn gives_the_table_back() {
 
     // A trim must not lower the peak
     assert_eq!(
-        after.peak_slots(), before.peak_slots(),
+        after.peak_slots(),
+        before.peak_slots(),
         "trimming took the peak from {} to {}",
-        before.peak_slots(), after.peak_slots(),
+        before.peak_slots(),
+        after.peak_slots(),
     );
 
     // Never below the hundred slots it always keeps

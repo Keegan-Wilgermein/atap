@@ -2,12 +2,15 @@
 //! An open TCP connection and a listening socket, and the
 //! tasks each of them starts
 
-use crate::futures::{
-    net::{
-        socket::Fd,
-        stream::{Pipe, RecvTask, SendTask, Source},
+use crate::{
+    futures::{
+        net::{
+            exchange::Sends,
+            stream::{Pipe, RecvTask, SendTask, Source},
+        },
+        tcp::tcp_task::AcceptTask,
     },
-    tcp::tcp_task::AcceptTask,
+    modules::fd::Fd,
 };
 use std::{fmt, net::SocketAddr, sync::Arc};
 
@@ -280,5 +283,12 @@ impl fmt::Debug for Listener {
             .debug_struct("Listener")
             .field("local", &self.socket.local)
             .finish()
+    }
+}
+
+/// A request sends its bytes the same way `send` does
+impl Sends for Connection {
+    fn send_all(&self, data: Arc<[u8]>) -> SendTask {
+        self.send(data)
     }
 }

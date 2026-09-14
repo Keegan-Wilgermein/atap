@@ -27,12 +27,20 @@ pub(crate) enum TaskKind {
 }
 
 impl TaskKind {
+    /// The bit in the kind byte that marks a task spawned with
+    /// `wait_for`
+    ///
+    /// Beside the kind rather than one of them, since any kind can
+    /// wait for gives
+    pub(crate) const WAITS: u8 = 0x80;
+
     /// Rebuilds a kind from the raw value in the slot
     ///
-    /// Anything unrecognised reads as `Once`
+    /// The wait bit is looked past, and anything unrecognised reads
+    /// as `Once`
     #[inline(always)]
     pub(crate) fn from_u8(raw: u8) -> Self {
-        match raw {
+        match raw & !Self::WAITS {
             1 => Self::Repeating,
             2 => Self::RepeatEvery,
             3 => Self::Series,

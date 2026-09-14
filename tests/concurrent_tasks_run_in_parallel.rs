@@ -1,14 +1,9 @@
+mod common;
+
 use atap::{Runtime, Sleep, SleepMode};
-use std::thread;
+use common::cores;
 use std::time::Duration;
 use std::time::Instant;
-
-/// Online cores, which the pool sizes itself against
-fn cores() -> usize {
-    thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1)
-}
 
 /// Short sleeps spawned together overlap rather than running
 /// one after another

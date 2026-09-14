@@ -14,6 +14,7 @@ pub struct RuntimeStatus {
     shut_down: bool,
     reactor_alive: bool,
     manager_alive: bool,
+    pool_alive: bool,
 }
 
 impl RuntimeStatus {
@@ -22,12 +23,14 @@ impl RuntimeStatus {
         shut_down: bool,
         reactor_alive: bool,
         manager_alive: bool,
+        pool_alive: bool,
     ) -> Self {
         Self {
             initialised,
             shut_down,
             reactor_alive,
             manager_alive,
+            pool_alive,
         }
     }
 
@@ -64,12 +67,26 @@ impl RuntimeStatus {
         self.manager_alive
     }
 
+    /// Whether the pool has a worker running and no dead thread left
+    /// to recover
+    ///
+    /// #### Note
+    /// False only briefly after a thread dies, since the pool recovers
+    /// on its own. It stays false once nothing can be started at all
+    pub fn pool_alive(&self) -> bool {
+        self.pool_alive
+    }
+
     /// Whether everything is up and nothing has given up
     ///
     /// #### Note
     /// `false` doesn't mean spawned work has stopped running
     pub fn healthy(&self) -> bool {
-        self.initialised && !self.shut_down && self.reactor_alive && self.manager_alive
+        self.initialised
+            && !self.shut_down
+            && self.reactor_alive
+            && self.manager_alive
+            && self.pool_alive
     }
 }
 
@@ -90,9 +107,10 @@ impl fmt::Display for RuntimeStatus {
 
         write!(
             formatter,
-            "degraded: reactor {}, manager {}",
+            "degraded: reactor {}, manager {}, pool {}",
             alive(self.reactor_alive),
             alive(self.manager_alive),
+            alive(self.pool_alive),
         )
     }
 }

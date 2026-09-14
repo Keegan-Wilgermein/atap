@@ -20,7 +20,9 @@ fn cancelling_hands_the_thread_back() {
 
     // Too long for any of them to finish by itself
     let handles: Vec<_> = (0..sleeps)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_secs(30)).mode(SleepMode::Relaxed)).spawn())
+        .map(|_| {
+            Runtime::task(Sleep::sleep(Duration::from_secs(30)).mode(SleepMode::Relaxed)).spawn()
+        })
         .collect();
 
     let waiting = Instant::now();

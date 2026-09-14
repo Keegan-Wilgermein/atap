@@ -84,18 +84,26 @@ pub(crate) const LOCAL_QUEUE: usize = 256;
 /// Picks a ring position out of a head or tail counter
 pub(crate) const LOCAL_QUEUE_MASK: u32 = (LOCAL_QUEUE - 1) as u32;
 
-/// Workers the static pool has room for
+/// Slots in the pool's static arrays, for workers and sleep
+/// threads alike
 ///
-/// The bound on the array, not the number that run
-pub(crate) const MAX_WORKERS: usize = 512;
+/// The hard bound on either kind of thread. The pool only ever runs
+/// up to its ceiling, the lower of this and what the kernel lets a
+/// process hold. A slot nothing has used is a zero page, so unused
+/// slots cost address space rather than memory
+pub(crate) const MAX_WORKERS: usize = 4096;
 
-/// Live workers allowed per core
+/// Live workers the pool settles around under load, per core
+///
+/// A target rather than a limit: the pool passes it on overload or
+/// real need, and leans back towards it once that is over
 pub(crate) const WORKER_MULTIPLIER: usize = 4;
 
-/// Sleep threads allowed per core
+/// Sleep threads the pool settles around under load, per core
 ///
 /// Higher than the worker multiplier, since a sleep thread is
-/// almost always waiting in the kernel rather than on a core
+/// almost always waiting in the kernel rather than on a core. A
+/// target rather than a limit, the same as `WORKER_MULTIPLIER`
 pub(crate) const SLEEP_MULTIPLIER: usize = 8;
 
 /// How often the manager wakes to do policy on its own
@@ -107,6 +115,54 @@ pub(crate) const SHUTDOWN_POLL: Duration = Duration::from_millis(1);
 
 /// How long a worker sits idle before it is reaped
 pub(crate) const IDLE_REAP: Duration = Duration::from_millis(500);
+
+/// How long a worker or sleep thread past its target sits idle
+/// before it is reaped
+///
+/// Shorter than `IDLE_REAP`, so a burst past the target doesn't
+/// outstay the work that earned it
+pub(crate) const IDLE_REAP_OVER: Duration = Duration::from_millis(50);
+
+/// Tasks waiting for each running thread before the pool counts as
+/// overloaded past its target
+pub(crate) const OVERLOAD_RATIO: usize = 64;
+
+/// Threads held back from what the kernel lets a process run, for
+/// everything that isn't the pool: the manager, the reactor, and the
+/// program's own threads
+pub(crate) const THREAD_RESERVE: usize = 256;
+
+/// How many runs deep a worker helps while a task it is running
+/// waits on another
+///
+/// Past this it waits instead, and a new worker takes the queued work.
+/// Bounds how deep one thread's stack can get
+pub(crate) const HELP_DEPTH: usize = 64;
+
+/// Tasks a worker takes from its LIFO slot in a row before it gives
+/// the queue a turn
+///
+/// The slot keeps a task that spawns and waits on the same branch of
+/// work, and the cap stops a task that spawns forever from starving
+/// everything else
+pub(crate) const LIFO_STREAK: u32 = 3;
+
+/// The longest a worker waiting inside a task sleeps before looking
+/// for queued work to help with again
+///
+/// It starts far shorter and backs off to this, so a quick wait costs
+/// nothing and a long one costs almost nothing
+pub(crate) const HELP_POLL: Duration = Duration::from_millis(10);
+
+/// How long a wait sleeps at a time while the manager is gone, before
+/// making sure no dead thread has stranded what it waits on
+pub(crate) const STRANDED_POLL: Duration = Duration::from_secs(1);
+
+/// Stack reserved for each worker thread
+///
+/// A worker runs tasks inside tasks while it helps, so it gets more
+/// than a thread's default. Reserved, not used, until it is needed
+pub(crate) const WORKER_STACK: usize = 8 * 1024 * 1024;
 
 /// How much of a file or a pipe one read or write
 /// syscall asks for

@@ -1,6 +1,9 @@
 //! `join_first`, the race, and what becomes of the losers
 
-use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode, TaskHandle, TaskState};
+mod common;
+
+use atap::{File, JoinPolicy, Runtime, RuntimeError, TaskHandle, TaskState};
+use common::sleeping;
 use std::{
     fs,
     path::PathBuf,
@@ -44,11 +47,6 @@ impl Drop for TestFile {
     }
 }
 
-/// A sleep of a given length, spawned
-fn sleeping(millis: u64) -> TaskHandle<Duration> {
-    Runtime::task(Sleep::sleep(Duration::from_millis(millis)).mode(SleepMode::Relaxed)).spawn()
-}
-
 /// `Cancel` cancels every task that didn't win
 #[test]
 fn cancel_stops_the_losers() {
@@ -60,10 +58,7 @@ fn cancel_stops_the_losers() {
     let slow: Vec<_> = (0..3).map(|_| sleeping(4000)).collect();
     let watching: Vec<_> = slow.iter().cloned().collect();
 
-    let (first, rest) = Runtime::join_first(
-        std::iter::once(quick).chain(slow),
-        JoinPolicy::Cancel,
-    );
+    let (first, rest) = Runtime::join_first(std::iter::once(quick).chain(slow), JoinPolicy::Cancel);
 
     assert!(rest.is_none(), "Cancel should not hand the losers back");
     assert!(first.settled(), "the winner should be settled");
@@ -72,7 +67,10 @@ fn cancel_stops_the_losers() {
         let state = handle.wait().expect("a cancelled task still settles");
 
         assert_eq!(state, TaskState::Cancelled, "a loser was not cancelled");
-        assert!(handle.is_cancelled(), "is_cancelled disagrees with the state");
+        assert!(
+            handle.is_cancelled(),
+            "is_cancelled disagrees with the state"
+        );
     }
 }
 
@@ -85,10 +83,7 @@ fn drop_leaves_the_losers_running() {
     let slow: Vec<_> = (0..3).map(|_| sleeping(200)).collect();
     let watching: Vec<_> = slow.iter().cloned().collect();
 
-    let (first, rest) = Runtime::join_first(
-        std::iter::once(quick).chain(slow),
-        JoinPolicy::Drop,
-    );
+    let (first, rest) = Runtime::join_first(std::iter::once(quick).chain(slow), JoinPolicy::Drop);
 
     assert!(rest.is_none(), "Drop should not hand the losers back");
     assert!(first.settled(), "the winner should be settled");
@@ -98,7 +93,10 @@ fn drop_leaves_the_losers_running() {
         let state = handle.wait().expect("a dropped loser still settles");
 
         assert_ne!(state, TaskState::Cancelled, "a dropped loser was cancelled");
-        assert!(handle.is_ready() || handle.is_taken(), "a dropped loser never finished");
+        assert!(
+            handle.is_ready() || handle.is_taken(),
+            "a dropped loser never finished"
+        );
     }
 }
 
@@ -137,7 +135,11 @@ fn a_set_of_one_is_just_a_join() {
     let (first, rest) = Runtime::join_first(vec![only], JoinPolicy::PassBack);
 
     assert_eq!(first.id(), only_id, "the only task should have won");
-    assert_eq!(rest.map(|losers| losers.len()), Some(0), "there are no losers");
+    assert_eq!(
+        rest.map(|losers| losers.len()),
+        Some(0),
+        "there are no losers"
+    );
 
     first.join().expect("the winner still has its output");
 }
@@ -158,13 +160,19 @@ fn file_reads_race_each_other() {
 
     let (first, rest) = Runtime::join_first(handles, JoinPolicy::PassBack);
 
-    let winner = first.join().expect("the winner joins").expect("the read worked");
+    let winner = first
+        .join()
+        .expect("the winner joins")
+        .expect("the read worked");
 
     println!("the winning read was {} bytes", winner.len());
 
     // Nothing is asserted about which one won
     for handle in rest.expect("PassBack hands the losers back") {
-        handle.join().expect("a loser joins").expect("the read worked");
+        handle
+            .join()
+            .expect("a loser joins")
+            .expect("the read worked");
     }
 }
 
@@ -184,7 +192,11 @@ fn a_race_from_several_threads_at_once() {
                 let (first, rest) = Runtime::join_first(mine, JoinPolicy::PassBack);
 
                 assert!(first.settled(), "the winner should be settled");
-                assert_eq!(rest.map(|losers| losers.len()), Some(3), "wrong loser count");
+                assert_eq!(
+                    rest.map(|losers| losers.len()),
+                    Some(3),
+                    "wrong loser count"
+                );
 
                 first.id()
             })

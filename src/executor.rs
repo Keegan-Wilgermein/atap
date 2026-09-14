@@ -18,11 +18,24 @@ use crate::{
         address_lock,
         erased_task::ErasedTask,
         event_desc::EventDesc,
+        extras::Extras,
+        faults,
+        forward::Forward,
+        gate::{AfterRun, Gate, Trigger},
+        gated::Gated,
+        gather::{Gather, access},
+        handle_kind::Waiting,
+        handle_set::HandleSet,
+        help::{self, Patience},
+        input::Receives,
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
         kqueue,
+        mailbox::Mailbox,
+        merge_set::MergeSet,
         series::SeriesTask,
         task_data::TaskData,
+        task_data::deadline_epoch,
         task_handle::TaskHandle,
         task_setup::TaskSetup,
         task_state::TaskState,
@@ -37,7 +50,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     ptr,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
@@ -153,7 +166,10 @@ pub(crate) fn shutdown_now() {
 
     // Gone before the pool is stopped, so no tick can start a
     // thread behind it
-    let supervisor = SUPERVISOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+    let supervisor = SUPERVISOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
 
     if let Some(supervisor) = supervisor {
         let _ = supervisor.join();
@@ -220,6 +236,8 @@ pub(crate) fn shutdown_now() {
             wake(data);
         }
 
+        // A task between gives takes no more, and its handles say so
+        close_extras(data);
         release(task);
     }
 
@@ -265,7 +283,8 @@ impl Executor {
     /// shutdown or a start still in progress is waited out first
     pub(crate) fn init() -> Option<RuntimeError> {
         loop {
-            match LIFECYCLE.compare_exchange(STOPPED, STARTING, Ordering::SeqCst, Ordering::SeqCst) {
+            match LIFECYCLE.compare_exchange(STOPPED, STARTING, Ordering::SeqCst, Ordering::SeqCst)
+            {
                 Ok(_) => break,
                 Err(RUNNING) => return Some(RuntimeError::AlreadyInit),
                 Err(_) => thread::sleep(SHUTDOWN_POLL),
@@ -282,6 +301,9 @@ impl Executor {
 
         EXECUTOR_KQUEUE_ID.store(id, Ordering::SeqCst);
 
+        // Started before any deadline could be stored against it
+        let _ = deadline_epoch();
+
         POOL.open();
         POOL.ensure_floor();
         supervise(id);
@@ -296,7 +318,7 @@ impl Executor {
     where
         F: Task,
     {
-        create(task, setup).0
+        create(task, setup, None).0
     }
 
     /// Adds a schedule that starts a fresh copy of a task every
@@ -310,60 +332,132 @@ impl Executor {
     where
         F: Task + Clone,
     {
-        let boxed: Box<dyn SeriesTask> = Box::new(task);
-        let prototype = Box::into_raw(Box::new(boxed)).cast::<c_void>();
+        create_series(task, setup, None)
+    }
 
-        let Some(id) = DATA.alloc() else {
-            return abandoned(prototype);
+    /// Adds a task that waits for a give before each run, or each
+    /// series of runs
+    ///
+    /// ## Behaviour
+    /// Nothing runs until the handle gives it a value. What a give
+    /// starts is decided by the task's kind, and every give waits
+    /// out the start delay before it
+    pub(crate) fn new_waiting<F, T, M>(
+        task: F,
+        setup: TaskSetup,
+    ) -> TaskHandle<F::Output, Waiting<T>>
+    where
+        F: Task,
+        F::Input: Receives<T, M>,
+        T: Send + 'static,
+        M: 'static,
+    {
+        let (gate, mailbox, setup) = waiting_parts::<T>(setup);
+        let gated = Gated::<F, T, M>::new(task, Arc::clone(&mailbox));
+
+        create(gated, setup, Some(gate)).0.into_kind(mailbox)
+    }
+
+    /// Adds a schedule that waits for a give before each series
+    pub(crate) fn new_waiting_series<F, T, M>(
+        task: F,
+        setup: TaskSetup,
+    ) -> TaskHandle<F::Output, Waiting<T>>
+    where
+        F: Task + Clone,
+        F::Input: Receives<T, M>,
+        T: Send + 'static,
+        M: 'static,
+    {
+        let (gate, mailbox, setup) = waiting_parts::<T>(setup);
+        let gated = Gated::<F, T, M>::new(task, Arc::clone(&mailbox));
+
+        create_series(gated, setup, Some(gate)).into_kind(mailbox)
+    }
+
+    /// Gives a waiting task the value its next run is handed
+    ///
+    /// ## Returns
+    /// Why the give was refused, if it was. A refused value is dropped
+    pub(crate) fn give<T>(id: usize, mailbox: &Mailbox<T>, value: T) -> Result<(), RuntimeError> {
+        let Some(data) = slot(id) else {
+            return Err(RuntimeError::NoSuchTask);
         };
 
-        let Some(entry) = DATA.slot(id) else {
-            DATA.free(id);
-            return abandoned(prototype);
-        };
+        let gate = mailbox.gate();
 
-        let ready = unsafe {
-            TaskData::init::<F::Output>(
-                entry as *const TaskData as *mut TaskData,
-                ptr::null_mut(),
-                TaskState::Pending,
-                setup,
-                SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            )
-        };
-
-        if !ready {
-            DATA.free(id);
-            return abandoned(prototype);
+        if gate.finished() || matches!(data.state(), TaskState::Cancelled | TaskState::Failed) {
+            return Err(closed(data));
         }
 
-        // Still alone with the slot: no timer is armed and no handle
-        // exists yet
-        entry.set_prototype(prototype);
+        // Left before the gate is asked, so a run the give starts sees it.
+        // What it replaces is dropped here, outside the lock
+        drop(mailbox.replace(value));
 
-        let handle = TaskHandle::new(id);
+        match gate.trigger() {
+            Trigger::Replaced => Ok(()),
+            Trigger::Closed => Err(closed(data)),
 
-        // A delayed schedule arms a one shot here, and its first tick
-        // arms the repeating timer
-        let started = match setup.start_delay.as_nanos() as u64 {
-            0 => start_series(id, entry, setup),
-            delay => wait_for(entry, id, delay),
+            Trigger::Start => match start_waiting(id, data, gate) {
+                true => Ok(()),
+                false => Err(RuntimeError::TaskFailed),
+            },
+        }
+    }
+
+    /// Registers `forward` on every output of a task
+    ///
+    /// An output already there is handed over at once. A task that has
+    /// gone lets the registration go, and its far end with it
+    pub(crate) fn forward(upstream: usize, forward: Box<dyn Forward>) {
+        let Some(data) = slot(upstream) else {
+            drop(forward);
+            return;
         };
 
-        if started {
-            return handle;
-        }
+        data.extras_or_attach().receivers().register(forward, data);
+    }
 
-        // Nothing could run it, or the kernel wouldn't take the timer
-        unschedule(id);
+    /// Links a waiting task to the set it gathers from, and hands back
+    /// a plain handle to it, since only the set gives to it
+    pub(crate) fn receive_all<O, H>(
+        waiting: TaskHandle<O, Waiting<H::Output>>,
+        set: H,
+    ) -> TaskHandle<O>
+    where
+        H: HandleSet,
+    {
+        let gather = Arc::new(Gather::<H>::new(set.slots(), waiting.retyped()));
+        let mut held = Vec::new();
 
-        if entry.try_state(TaskState::Pending, TaskState::Failed) {
-            wake(entry);
-        }
+        set.link(&gather, access(|root: &mut H::Slots| root), &mut held);
+        hold(waiting.id(), held);
 
-        release(id);
+        // An empty set is full already, and can never fill again
+        gather.settle();
 
-        handle
+        waiting.into_plain()
+    }
+
+    /// Links a waiting task to the set it merges from, and hands back
+    /// a plain handle to it
+    pub(crate) fn receive_any<O, V, M, H>(
+        waiting: TaskHandle<O, Waiting<H::Given>>,
+        set: H,
+    ) -> TaskHandle<O>
+    where
+        H: MergeSet<V, M>,
+    {
+        let target = waiting.retyped();
+        let mut held = Vec::new();
+
+        set.link(&target, &mut held);
+        hold(waiting.id(), held);
+
+        // Only the tasks in the set give to it from here
+        drop(target);
+
+        waiting.into_plain()
     }
 
     /// Adds 1 to the listener count on a piece of data
@@ -415,7 +509,7 @@ impl Executor {
             TaskState::Cancelled | TaskState::Failed => true,
 
             // Over only if it isn't going round again
-            _ => state.terminal() && !data.kind().repeats(),
+            _ => state.terminal() && !data.kind().repeats() && !data.open_for_gives(),
         }
     }
 
@@ -448,6 +542,8 @@ impl Executor {
             return Err(RuntimeError::NoSuchTask);
         };
 
+        let mut patience = Patience::new();
+
         loop {
             let state = data.state();
 
@@ -455,20 +551,43 @@ impl Executor {
                 return Ok(state);
             }
 
-            let Some(deadline) = deadline else {
+            // A worker waiting inside a task runs the task it waits on itself
+            // if nobody has started it, and other queued work if not
+            if help::run_awaited(id) || help::help_once() {
+                patience.helped();
+                continue;
+            }
+
+            let slice = patience.slice();
+
+            let sleep = match deadline {
+                None => slice,
+
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+
+                    // Checked after the state, so a task that has just
+                    // settled still answers
+                    if left.is_zero() {
+                        return Err(RuntimeError::NotReady);
+                    }
+
+                    Some(slice.map_or(left, |slice| slice.min(left)))
+                }
+            };
+
+            let Some(sleep) = sleep else {
                 address_lock::wait(data.wait_address(), state as u32)?;
                 continue;
             };
 
-            let left = deadline.saturating_duration_since(Instant::now());
-
-            // Checked after the state, so a task that has just settled
-            // still answers
-            if left.is_zero() {
-                return Err(RuntimeError::NotReady);
+            if address_lock::wait_until(data.wait_address(), state as u32, sleep)? {
+                continue;
             }
 
-            if address_lock::wait_until(data.wait_address(), state as u32, left)? {
+            // Only the caller's own deadline ends the wait. A slice that ran
+            // out just looks again
+            if deadline.is_none_or(|deadline| Instant::now() < deadline) {
                 continue;
             }
 
@@ -666,10 +785,87 @@ impl Executor {
                 // down here rather than waiting on its socket
                 unpark(id, data);
 
+                // Nor does a task between gives, which is let go here
+                if data.takes_input() {
+                    let_go_waiting(id, data);
+                }
+
                 return;
             }
         }
     }
+}
+
+/// Puts a schedule in the table
+///
+/// One that waits sits until a give starts its first series. Any
+/// other starts now, or once its start delay is up
+fn create_series<F>(task: F, setup: TaskSetup, gate: Option<Arc<Gate>>) -> TaskHandle<F::Output>
+where
+    F: Task + Clone,
+{
+    let boxed: Box<dyn SeriesTask> = Box::new(task);
+    let prototype = Box::into_raw(Box::new(boxed)).cast::<c_void>();
+
+    let Some(id) = DATA.alloc() else {
+        return abandoned(prototype);
+    };
+
+    let Some(entry) = DATA.slot(id) else {
+        DATA.free(id);
+        return abandoned(prototype);
+    };
+
+    let ready = unsafe {
+        TaskData::init::<F::Output>(
+            entry as *const TaskData as *mut TaskData,
+            ptr::null_mut(),
+            TaskState::Pending,
+            setup,
+            SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        )
+    };
+
+    if !ready {
+        DATA.free(id);
+        return abandoned(prototype);
+    }
+
+    // Still alone with the slot: no timer is armed and no handle
+    // exists yet
+    let waits = gate.is_some();
+
+    entry.attach_extras(Box::new(Extras::new(gate)));
+    entry.set_prototype(prototype);
+
+    let handle = TaskHandle::new(id);
+
+    // A schedule that waits starts at its first give
+    if waits {
+        return handle;
+    }
+
+    // A delayed schedule arms a one shot here, and its first tick
+    // arms the repeating timer
+    let started = match setup.start_delay.as_nanos() as u64 {
+        0 => start_series(id, entry),
+        delay => wait_for(entry, id, delay),
+    };
+
+    if started {
+        return handle;
+    }
+
+    // Nothing could run it, or the kernel wouldn't take the timer
+    unschedule(id);
+
+    if entry.try_state(TaskState::Pending, TaskState::Failed) {
+        wake(entry);
+    }
+
+    release(id);
+
+    handle
 }
 
 /// Puts a task in the table and hands it to the pool
@@ -677,7 +873,7 @@ impl Executor {
 /// ## Returns
 /// The handle, and whether anything will pick the task up. On
 /// `false` the task has already settled `Failed`
-fn create<F>(task: F, setup: TaskSetup) -> (TaskHandle<F::Output>, bool)
+fn create<F>(task: F, setup: TaskSetup, gate: Option<Arc<Gate>>) -> (TaskHandle<F::Output>, bool)
 where
     F: Task,
 {
@@ -714,9 +910,17 @@ where
 
     let handle = TaskHandle::new(id);
 
+    // A task that waits sits in its slot until a give starts it. Still
+    // alone with the slot, since no handle has been handed out
+    if let Some(gate) = gate {
+        entry.attach_extras(Box::new(Extras::new(Some(gate))));
+
+        return (handle, true);
+    }
+
     // Armed instead of queued when there is a start delay
     let started = match setup.start_delay.as_nanos() as u64 {
-        0 => queue(id, setup.blocking),
+        0 => queue_spawned(id, setup.blocking),
         delay => wait_for(entry, id, delay),
     };
 
@@ -744,7 +948,7 @@ pub(crate) fn spawn_run<F>(task: F, priority: u8) -> bool
 where
     F: Task,
 {
-    create(task, TaskSetup::once(priority)).1
+    create(task, TaskSetup::once(priority), None).1
 }
 
 /// Leaves an output in a series slot for its listeners
@@ -757,6 +961,8 @@ pub(crate) fn publish<T>(id: usize, value: T) {
     };
 
     if !data.begin() {
+        close_finished_series(data);
+
         return;
     }
 
@@ -765,6 +971,8 @@ pub(crate) fn publish<T>(id: usize, value: T) {
     unsafe { data.payload().cast::<T>().write(value) };
     data.fill();
 
+    note_output(data);
+
     // Cancelled mid write, so the value is left for the last
     // listener out to drop
     if !data.try_state(TaskState::Running, TaskState::Ready) {
@@ -772,6 +980,9 @@ pub(crate) fn publish<T>(id: usize, value: T) {
     }
 
     wake(data);
+    forward_output(data);
+
+    close_finished_series(data);
 }
 
 /// The slot for an id, if there is a task in it
@@ -866,6 +1077,7 @@ pub(crate) fn run(id: usize) {
 
         // Cancelled or failed, so it is dropped unrun
         false => {
+            close_extras(data);
             drop(task);
             release(id);
 
@@ -883,13 +1095,15 @@ pub(crate) fn run(id: usize) {
     // A panic costs this task, not the thread. `AssertUnwindSafe`
     // because the task is dropped unrun afterwards and its output
     // is never read
-    CURRENT.with(|current| current.set(id));
+    // Put back afterwards rather than cleared, since a worker helping
+    // inside a task runs this inside that task's own run
+    let outer = CURRENT.with(|current| current.replace(id));
 
     let stepped = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
         task.run(reactor, id, payload, resumed)
     }));
 
-    CURRENT.with(|current| current.set(NO_TASK));
+    CURRENT.with(|current| current.set(outer));
 
     let finished = match stepped {
         // Parked on something the kernel will report, so the thread
@@ -901,12 +1115,24 @@ pub(crate) fn run(id: usize) {
         }
 
         Ok(None) => true,
+
+        // The thread going down rather than the task, from a worker
+        // helping inside this run. Carried on down through every run the
+        // thread is inside, leaving each one to the recovery that fails
+        // what a dead thread was holding
+        Err(payload) if faults::is_thread_death(payload.as_ref()) => {
+            drop(task);
+            panic::resume_unwind(payload);
+        }
+
         Err(_) => false,
     };
 
     if !finished {
         // A panic means the output was never written, so there is
-        // nothing to drop. A series ends here too
+        // nothing to drop. A series ends here too, and so does a task
+        // that waits for gives
+        close_extras(data);
         drop(task);
 
         if data.try_state(TaskState::Running, TaskState::Failed) {
@@ -920,9 +1146,14 @@ pub(crate) fn run(id: usize) {
 
     data.fill();
 
+    // Counted before it can be read, so a registration that finds it
+    // readable also finds it counted
+    note_output(data);
+
     // Cancelled mid run, so the output is left for the last
     // listener out to drop
     if !data.try_state(TaskState::Running, TaskState::Ready) {
+        close_extras(data);
         drop(task);
         release(id);
 
@@ -931,7 +1162,18 @@ pub(crate) fn run(id: usize) {
 
     wake(data);
 
+    // Whatever this output is forwarded to gets it now
+    forward_output(data);
+
     if !data.kind().repeats() {
+        // A task that waits goes back for its next give
+        if data.takes_input() {
+            rewait(id, data, task);
+
+            return;
+        }
+
+        close_extras(data);
         drop(task);
         release(id);
 
@@ -946,8 +1188,19 @@ pub(crate) fn run(id: usize) {
     };
 
     if data.count_run() || data.past_deadline(gap) {
-        drop(task);
+        // A series a give started is over, and the task goes back for
+        // the next one
+        if data.takes_input() {
+            rewait(id, data, task);
+
+            return;
+        }
+
+        // The kind moves on before the registrations close, so one made
+        // meanwhile sees the series is over
         data.finish_series();
+        close_extras(data);
+        drop(task);
         release(id);
 
         return;
@@ -972,6 +1225,7 @@ pub(crate) fn run(id: usize) {
         wake(data);
     }
 
+    close_extras(data);
     release(id);
 }
 
@@ -985,6 +1239,22 @@ fn queue(id: usize, blocking: bool) -> bool {
         true => POOL.offload(id),
         false => POOL.submit(id),
     }
+}
+
+/// Hands a task just spawned to the pool, beside the task that spawned
+/// it when that task is running on a worker
+///
+/// ## Returns
+/// Whether anything will come for it
+#[inline(always)]
+fn queue_spawned(id: usize, blocking: bool) -> bool {
+    if !blocking && CURRENT.with(|current| current.get()) != NO_TASK {
+        if let Some(worker) = help::worker() {
+            return POOL.submit_local(worker, id);
+        }
+    }
+
+    queue(id, blocking)
 }
 
 /// Which half of a park went off, and so took itself down
@@ -1269,11 +1539,13 @@ fn fire(ident: usize) {
     // Nothing is left to run it. A repeat between runs is `Ready`
     // or `Taken`; a delayed one shot is still `Pending`
     if data.try_state(TaskState::Ready, TaskState::Failed)
+        || data.try_state(TaskState::Taken, TaskState::Failed)
         || data.try_state(TaskState::Pending, TaskState::Failed)
     {
         wake(data);
     }
 
+    close_extras(data);
     release(id);
 }
 
@@ -1285,7 +1557,7 @@ fn fire(ident: usize) {
 ///
 /// ## Returns
 /// Whether the series is under way
-fn start_series(id: usize, data: &TaskData, setup: TaskSetup) -> bool {
+fn start_series(id: usize, data: &TaskData) -> bool {
     if !data.runs_remain() {
         return false;
     }
@@ -1298,14 +1570,22 @@ fn start_series(id: usize, data: &TaskData, setup: TaskSetup) -> bool {
     if data.count_run() {
         // The only run allowed is away, so there is no timer to arm.
         // The reference goes back now, since no tick will come for
-        // it, and the run holds a claim of its own
-        data.finish_series();
-        release(id);
+        // it, and the run holds a claim of its own. One that waits
+        // goes back for its next give instead
+        match data.takes_input() {
+            true => rewait_series(id, data),
+
+            false => {
+                data.finish_series();
+                close_finished_series(data);
+                release(id);
+            }
+        }
 
         return true;
     }
 
-    schedule(id, setup.interval.as_nanos() as u64)
+    schedule(id, data.interval())
 }
 
 /// Starts the next run of a series, or clears the series up
@@ -1351,6 +1631,7 @@ fn tick(id: usize, data: &TaskData) {
         wake(data);
     }
 
+    close_extras(data);
     release(id);
 }
 
@@ -1359,7 +1640,16 @@ fn tick(id: usize, data: &TaskData) {
 /// Its state is left alone, so its last output stays readable
 fn end_schedule(id: usize, data: &TaskData) {
     unschedule(id);
+
+    // One that waits for gives goes back for the next one
+    if data.takes_input() {
+        rewait_series(id, data);
+
+        return;
+    }
+
     data.finish_series();
+    close_finished_series(data);
     release(id);
 }
 
@@ -1555,6 +1845,8 @@ pub(crate) fn fail(id: usize) {
         wake(data);
     }
 
+    close_extras(data);
+
     // The reference the dead run was holding
     release(id);
 }
@@ -1576,10 +1868,12 @@ fn lost(data: &TaskData, state: TaskState) -> RuntimeError {
         // A bounded repeat that ran out has nothing more coming. A
         // repeat between runs, or a one shot, says somebody got there
         // first
-        TaskState::Taken => match !data.kind().repeats() && data.spent() {
-            true => RuntimeError::Finished,
-            false => RuntimeError::AlreadyTaken,
-        },
+        TaskState::Taken => {
+            match !data.kind().repeats() && data.spent() && !data.open_for_gives() {
+                true => RuntimeError::Finished,
+                false => RuntimeError::AlreadyTaken,
+            }
+        }
         TaskState::Cancelled => RuntimeError::Cancelled,
         TaskState::Failed => RuntimeError::TaskFailed,
 
@@ -1644,6 +1938,10 @@ pub(crate) fn join_first(ids: &[usize]) -> Option<usize> {
                 return Some(done);
             }
 
+            if help::help_once() {
+                continue;
+            }
+
             thread::sleep(SELECT_POLL);
         }
     };
@@ -1656,12 +1954,25 @@ pub(crate) fn join_first(ids: &[usize]) -> Option<usize> {
 
     // Looked at again after registering, to catch a task that
     // settled before its poke had anywhere to go
+    let mut patience = Patience::new();
+
     let winner = loop {
         if let Some(done) = settled_any(ids) {
             break Some(done);
         }
 
-        kqueue::wait_any(queue, SELECT_POLL);
+        // A worker racing tasks inside a task helps with queued work, the
+        // same as any other wait
+        if help::help_once() {
+            patience.helped();
+            continue;
+        }
+
+        let slice = patience
+            .slice()
+            .map_or(SELECT_POLL, |slice| slice.min(SELECT_POLL));
+
+        kqueue::wait_any(queue, slice);
     };
 
     for id in registered {
@@ -1714,6 +2025,274 @@ fn release(id: usize) {
     Executor::drop_listener(id);
 }
 
+/// The gate and mailbox a waiting task is given, and the setup its
+/// slot is made with
+///
+/// The start delay moves into the gate, since it is waited out after
+/// each give rather than after the spawn
+fn waiting_parts<T>(setup: TaskSetup) -> (Arc<Gate>, Arc<Mailbox<T>>, TaskSetup) {
+    let gate = Arc::new(Gate::new(
+        setup.gives,
+        setup.runs,
+        setup.deadline,
+        setup.start_delay,
+        setup.kind.repeats(),
+    ));
+
+    let mailbox = Arc::new(Mailbox::new(Arc::clone(&gate)));
+
+    let setup = TaskSetup {
+        start_delay: Duration::ZERO,
+        waits: true,
+        ..setup
+    };
+
+    (gate, mailbox, setup)
+}
+
+/// Why a waiting task takes no more gives
+fn closed(data: &TaskData) -> RuntimeError {
+    match data.state() {
+        TaskState::Cancelled => RuntimeError::Cancelled,
+        TaskState::Failed | TaskState::Free => RuntimeError::TaskFailed,
+        _ => RuntimeError::Finished,
+    }
+}
+
+/// Starts what a give owes a waiting task: a run, or a series
+///
+/// The series starts from the top, with its runs and deadline back
+/// to full, and waits out the delay first if there is one
+///
+/// ## Returns
+/// Whether anything will run it. On `false` the task has been
+/// written off and let go
+fn start_waiting(id: usize, data: &TaskData, gate: &Gate) -> bool {
+    data.reset_series(gate.runs(), gate.until());
+
+    let delay = gate.delay();
+
+    if delay != 0 {
+        data.set_start_delay(delay);
+    }
+
+    let started = match (data.kind().schedules(), delay) {
+        (true, 0) => start_series(id, data),
+        (false, 0) => queue(id, data.blocking()),
+        (_, delay) => wait_for(data, id, delay),
+    };
+
+    if started {
+        return true;
+    }
+
+    // Nothing will ever run it, so it takes no more gives
+    gate.finish();
+
+    if data.try_state(TaskState::Pending, TaskState::Failed)
+        || data.try_state(TaskState::Ready, TaskState::Failed)
+        || data.try_state(TaskState::Taken, TaskState::Failed)
+    {
+        wake(data);
+    }
+
+    finish_waiting(id, data);
+
+    false
+}
+
+/// Puts a waiting task back once its run, or its series, is over
+///
+/// The task is back in its slot before the gate is asked, so a give
+/// that starts the next run always finds it there
+fn rewait(id: usize, data: &TaskData, task: Box<Box<dyn ErasedTask>>) {
+    data.rearm(Box::into_raw(task).cast::<c_void>());
+
+    let Some(gate) = data.gate() else {
+        finish_waiting(id, data);
+        return;
+    };
+
+    match gate.after_run() {
+        AfterRun::Wait => {}
+
+        AfterRun::Again => {
+            let _ = start_waiting(id, data, gate);
+        }
+
+        AfterRun::Finish => finish_waiting(id, data),
+    }
+}
+
+/// Puts a waiting schedule back once its series is over
+///
+/// Its prototype stays in the slot for the next series
+fn rewait_series(id: usize, data: &TaskData) {
+    let Some(gate) = data.gate() else {
+        finish_waiting(id, data);
+        return;
+    };
+
+    match gate.after_run() {
+        AfterRun::Wait => {}
+
+        AfterRun::Again => {
+            let _ = start_waiting(id, data, gate);
+        }
+
+        AfterRun::Finish => finish_waiting(id, data),
+    }
+}
+
+/// Lets go of a waiting task that takes no more gives
+///
+/// Its state is left alone, so its last output stays readable
+fn finish_waiting(id: usize, data: &TaskData) {
+    close_extras(data);
+
+    let task = data.claim();
+
+    if !task.is_null() {
+        drop(unsafe { Box::from_raw(task.cast::<Box<dyn ErasedTask>>()) });
+    }
+
+    // What it held onto, like the tasks it received from, goes with it
+    if let Some(extras) = data.extras() {
+        extras.release_held();
+    }
+
+    data.finish_series();
+    release(id);
+}
+
+/// Lets go of a waiting task nothing is owed on, for a cancel or the
+/// last handle that could give going
+///
+/// A task with a run or series under way is let go when it ends
+fn let_go_waiting(id: usize, data: &TaskData) {
+    let Some(gate) = data.gate() else {
+        return;
+    };
+
+    if !gate.close_waiting() {
+        return;
+    }
+
+    // Never given anything, so nothing will ever be read from it
+    if data.try_state(TaskState::Pending, TaskState::Failed) {
+        wake(data);
+    }
+
+    finish_waiting(id, data);
+}
+
+/// Lets a waiting task go once no handle is left that could give to
+/// it
+pub(crate) fn abandon(id: usize) {
+    let Some(data) = slot(id) else {
+        return;
+    };
+
+    let_go_waiting(id, data);
+}
+
+/// Ends what a task's extras keep going, for every way a task ends
+///
+/// A waiting task takes no more gives, and a task whose outputs are
+/// forwarded hands the last one to anything that hasn't had it, then
+/// lets every registration go. A task with no extras pays one load
+#[inline(always)]
+fn close_extras(data: &TaskData) {
+    let Some(extras) = data.extras() else {
+        return;
+    };
+
+    if let Some(gate) = extras.gate() {
+        gate.finish();
+    }
+
+    extras.receivers().close(data);
+}
+
+/// Lets go of what a finished schedule's outputs are forwarded to,
+/// once none of its runs can publish again
+///
+/// A run that finishes after its schedule has finished is turned away
+/// unless nothing had landed yet, so once an output has landed nothing
+/// more ever will. A schedule still waiting on its first output is let
+/// go when that run publishes
+fn close_finished_series(data: &TaskData) {
+    if data.kind().repeats() || data.takes_input() || data.state() == TaskState::Pending {
+        return;
+    }
+
+    close_extras(data);
+}
+
+/// Counts an output about to become readable, for a task whose
+/// outputs are forwarded
+#[inline(always)]
+fn note_output(data: &TaskData) {
+    if let Some(extras) = data.extras() {
+        extras.receivers().note_output();
+    }
+}
+
+/// Hands a readable output to everything it is forwarded to
+#[inline(always)]
+fn forward_output(data: &TaskData) {
+    if let Some(extras) = data.extras() {
+        extras.receivers().walk(data);
+    }
+}
+
+/// Keeps `claims` until a task is finished, or drops them if the task
+/// has already gone
+fn hold(id: usize, claims: Vec<Box<dyn Send>>) {
+    match slot(id) {
+        Some(data) => data.extras_or_attach().hold(claims),
+        None => drop(claims),
+    }
+}
+
+/// Writes a task off because something it was owed could never
+/// reach it, like a copy into it that panicked
+///
+/// A task between gives is let go at once. One mid run is let go
+/// when the run ends
+pub(crate) fn write_off(id: usize) {
+    let Some(data) = slot(id) else {
+        return;
+    };
+
+    loop {
+        let state = data.state();
+
+        if matches!(
+            state,
+            TaskState::Cancelled | TaskState::Failed | TaskState::Free
+        ) {
+            break;
+        }
+
+        if data.try_state(state, TaskState::Failed) {
+            wake(data);
+            break;
+        }
+    }
+
+    let Some(gate) = data.gate() else {
+        return;
+    };
+
+    if gate.close_waiting() {
+        finish_waiting(id, data);
+        return;
+    }
+
+    gate.finish();
+}
+
 /// Keeps the manager alive, restarting it with the same
 /// backoff, window and limit as the `Reactor`
 ///
@@ -1751,7 +2330,9 @@ fn supervise(id: i32) {
         }
     });
 
-    *SUPERVISOR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(supervisor);
+    *SUPERVISOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(supervisor);
 }
 
 /// The loop the manager runs on, woken by its own tick
@@ -1881,6 +2462,7 @@ fn orphaned() {
             wake(data);
         }
 
+        close_extras(data);
         release(task);
     }
 }
@@ -1941,20 +2523,38 @@ fn shutdown(id: i32) {
     // True whether or not the pool survives
     orphaned();
 
-    // Every chance to carry on before anything is written off
+    // Every chance to carry on before anything is written off. Dead
+    // threads are swept first, since they still count as live
+    POOL.sweep_all();
     POOL.ensure_floor();
 
     if POOL.live() > 0 {
         return;
     }
 
+    write_off_pool();
+}
+
+/// Writes off everything the pool was going to run, once nothing is
+/// left that could
+///
+/// The pool is shut until a shutdown and an `init` start it again,
+/// since everything here is failed and its slot given back. Used when
+/// the manager gives up with no thread left, and when the pool can't
+/// bring a thread back on its own
+pub(crate) fn write_off_pool() {
     // Nothing is left running. The pool is shut until a shutdown
     // and an `init` start it again, since everything below is about
     // to be failed and its slot given back
     POOL.close();
     POOL.abandon();
 
-    for task in POOL.injector().drain() {
+    for task in POOL
+        .injector()
+        .drain()
+        .into_iter()
+        .chain(POOL.blocking().drain())
+    {
         fail(task);
     }
 
@@ -1980,6 +2580,8 @@ fn shutdown(id: i32) {
             wake(data);
         }
 
+        close_extras(data);
+
         // Safe to repeat, since `release` is idempotent
         release(task);
     }
@@ -1988,7 +2590,7 @@ fn shutdown(id: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Sleep, futures::task::sealed};
+    use crate::{Nothing, Sleep, futures::task::sealed};
     use std::time::Duration;
 
     /// A task that panics
@@ -1998,6 +2600,7 @@ mod tests {
 
     impl Task for Panics {
         type Output = usize;
+        type Input = Nothing;
 
         fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
             panic!("this task is meant to go down");
@@ -2012,6 +2615,7 @@ mod tests {
 
     impl Task for Liar {
         type Output = usize;
+        type Input = Nothing;
 
         fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
             thread::sleep(Duration::from_millis(200));
@@ -2080,7 +2684,9 @@ mod tests {
             "a stale park wake took the delay's own wake",
         );
 
-        handle.join().expect("the delayed task still runs at its own time");
+        handle
+            .join()
+            .expect("the delayed task still runs at its own time");
     }
 
     /// A task that panics fails alone, and everything queued
@@ -2091,9 +2697,13 @@ mod tests {
 
         let quick = || Sleep::sleep(Duration::from_micros(50));
 
-        let before: Vec<_> = (0..256).map(|_| crate::Runtime::task(quick()).spawn()).collect();
+        let before: Vec<_> = (0..256)
+            .map(|_| crate::Runtime::task(quick()).spawn())
+            .collect();
         let doomed = crate::Runtime::task(Panics).spawn();
-        let after: Vec<_> = (0..256).map(|_| crate::Runtime::task(quick()).spawn()).collect();
+        let after: Vec<_> = (0..256)
+            .map(|_| crate::Runtime::task(quick()).spawn())
+            .collect();
 
         assert_eq!(
             doomed.join(),

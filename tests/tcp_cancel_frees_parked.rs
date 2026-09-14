@@ -83,6 +83,10 @@ fn cancelling_parked_receives_frees_them() {
     for client in &clients {
         let got = Runtime::block(client.recv(16).timeout(PATIENCE));
 
-        assert_eq!(got, Ok(Vec::new()), "a cancelled receive let go of its socket");
+        assert_eq!(
+            got,
+            Ok(Vec::new()),
+            "a cancelled receive let go of its socket"
+        );
     }
 }

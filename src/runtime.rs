@@ -5,23 +5,31 @@
 
 use crate::{
     RuntimeError, Sleep,
-    constants::{DEAD_KQUEUE_ID, MAX_TASK_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
+    constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
     executor::{self, Executor},
     futures::task::Task,
     modules::{
-        builder::TaskBuilder, int_check::IntCheck, join_policy::JoinPolicy,
-        pool_stats::PoolStats, runtime_status::RuntimeStatus, task_handle::TaskHandle,
+        builder::TaskBuilder,
+        faults,
+        handle_kind::HandleKind,
+        help,
+        input::{self, Standalone},
+        int_check::IntCheck,
+        join_policy::JoinPolicy,
+        pool_stats::PoolStats,
+        runtime_status::RuntimeStatus,
+        task_handle::TaskHandle,
         worker_pool::POOL,
     },
     reactor::Reactor,
 };
 use std::{
-    time::Duration,
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
         mpsc,
     },
     thread,
+    time::Duration,
     time::Instant,
 };
 
@@ -86,13 +94,18 @@ impl Runtime {
     /// Blocking calls can't be cancelled
     /// by any means
     ///
+    /// A block inside a task running on a worker still lets that
+    /// worker run queued tasks while it waits, the same as a join
+    ///
     /// Runs on the calling thread, so it still works if the
     /// manager goes or the runtime is shut down
     #[inline(always)]
     pub fn block<F>(mut task: F) -> F::Output
     where
         F: Task,
+        F::Input: Standalone,
     {
+        task.give(input::standalone());
         task.prepare();
         let reactor_id = REACTOR_KQUEUE_ID.load(Ordering::Relaxed);
 
@@ -151,10 +164,11 @@ impl Runtime {
     /// One result per task, in the order they were given, each
     /// exactly what `join` would have given for that task, so
     /// one task failing doesn't hide the others
-    pub fn join_all<T, I>(handles: I) -> Vec<Result<T, RuntimeError>>
+    pub fn join_all<T, W, I>(handles: I) -> Vec<Result<T, RuntimeError>>
     where
-        I: IntoIterator<Item = TaskHandle<T>>,
+        I: IntoIterator<Item = TaskHandle<T, W>>,
         T: Clone,
+        W: HandleKind,
     {
         handles.into_iter().map(|handle| handle.join()).collect()
     }
@@ -188,14 +202,15 @@ impl Runtime {
     /// #### Note
     /// Every handle in the set has the same output type. Use
     /// `join_with_timeout` to put a deadline on a single task
-    pub fn join_first<T, I>(
+    pub fn join_first<T, W, I>(
         handles: I,
         policy: JoinPolicy,
-    ) -> (TaskHandle<T>, Option<Vec<TaskHandle<T>>>)
+    ) -> (TaskHandle<T, W>, Option<Vec<TaskHandle<T, W>>>)
     where
-        I: IntoIterator<Item = TaskHandle<T>>,
+        I: IntoIterator<Item = TaskHandle<T, W>>,
+        W: HandleKind,
     {
-        let mut handles: Vec<TaskHandle<T>> = handles.into_iter().collect();
+        let mut handles: Vec<TaskHandle<T, W>> = handles.into_iter().collect();
 
         let ids: Vec<usize> = handles.iter().map(|handle| handle.id()).collect();
 
@@ -204,7 +219,7 @@ impl Runtime {
             Some(winner) => winner,
             None => {
                 return (
-                    TaskHandle::new(MAX_TASK_ID),
+                    TaskHandle::detached(),
                     match policy {
                         JoinPolicy::PassBack => Some(Vec::new()),
                         _ => None,
@@ -214,10 +229,7 @@ impl Runtime {
         };
 
         // Removed rather than swapped, so the losers keep their order
-        let at = ids
-            .iter()
-            .position(|id| *id == winner)
-            .unwrap_or_default();
+        let at = ids.iter().position(|id| *id == winner).unwrap_or_default();
 
         let first = handles.remove(at);
 
@@ -270,6 +282,7 @@ impl Runtime {
             initialised && executor::shutting_down(),
             initialised && REACTOR_KQUEUE_ID.load(Ordering::Relaxed) != DEAD_KQUEUE_ID,
             initialised && executor::manager_alive(),
+            initialised && POOL.live() > 0 && POOL.dead() == 0,
         )
     }
 
@@ -337,6 +350,44 @@ impl Runtime {
     #[doc(hidden)]
     pub fn inject_manager_faults(count: u32) {
         executor::inject_manager_faults(count);
+    }
+
+    /// Makes the next `workers` workers and `sleep_threads` sleep
+    /// threads to reach a check come apart, as a fault in the runtime
+    /// itself would take them down
+    ///
+    /// ## Behaviour
+    /// A thread checks at the top of its loop, just before it runs a
+    /// task, and just before a task it helps with, so some die idle,
+    /// some holding a task and some part way through helping. Parked
+    /// threads are woken so the deaths land together
+    ///
+    /// #### Note
+    /// Only here for the crate's own tests
+    #[doc(hidden)]
+    pub fn inject_thread_deaths(workers: u32, sleep_threads: u32) {
+        faults::owe_thread_deaths(workers, sleep_threads);
+        POOL.wake_everyone();
+    }
+
+    /// Makes the next `count` attempts to start a thread fail, the way
+    /// the kernel refuses one
+    ///
+    /// #### Note
+    /// Only here for the crate's own tests
+    #[doc(hidden)]
+    pub fn inject_spawn_refusals(count: u32) {
+        faults::owe_spawn_refusals(count);
+    }
+
+    /// Limits how many runs deep a worker helps while a task it runs
+    /// waits, zero for not at all
+    ///
+    /// #### Note
+    /// Only here for the crate's own tests
+    #[doc(hidden)]
+    pub fn inject_help_depth(depth: usize) {
+        help::limit_depth(depth);
     }
 
     /// What the worker pool looks like right now

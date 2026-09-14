@@ -4,25 +4,17 @@
 //! The signals it waits on without ever sending are ones this test
 //! never sends, so taking them over can't affect the test run
 
-use atap::{Runtime, RuntimeError, Signal, SignalKind, TaskHandle};
+mod common;
+
+use atap::{Runtime, RuntimeError, Signal, SignalKind};
+use common::until_started;
 use std::{
-    process, thread,
+    process,
     time::{Duration, Instant},
 };
 
 /// How long a test waits for something that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(10);
-
-/// Waits until a spawned task is parked
-fn until_parked<T>(handle: &TaskHandle<T>) {
-    let deadline = Instant::now() + PATIENCE;
-
-    while handle.is_pending() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    thread::sleep(Duration::from_millis(20));
-}
 
 /// A wait gives up at its timeout, can be cancelled while parked,
 /// and two tasks on one signal both wake
@@ -38,20 +30,28 @@ fn a_wait_gives_up_when_asked_to() {
     let took = started.elapsed();
 
     assert_eq!(got, Err(RuntimeError::TimedOut));
-    assert!(took >= Duration::from_millis(100), "gave up early, after {took:?}");
-    assert!(took < Duration::from_secs(2), "gave up late, after {took:?}");
+    assert!(
+        took >= Duration::from_millis(100),
+        "gave up early, after {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(2),
+        "gave up late, after {took:?}"
+    );
 
     // A spawned one times out the same way, parked the whole time
     let spawned = Runtime::task(Signal::wait(quiet).timeout(Duration::from_millis(100))).spawn();
 
     assert_eq!(
-        spawned.take_with_timeout(PATIENCE).expect("the timeout settles it"),
+        spawned
+            .take_with_timeout(PATIENCE)
+            .expect("the timeout settles it"),
         Err(RuntimeError::TimedOut),
     );
 
     // Cancelling a parked wait settles it at once
     let waiting = Runtime::task(Signal::wait(SignalKind::Other(libc::SIGALRM))).spawn();
-    until_parked(&waiting);
+    until_started(&waiting, PATIENCE);
 
     assert!(waiting.is_running(), "the wait is parked");
 
@@ -69,8 +69,8 @@ fn a_wait_gives_up_when_asked_to() {
     let first = Runtime::task(Signal::wait(shared).timeout(PATIENCE)).spawn();
     let second = Runtime::task(Signal::wait(shared).timeout(PATIENCE)).spawn();
 
-    until_parked(&first);
-    until_parked(&second);
+    until_started(&first, PATIENCE);
+    until_started(&second, PATIENCE);
 
     Runtime::block(Signal::send(process::id() as libc::pid_t, shared)).expect("the signal must go");
 

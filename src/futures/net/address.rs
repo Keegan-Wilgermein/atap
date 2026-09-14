@@ -220,7 +220,11 @@ pub(crate) fn peer_of(fd: libc::c_int) -> Result<SocketAddr, RuntimeError> {
 /// Asks the kernel for one of a socket's two addresses
 fn name_of(
     fd: libc::c_int,
-    ask: unsafe extern "C" fn(libc::c_int, *mut libc::sockaddr, *mut libc::socklen_t) -> libc::c_int,
+    ask: unsafe extern "C" fn(
+        libc::c_int,
+        *mut libc::sockaddr,
+        *mut libc::socklen_t,
+    ) -> libc::c_int,
 ) -> Result<SocketAddr, RuntimeError> {
     let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
     let mut len = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;

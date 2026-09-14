@@ -7,9 +7,10 @@
 
 #![cfg(feature = "tls")]
 
-use atap::{
-    Runtime, RuntimeError, TaskHandle, Tcp, Tls, TlsConnectTask, TlsConnection, TlsListener,
-};
+mod common;
+
+use atap::{Runtime, RuntimeError, Tcp, Tls, TlsConnectTask, TlsConnection, TlsListener};
+use common::until_started;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,
@@ -57,7 +58,8 @@ fn certs(name: &str) -> Certs {
         KeyUsagePurpose::CrlSign,
         KeyUsagePurpose::DigitalSignature,
     ];
-    ca.distinguished_name.push(DnType::CommonName, "atap test authority");
+    ca.distinguished_name
+        .push(DnType::CommonName, "atap test authority");
     ca.not_before = now - Span::days(1);
     ca.not_after = now + Span::days(1);
 
@@ -69,7 +71,8 @@ fn certs(name: &str) -> Certs {
 
     leaf.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    leaf.distinguished_name.push(DnType::CommonName, "localhost");
+    leaf.distinguished_name
+        .push(DnType::CommonName, "localhost");
     leaf.not_before = now - Span::days(1);
     leaf.not_after = now + Span::days(1);
 
@@ -128,19 +131,6 @@ fn pair(name: &str) -> (TlsListener, TlsConnection, TlsConnection) {
     (listener, client, server)
 }
 
-/// Waits until a spawned task is parked or running, so what the
-/// test does next lands while it waits
-fn until_started<T>(handle: &TaskHandle<T>) {
-    let deadline = Instant::now() + PATIENCE;
-
-    while handle.is_pending() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    // Long enough for it to reach its park
-    thread::sleep(Duration::from_millis(20));
-}
-
 /// Bytes go both ways, encrypted, with the same send and receive
 /// tasks as TCP
 #[test]
@@ -163,8 +153,14 @@ fn a_delimited_tls_receive_leaves_the_rest() {
 
     Runtime::block(client.send(b"one\ntwo\nthree".as_slice())).unwrap();
 
-    assert_eq!(Runtime::block(server.recv_until(b"\n", 64)).unwrap(), b"one\n");
-    assert_eq!(Runtime::block(server.recv_until(b"\n", 64)).unwrap(), b"two\n");
+    assert_eq!(
+        Runtime::block(server.recv_until(b"\n", 64)).unwrap(),
+        b"one\n"
+    );
+    assert_eq!(
+        Runtime::block(server.recv_until(b"\n", 64)).unwrap(),
+        b"two\n"
+    );
     assert_eq!(Runtime::block(server.recv_exact(5)).unwrap(), b"three");
 }
 
@@ -179,7 +175,10 @@ fn a_clean_close_ends_a_read_to_the_end() {
     Runtime::block(client.send(b"this".as_slice())).unwrap();
     client.close();
 
-    assert_eq!(reading.take_with_timeout(PATIENCE).unwrap().unwrap(), b"all of this");
+    assert_eq!(
+        reading.take_with_timeout(PATIENCE).unwrap().unwrap(),
+        b"all of this"
+    );
 }
 
 /// Megabytes each way, far past what the session buffers, so the
@@ -194,7 +193,10 @@ fn a_large_tls_transfer_arrives_whole() {
         let reading = Runtime::task(to.recv_exact(data.len()).timeout(PATIENCE)).spawn();
         let sending = Runtime::task(from.send(data.clone()).timeout(PATIENCE)).spawn();
 
-        assert_eq!(sending.take_with_timeout(PATIENCE).unwrap().unwrap(), data.len());
+        assert_eq!(
+            sending.take_with_timeout(PATIENCE).unwrap().unwrap(),
+            data.len()
+        );
 
         let got = reading.take_with_timeout(PATIENCE).unwrap().unwrap();
         assert!(got == data, "every byte arrives, in order");
@@ -280,7 +282,10 @@ fn a_silent_server_times_the_handshake_out() {
     let took = started.elapsed();
 
     assert_eq!(got.map(|_| ()), Err(RuntimeError::TimedOut));
-    assert!(took < Duration::from_secs(5), "gave up late, after {took:?}");
+    assert!(
+        took < Duration::from_secs(5),
+        "gave up late, after {took:?}"
+    );
 }
 
 /// A server that answers with something other than TLS fails the
@@ -315,7 +320,7 @@ fn a_parked_tls_receive_can_be_cancelled() {
     let (_listener, _client, server) = pair("cancel");
 
     let reading = Runtime::task(server.recv(64)).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     assert!(reading.is_running(), "the receive is parked");
 

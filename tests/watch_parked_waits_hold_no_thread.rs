@@ -4,12 +4,11 @@
 mod common;
 
 use atap::{File, Runtime};
-use common::{cores, report};
+use common::{cores, raise_descriptor_limit, report};
 use std::{
     fs,
     path::PathBuf,
-    process,
-    thread,
+    process, thread,
     time::{Duration, Instant},
 };
 
@@ -18,22 +17,6 @@ const WAITING: usize = 300;
 
 /// How long the test waits for anything that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(20);
-
-/// Lets the process hold a descriptor per watch, since the
-/// default soft limit is 256
-fn raise_descriptor_limit() {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-
-    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
-
-    let wanted = (WAITING as libc::rlim_t) * 2 + 256;
-    limit.rlim_cur = limit.rlim_cur.max(wanted.min(limit.rlim_max));
-
-    unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
-}
 
 /// A directory of watchable files that cleans itself up
 struct TestDir(PathBuf);

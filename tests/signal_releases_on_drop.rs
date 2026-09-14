@@ -4,35 +4,17 @@
 //! Nothing here sends these signals, only watches them, so a
 //! released one can't end the test run
 
-use atap::{Runtime, SigReleasePolicy, Signal, SignalKind, TaskHandle};
+mod common;
+
+use atap::{Runtime, SigReleasePolicy, Signal, SignalKind};
+use common::{taken_over, until_started};
 use std::{
-    mem, ptr, thread,
+    thread,
     time::{Duration, Instant},
 };
 
 /// How long a test waits for something that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(10);
-
-/// Whether anything but the signal's own behaviour is installed
-fn taken_over(kind: SignalKind) -> bool {
-    let mut action: libc::sigaction = unsafe { mem::zeroed() };
-
-    unsafe { libc::sigaction(kind.number(), ptr::null(), &mut action) };
-
-    action.sa_sigaction != libc::SIG_DFL
-}
-
-/// Waits until a spawned task is parked, which is also when it has
-/// taken its signal over
-fn until_parked<T>(handle: &TaskHandle<T>) {
-    let deadline = Instant::now() + PATIENCE;
-
-    while handle.is_pending() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    thread::sleep(Duration::from_millis(20));
-}
 
 /// `OnDrop` hands a signal back once nothing watches it, `Hold`
 /// keeps it, and a second watcher keeps it while it lives
@@ -61,10 +43,13 @@ fn a_signal_goes_back_when_its_last_watcher_does() {
     )
     .spawn();
 
-    until_parked(&first);
-    until_parked(&second);
+    until_started(&first, PATIENCE);
+    until_started(&second, PATIENCE);
 
-    assert!(taken_over(on_drop), "watching takes it over whatever the policy");
+    assert!(
+        taken_over(on_drop),
+        "watching takes it over whatever the policy"
+    );
 
     // The first gives up at its timeout and is let go of entirely
     let _ = first.take_with_timeout(PATIENCE);
@@ -91,7 +76,7 @@ fn a_signal_goes_back_when_its_last_watcher_does() {
 
     // Held is the default, and outlives its task
     let keeper = Runtime::task(Signal::wait(held).timeout(Duration::from_millis(100))).spawn();
-    until_parked(&keeper);
+    until_started(&keeper, PATIENCE);
 
     let _ = keeper.take_with_timeout(PATIENCE);
     thread::sleep(Duration::from_millis(50));

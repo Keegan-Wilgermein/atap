@@ -15,11 +15,11 @@ use crate::{
     futures::{
         net::{
             address::Target,
+            exchange::{self, Stage},
             step::{Clock, Progress, settle},
-            stream::{RecvTask, SendTask},
         },
         task::{
-            Task,
+            Nothing, Task,
             sealed::{self, Step},
         },
         tcp::{
@@ -46,9 +46,8 @@ use std::{
 // Anything larger costs a page mapping per task
 const _: () = assert!(mem::size_of::<Result<TlsConnection, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<TlsListener, RuntimeError>>() <= INLINE_PAYLOAD);
-const _: () = assert!(
-    mem::size_of::<Result<(TlsConnection, SocketAddr), RuntimeError>>() <= INLINE_PAYLOAD
-);
+const _: () =
+    assert!(mem::size_of::<Result<(TlsConnection, SocketAddr), RuntimeError>>() <= INLINE_PAYLOAD);
 
 /// The name a server's certificate is checked against
 ///
@@ -420,20 +419,6 @@ pub struct TlsRequestTask {
     stage: Progress<Stage>,
 }
 
-/// Where a request is
-#[derive(Default)]
-enum Stage {
-    /// Opening the connection and running the handshake
-    #[default]
-    Connecting,
-
-    /// Sending the request
-    Sending(SendTask),
-
-    /// Reading the answer
-    Reading(RecvTask),
-}
-
 impl TlsRequestTask {
     /// Sends `data` to `target` and reads what comes back
     pub(crate) fn new(target: Target, data: Arc<[u8]>) -> Self {
@@ -483,33 +468,14 @@ impl TlsRequestTask {
 
     /// Takes the exchange as far as it can go without waiting
     fn advance(&mut self, reactor_id: i32, task_id: usize) -> Step<Result<Vec<u8>, RuntimeError>> {
-        loop {
-            match &mut self.stage.0 {
-                Stage::Connecting => match self.connect.step(reactor_id, task_id) {
-                    Step::Done(Ok(conn)) => {
-                        let send = conn.send(self.data.clone()).timed(self.clock);
-
-                        self.stage.0 = Stage::Sending(send);
-                    }
-
-                    Step::Done(Err(error)) => return Step::Done(Err(error)),
-                    Step::Park(park) => return Step::Park(park),
-                },
-
-                Stage::Sending(send) => match send.step(reactor_id, task_id) {
-                    Step::Done(Ok(_)) => {
-                        let read = RecvTask::to_end(send.source().clone()).timed(self.clock);
-
-                        self.stage.0 = Stage::Reading(read);
-                    }
-
-                    Step::Done(Err(error)) => return Step::Done(Err(error)),
-                    Step::Park(park) => return Step::Park(park),
-                },
-
-                Stage::Reading(read) => return read.step(reactor_id, task_id),
-            }
-        }
+        exchange::advance(
+            &mut self.connect,
+            &mut self.stage.0,
+            &self.data,
+            self.clock,
+            reactor_id,
+            task_id,
+        )
     }
 }
 
@@ -520,6 +486,7 @@ impl sealed::Sealed for TlsRequestTask {}
 
 impl Task for TlsConnectTask {
     type Output = Result<TlsConnection, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -547,6 +514,7 @@ impl Task for TlsConnectTask {
 
 impl Task for TlsListenTask {
     type Output = Result<TlsListener, RuntimeError>;
+    type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -565,6 +533,7 @@ impl Task for TlsListenTask {
 
 impl Task for TlsAcceptTask {
     type Output = Result<(TlsConnection, SocketAddr), RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -584,6 +553,7 @@ impl Task for TlsAcceptTask {
 
 impl Task for TlsRequestTask {
     type Output = Result<Vec<u8>, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -619,10 +589,16 @@ mod tests {
         assert_eq!(named, ServerName::try_from("example.com").unwrap());
 
         let v4 = server_name(&"127.0.0.1:443".target(), None).unwrap();
-        assert_eq!(v4, ServerName::IpAddress("127.0.0.1".parse::<IpAddr>().unwrap().into()));
+        assert_eq!(
+            v4,
+            ServerName::IpAddress("127.0.0.1".parse::<IpAddr>().unwrap().into())
+        );
 
         let v6 = server_name(&"[::1]:443".target(), None).unwrap();
-        assert_eq!(v6, ServerName::IpAddress("::1".parse::<IpAddr>().unwrap().into()));
+        assert_eq!(
+            v6,
+            ServerName::IpAddress("::1".parse::<IpAddr>().unwrap().into())
+        );
 
         let given = server_name(&"127.0.0.1:443".target(), Some("localhost")).unwrap();
         assert_eq!(given, ServerName::try_from("localhost").unwrap());

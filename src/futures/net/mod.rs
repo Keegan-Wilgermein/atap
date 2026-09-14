@@ -5,6 +5,7 @@
 
 pub mod address;
 pub(crate) mod datagram;
+pub(crate) mod exchange;
 pub(crate) mod socket;
 pub(crate) mod step;
 pub mod stream;

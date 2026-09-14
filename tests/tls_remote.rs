@@ -6,12 +6,11 @@
 
 #![cfg(feature = "tls")]
 
-use atap::{Runtime, Tls};
-use std::time::Duration;
+mod common;
 
-/// The site, and the file on it
-const HOST: &str = "www.req-audio.com";
-const PATH: &str = "/version.json";
+use atap::{Runtime, Tls};
+use common::{HOST, PATH};
+use std::time::Duration;
 
 /// Asks the site for its version file over HTTPS and prints what
 /// comes back
@@ -44,5 +43,8 @@ fn the_site_answers_with_its_version_over_tls() {
         "expected a 200, got {status:?}",
     );
 
-    assert!(body.contains("\"version\""), "the version file carries a version, got {body:?}");
+    assert!(
+        body.contains("\"version\""),
+        "the version file carries a version, got {body:?}"
+    );
 }

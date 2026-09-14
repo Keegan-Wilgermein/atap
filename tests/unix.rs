@@ -3,13 +3,11 @@
 //! Every socket file lives in `/tmp`, named for the process and
 //! the test, so tests running at once never share one
 
-use atap::{Runtime, RuntimeError, TaskHandle, Unix, UnixConnection, UnixListener};
-use std::{
-    fs,
-    path::PathBuf,
-    process, thread,
-    time::{Duration, Instant},
-};
+mod common;
+
+use atap::{Runtime, RuntimeError, Unix, UnixConnection, UnixListener};
+use common::until_started;
+use std::{fs, path::PathBuf, process, time::Duration};
 
 /// How long a test waits for something that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -47,19 +45,6 @@ fn pair(name: &str) -> (UnixListener, UnixConnection, UnixConnection) {
     (listener, client, server)
 }
 
-/// Waits until a spawned task is parked or running, so what the
-/// test does next lands while it waits
-fn until_started<T>(handle: &TaskHandle<T>) {
-    let deadline = Instant::now() + PATIENCE;
-
-    while handle.is_pending() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    // Long enough for it to reach its park
-    thread::sleep(Duration::from_millis(20));
-}
-
 /// Bytes go both ways over a Unix connection, with the same send
 /// and receive tasks as TCP
 #[test]
@@ -85,8 +70,14 @@ fn a_unix_connection_reads_like_a_tcp_one() {
     Runtime::block(client.send(b"one\ntwo\nrest".as_slice())).unwrap();
     client.close();
 
-    assert_eq!(Runtime::block(server.recv_until(b"\n", 64)).unwrap(), b"one\n");
-    assert_eq!(Runtime::block(server.recv_until(b"\n", 64)).unwrap(), b"two\n");
+    assert_eq!(
+        Runtime::block(server.recv_until(b"\n", 64)).unwrap(),
+        b"one\n"
+    );
+    assert_eq!(
+        Runtime::block(server.recv_until(b"\n", 64)).unwrap(),
+        b"two\n"
+    );
     assert_eq!(Runtime::block(server.recv_to_end()).unwrap(), b"rest");
 }
 
@@ -97,7 +88,7 @@ fn a_spawned_accept_waits_for_a_connection() {
     let listener = Runtime::block(Unix::listen(&path)).unwrap();
 
     let accepting = Runtime::task(listener.accept()).spawn();
-    until_started(&accepting);
+    until_started(&accepting, PATIENCE);
 
     assert!(
         accepting.is_running(),
@@ -119,7 +110,9 @@ fn a_unix_receive_times_out() {
     let handle = Runtime::task(server.recv(64).timeout(Duration::from_millis(100))).spawn();
 
     assert_eq!(
-        handle.take_with_timeout(PATIENCE).expect("the timeout must settle it"),
+        handle
+            .take_with_timeout(PATIENCE)
+            .expect("the timeout must settle it"),
         Err(RuntimeError::TimedOut),
     );
 }
@@ -205,7 +198,10 @@ fn a_unix_datagram_arrives_with_its_sender() {
     let a = Runtime::block(Unix::bind(sock("dgram-a"))).unwrap();
     let b = Runtime::block(Unix::bind(sock("dgram-b"))).unwrap();
 
-    assert_eq!(Runtime::block(a.send_to(b.path(), b"hi".as_slice())).unwrap(), 2);
+    assert_eq!(
+        Runtime::block(a.send_to(b.path(), b"hi".as_slice())).unwrap(),
+        2
+    );
 
     let (data, from) = Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap();
 
@@ -222,8 +218,14 @@ fn unix_datagrams_keep_their_boundaries() {
     Runtime::block(a.send_to(b.path(), b"one".as_slice())).unwrap();
     Runtime::block(a.send_to(b.path(), b"two".as_slice())).unwrap();
 
-    assert_eq!(Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0, b"one");
-    assert_eq!(Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0, b"two");
+    assert_eq!(
+        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
+        b"one"
+    );
+    assert_eq!(
+        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
+        b"two"
+    );
 }
 
 /// A spawned datagram receive parks until one comes
@@ -233,13 +235,16 @@ fn a_spawned_datagram_receive_waits() {
     let b = Runtime::block(Unix::bind(sock("wait-b"))).unwrap();
 
     let reading = Runtime::task(b.recv_from()).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     assert!(reading.is_running(), "the receive is parked");
 
     Runtime::block(a.send_to(b.path(), b"late".as_slice())).unwrap();
 
-    assert_eq!(reading.take_with_timeout(PATIENCE).unwrap().unwrap().0, b"late");
+    assert_eq!(
+        reading.take_with_timeout(PATIENCE).unwrap().unwrap().0,
+        b"late"
+    );
 }
 
 /// A datagram receive with nothing coming gives up at its

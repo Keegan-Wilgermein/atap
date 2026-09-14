@@ -15,7 +15,7 @@ use crate::{
             signal::{SigReleasePolicy, SignalKind},
         },
         task::{
-            Task,
+            Nothing, Task,
             sealed::{self, Park, Step},
         },
     },
@@ -203,6 +203,7 @@ impl sealed::Sealed for SendSignalTask {}
 
 impl Task for SignalTask {
     type Output = Result<u32, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -222,6 +223,7 @@ impl Task for SignalTask {
 
 impl Task for SendSignalTask {
     type Output = Result<(), RuntimeError>;
+    type Input = Nothing;
 
     /// One syscall, so this is the whole task
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {

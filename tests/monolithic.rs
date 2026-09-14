@@ -5,7 +5,7 @@
 
 mod common;
 
-use atap::{File, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{Compute, File, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode};
 use common::{report, take_a_run};
 use std::{
     fs,
@@ -50,6 +50,18 @@ fn monolithic() {
     println!("\n== a race picks one and settles the rest ==");
     join_first_settles_every_loser();
 
+    println!("\n== a waiting task holds one slot through its gives ==");
+    waiting_holds_one_slot();
+
+    println!("\n== receives and give_to let go of everything they hold ==");
+    receives_let_go();
+
+    println!("\n== recursion gives every slot back ==");
+    recursion_gives_slots_back();
+
+    println!("\n== threads killed mid recursion give every slot back ==");
+    dead_threads_give_slots_back();
+
     println!();
     report("finished");
 }
@@ -67,7 +79,10 @@ fn join_first_settles_every_loser() {
         let quick = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).spawn();
 
         let slow: Vec<_> = (0..width)
-            .map(|_| Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed)).spawn())
+            .map(|_| {
+                Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed))
+                    .spawn()
+            })
             .collect();
 
         let policy = match race % 3 {
@@ -109,7 +124,13 @@ fn join_first_settles_every_loser() {
 
     let after = Runtime::workers().live();
 
-    println!("  {} races of {}, live {} -> {}", races, width + 1, base, after);
+    println!(
+        "  {} races of {}, live {} -> {}",
+        races,
+        width + 1,
+        base,
+        after
+    );
 
     assert!(
         after <= base + 8,
@@ -252,7 +273,10 @@ fn survives_losing_its_manager() {
     report("manager back");
 
     // Only the manager reads this timer
-    let timed = Runtime::task(quick()).repeat().every(Duration::from_millis(20)).spawn();
+    let timed = Runtime::task(quick())
+        .repeat()
+        .every(Duration::from_millis(20))
+        .spawn();
 
     for _ in 0..3 {
         take_a_run(&timed);
@@ -289,7 +313,11 @@ fn parks_outlive_the_manager() {
 
     let paths: Vec<PathBuf> = (0..watching)
         .map(|index| {
-            let path = root.join(format!("monolithic-park-{}-{}.txt", std::process::id(), index));
+            let path = root.join(format!(
+                "monolithic-park-{}-{}.txt",
+                std::process::id(),
+                index
+            ));
 
             fs::write(&path, b"before").expect("could not write a watched file");
 
@@ -315,7 +343,11 @@ fn parks_outlive_the_manager() {
 
     let parked = handles.iter().filter(|handle| handle.is_running()).count();
 
-    assert_eq!(parked, watching, "only {} of {} watches parked", parked, watching);
+    assert_eq!(
+        parked, watching,
+        "only {} of {} watches parked",
+        parked, watching
+    );
 
     Runtime::inject_manager_faults(2);
 
@@ -331,7 +363,8 @@ fn parks_outlive_the_manager() {
             .open(path)
             .expect("could not touch a watched file");
 
-        file.write_all(b" and after").expect("could not touch a watched file");
+        file.write_all(b" and after")
+            .expect("could not touch a watched file");
     }
 
     let deadline = Instant::now() + patience;
@@ -341,7 +374,11 @@ fn parks_outlive_the_manager() {
         let left = deadline.saturating_duration_since(Instant::now());
 
         if let Ok(Ok(change)) = handle.take_with_timeout(left) {
-            assert!(change.written(), "a watch woke reporting {:?} rather than a write", change);
+            assert!(
+                change.written(),
+                "a watch woke reporting {:?} rather than a write",
+                change
+            );
 
             woke += 1;
         }
@@ -351,10 +388,14 @@ fn parks_outlive_the_manager() {
         let _ = fs::remove_file(path);
     }
 
-    println!("{} watches parked through two manager deaths, {} woke afterwards", parked, woke);
+    println!(
+        "{} watches parked through two manager deaths, {} woke afterwards",
+        parked, woke
+    );
 
     assert_eq!(
-        woke, watching,
+        woke,
+        watching,
         "{} of {} watches were left waiting on a queue that had gone",
         watching - woke,
         watching,
@@ -365,7 +406,9 @@ fn parks_outlive_the_manager() {
 fn repeating_holds_one_slot() {
     let runs = 20_000;
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1))).repeat().spawn();
+    let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1)))
+        .repeat()
+        .spawn();
 
     // The first one, so the series is under way before anything
     // is measured
@@ -387,7 +430,11 @@ fn repeating_holds_one_slot() {
 
     println!(
         "{} runs through one handle: {} -> {} slots, {} -> {} live",
-        runs, before.peak_slots(), after.peak_slots(), before.live(), after.live(),
+        runs,
+        before.peak_slots(),
+        after.peak_slots(),
+        before.live(),
+        after.live(),
     );
 
     // A slot per run would be twenty thousand of them
@@ -401,9 +448,12 @@ fn repeating_holds_one_slot() {
 
     // Held for the life of the series and given back once
     assert_eq!(
-        after.live(), before.live(),
+        after.live(),
+        before.live(),
         "{} runs took the live count from {} to {}",
-        runs, before.live(), after.live(),
+        runs,
+        before.live(),
+        after.live(),
     );
 }
 
@@ -420,7 +470,11 @@ fn every_gives_its_run_slots_back() {
 
     // Instant runs on a short period, so slots come and go fast
     let handles: Vec<_> = (0..schedules)
-        .map(|_| Runtime::task(Sleep::sleep(Duration::from_nanos(1))).at_rate(interval).spawn())
+        .map(|_| {
+            Runtime::task(Sleep::sleep(Duration::from_nanos(1)))
+                .at_rate(interval)
+                .spawn()
+        })
         .collect();
 
     // Counted, so a schedule that quietly stopped fails
@@ -451,7 +505,8 @@ fn every_gives_its_run_slots_back() {
     // have hundreds of runs outstanding when it is cancelled
     let settling = Instant::now();
 
-    while Runtime::workers().live() > before.live() && settling.elapsed() < Duration::from_secs(10) {
+    while Runtime::workers().live() > before.live() && settling.elapsed() < Duration::from_secs(10)
+    {
         thread::sleep(Duration::from_millis(10));
     }
 
@@ -685,7 +740,12 @@ fn survives_every_ending_at_once() {
     // The originals last, so nothing was freed underneath them
     for (at, on) in spawned {
         if let Ok(slept) = on.join() {
-            assert!(slept >= at, "the original handle read {:?} for {:?}", slept, at);
+            assert!(
+                slept >= at,
+                "the original handle read {:?} for {:?}",
+                slept,
+                at
+            );
         }
     }
 
@@ -719,7 +779,9 @@ fn keeps_priority_under_a_deep_queue() {
     report("queue filled");
 
     let asked = Instant::now();
-    let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(20))).priority(255).spawn();
+    let urgent = Runtime::task(Sleep::sleep(Duration::from_micros(20)))
+        .priority(255)
+        .spawn();
 
     // Blocked on rather than polled for, so this thread's own
     // scheduling isn't what gets measured
@@ -744,5 +806,300 @@ fn keeps_priority_under_a_deep_queue() {
         "the top priority task waited {:?} of the batch's {:?}",
         waited,
         total,
+    );
+}
+
+/// A waiting task keeps one slot however many gives it takes
+fn waiting_holds_one_slot() {
+    let gives = 20_000u64;
+    let base = settled_live();
+
+    let doubler = Runtime::task(Compute::compute(|value: u64| value * 2))
+        .wait_for::<u64>()
+        .spawn();
+
+    let mut peak = 0;
+
+    for value in 0..gives {
+        doubler.give(value).expect("a give was refused");
+
+        if value % 1_000 == 0 {
+            peak = peak.max(Runtime::workers().live());
+        }
+    }
+
+    // A burst leaves only the newest value, so the last run has it
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    let last = loop {
+        match doubler.maybe_join() {
+            Ok(doubled) if doubled == (gives - 1) * 2 => break doubled,
+            _ if Instant::now() < deadline => thread::sleep(Duration::from_millis(1)),
+            other => panic!("the last give never ran: {:?}", other),
+        }
+    };
+
+    // The only handle that could give, so it finishes
+    drop(doubler);
+
+    let after = settled_live();
+
+    report("gives done");
+
+    println!(
+        "  {} gives through one waiting task, last run {}, live {} -> peak {} -> {}",
+        gives, last, base, peak, after
+    );
+
+    assert!(
+        peak <= base + 4,
+        "{} gives took the live count from {} to {}",
+        gives,
+        base,
+        peak
+    );
+
+    assert!(
+        after <= base,
+        "a finished waiting task left the live count at {} against {}",
+        after,
+        base
+    );
+}
+
+/// Receives and give_to chains let go of every task they hold once they
+/// finish
+fn receives_let_go() {
+    let pairs = 2_000u64;
+    let chains = 200u64;
+    let base = settled_live();
+
+    let receivers: Vec<_> = (0..pairs)
+        .map(|index| {
+            let a = Runtime::task(Compute::compute(move |()| index)).spawn();
+            let b = Runtime::task(Compute::compute(move |()| index * 10)).spawn();
+
+            Runtime::task(Compute::compute(|(a, b): (u64, u64)| a + b))
+                .receive((a, b))
+                .count(1)
+                .spawn()
+        })
+        .collect();
+
+    for (index, handle) in receivers.into_iter().enumerate() {
+        assert_eq!(
+            handle.join(),
+            Ok(index as u64 * 11),
+            "a receive came back with somebody else's pair"
+        );
+    }
+
+    // Sources handing their outputs to sinks that wait for them
+    let (sent, arrived) = std::sync::mpsc::channel();
+
+    let sinks: Vec<_> = (0..chains)
+        .map(|_| {
+            let sent = sent.clone();
+
+            Runtime::task(Compute::compute(move |value: u64| {
+                let _ = sent.send(value);
+            }))
+            .wait_for::<u64>()
+            .spawn()
+        })
+        .collect();
+
+    drop(sent);
+
+    let sources: Vec<_> = sinks
+        .iter()
+        .enumerate()
+        .map(|(index, sink)| {
+            Runtime::task(Compute::compute(move |()| index as u64))
+                .give_to(sink)
+                .spawn()
+        })
+        .collect();
+
+    let mut seen = vec![false; chains as usize];
+
+    for _ in 0..chains {
+        let value = arrived
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a give_to never arrived");
+
+        seen[value as usize] = true;
+    }
+
+    assert!(
+        seen.iter().all(|seen| *seen),
+        "a source's output never reached its sink"
+    );
+
+    drop(sources);
+    drop(sinks);
+
+    // Every sink finishes once nothing can give to it, dropping its sender
+    assert!(
+        matches!(
+            arrived.recv_timeout(Duration::from_secs(10)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ),
+        "a sink ran again or never finished",
+    );
+
+    let after = settled_live();
+
+    report("receives done");
+
+    println!(
+        "  {} gathered pairs and {} give_to chains, live {} -> {}",
+        pairs, chains, base, after
+    );
+
+    assert!(
+        after <= base + 8,
+        "receives and give_to left the live count at {} against {}",
+        after,
+        base,
+    );
+}
+
+/// Sums a range with a task per half, down to chunks of 64
+fn split(from: u64, to: u64) -> Result<u64, RuntimeError> {
+    if to - from <= 64 {
+        return Ok((from..to).sum());
+    }
+
+    let middle = from + (to - from) / 2;
+
+    let left = Runtime::task(Compute::compute(move |()| split(from, middle))).spawn();
+    let right = split(middle, to)?;
+
+    Ok(left.join().and_then(|inner| inner)? + right)
+}
+
+/// Recursion inside computes gives every slot it used back
+fn recursion_gives_slots_back() {
+    let roots = 16u64;
+    let width = 200_000u64;
+
+    let base = settled_live();
+    let before = Runtime::workers();
+    let started = Instant::now();
+
+    let handles: Vec<_> = (0..roots)
+        .map(|root| Runtime::task(Compute::compute(move |()| split(root, root + width))).spawn())
+        .collect();
+
+    for (root, handle) in handles.into_iter().enumerate() {
+        let root = root as u64;
+
+        assert_eq!(
+            handle.join(),
+            Ok(Ok((root..root + width).sum::<u64>())),
+            "split {} came back wrong",
+            root,
+        );
+    }
+
+    let took = started.elapsed();
+    let after = settled_live();
+    let stats = Runtime::workers();
+
+    report("recursion done");
+
+    println!(
+        "  {} splits of {} into tasks of 64 in {:?}, live {} -> {}, slots {} -> {}, peak {} workers",
+        roots,
+        width,
+        took,
+        base,
+        after,
+        before.peak_slots(),
+        stats.peak_slots(),
+        stats.peak_workers(),
+    );
+
+    assert!(
+        after <= base + 8,
+        "recursion left the live count at {} against {}",
+        after,
+        base,
+    );
+}
+
+/// Workers killed part way through recursion give every slot back
+fn dead_threads_give_slots_back() {
+    let roots = 16u64;
+    let width = 400_000u64;
+
+    let base = settled_live();
+
+    let handles: Vec<_> = (0..roots)
+        .map(|_| Runtime::task(Compute::compute(move |()| split(0, width))).spawn())
+        .collect();
+
+    // Well under way before anything dies
+    thread::sleep(Duration::from_millis(5));
+
+    let workers = Runtime::workers().len() as u32;
+
+    Runtime::inject_thread_deaths((workers / 2).max(1), 0);
+
+    let mut whole = 0;
+    let mut failed = 0;
+
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(sum)) => {
+                assert_eq!(
+                    sum,
+                    (0..width).sum::<u64>(),
+                    "a split that survived came back wrong"
+                );
+                whole += 1;
+            }
+
+            Ok(Err(RuntimeError::TaskFailed)) | Err(RuntimeError::TaskFailed) => failed += 1,
+
+            other => panic!("a split came back {:?}", other.map(|inner| inner.ok())),
+        }
+    }
+
+    Runtime::inject_thread_deaths(0, 0);
+
+    let waited = Instant::now();
+
+    while Runtime::workers().recovering() > 0 && waited.elapsed() < Duration::from_secs(10) {
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let after = settled_live();
+
+    report("deaths recovered");
+
+    println!(
+        "  {} of {} workers killed mid recursion: {} whole, {} failed, {} deaths so far, live {} -> {}",
+        (workers / 2).max(1),
+        workers,
+        whole,
+        failed,
+        Runtime::workers().deaths(),
+        base,
+        after,
+    );
+
+    assert_eq!(
+        Runtime::workers().recovering(),
+        0,
+        "killed workers were never recovered"
+    );
+
+    assert!(
+        after <= base + 8,
+        "threads killed mid recursion left the live count at {} against {}",
+        after,
+        base,
     );
 }

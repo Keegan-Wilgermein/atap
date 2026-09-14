@@ -327,12 +327,7 @@ impl TaskTable {
 
             if self
                 .free
-                .compare_exchange_weak(
-                    head,
-                    tag << TAG_SHIFT,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange_weak(head, tag << TAG_SHIFT, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
                 break index;

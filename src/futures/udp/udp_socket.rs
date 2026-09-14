@@ -1,9 +1,12 @@
 //! # UDP socket
 //! A bound UDP socket, and the tasks it starts
 
-use crate::futures::{
-    net::{address::NetAddress, socket::Fd},
-    udp::udp_task::{RecvFromTask, SendToTask},
+use crate::{
+    futures::{
+        net::address::NetAddress,
+        udp::udp_task::{RecvFromTask, SendToTask},
+    },
+    modules::fd::Fd,
 };
 use std::{fmt, net::SocketAddr, sync::Arc};
 

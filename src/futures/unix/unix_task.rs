@@ -11,11 +11,11 @@ use crate::{
     futures::{
         net::{
             datagram::{recv_datagram, send_datagram},
-            socket::{Fd, begin_connect, configure, finished_connecting, open},
+            socket::{begin_connect, configure, finished_connecting, open},
             step::{Clock, Progress, settle},
         },
         task::{
-            Task,
+            Nothing, Task,
             sealed::{self, Step},
         },
         unix::{
@@ -23,7 +23,7 @@ use crate::{
             unix_socket::{UnixConnection, UnixDatagram, UnixListener},
         },
     },
-    modules::{int_check::IntCheck, park},
+    modules::{fd::Fd, int_check::IntCheck, park},
 };
 use std::{
     mem,
@@ -37,9 +37,8 @@ use std::{
 const _: () = assert!(mem::size_of::<Result<UnixConnection, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<UnixListener, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<UnixDatagram, RuntimeError>>() <= INLINE_PAYLOAD);
-const _: () = assert!(
-    mem::size_of::<Result<(Vec<u8>, Option<PathBuf>), RuntimeError>>() <= INLINE_PAYLOAD
-);
+const _: () =
+    assert!(mem::size_of::<Result<(Vec<u8>, Option<PathBuf>), RuntimeError>>() <= INLINE_PAYLOAD);
 
 /// Binds a fresh socket of `kind` to `path`
 ///
@@ -414,6 +413,7 @@ impl sealed::Sealed for UnixRecvFromTask {}
 
 impl Task for UnixConnectTask {
     type Output = Result<UnixConnection, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -432,6 +432,7 @@ impl Task for UnixConnectTask {
 
 impl Task for UnixListenTask {
     type Output = Result<UnixListener, RuntimeError>;
+    type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
@@ -445,6 +446,7 @@ impl Task for UnixListenTask {
 
 impl Task for UnixAcceptTask {
     type Output = Result<UnixConnection, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -462,6 +464,7 @@ impl Task for UnixAcceptTask {
 
 impl Task for UnixBindTask {
     type Output = Result<UnixDatagram, RuntimeError>;
+    type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
@@ -475,6 +478,7 @@ impl Task for UnixBindTask {
 
 impl Task for UnixSendToTask {
     type Output = Result<usize, RuntimeError>;
+    type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
@@ -488,6 +492,7 @@ impl Task for UnixSendToTask {
 
 impl Task for UnixRecvFromTask {
     type Output = Result<(Vec<u8>, Option<PathBuf>), RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {

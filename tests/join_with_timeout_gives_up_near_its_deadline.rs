@@ -8,7 +8,8 @@ fn join_with_timeout_gives_up_near_its_deadline() {
     Runtime::init();
 
     let timeout = Duration::from_millis(100);
-    let handle = Runtime::task(Sleep::sleep(Duration::from_secs(5)).mode(SleepMode::Relaxed)).spawn();
+    let handle =
+        Runtime::task(Sleep::sleep(Duration::from_secs(5)).mode(SleepMode::Relaxed)).spawn();
 
     let started = Instant::now();
     let result = handle.join_with_timeout(timeout);

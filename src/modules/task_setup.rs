@@ -44,6 +44,14 @@ pub(crate) struct TaskSetup {
     ///
     /// Filled in at spawn from `Task::blocking`
     pub(crate) blocking: bool,
+
+    /// Gives a task spawned with `wait_for` takes before it is
+    /// finished, or `u32::MAX` for no limit
+    pub(crate) gives: u32,
+
+    /// Whether the task waits for a give before each run, or each
+    /// series
+    pub(crate) waits: bool,
 }
 
 impl Default for TaskSetup {
@@ -57,6 +65,8 @@ impl Default for TaskSetup {
             runs: u32::MAX,
             priority: DEFAULT_PRIORITY,
             blocking: false,
+            gives: u32::MAX,
+            waits: false,
         }
     }
 }
@@ -72,6 +82,8 @@ impl TaskSetup {
             runs: u32::MAX,
             priority,
             blocking: false,
+            gives: u32::MAX,
+            waits: false,
         }
     }
 

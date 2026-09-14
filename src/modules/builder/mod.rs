@@ -5,5 +5,8 @@
 pub mod builder_markers;
 pub mod task_builder;
 
-pub use builder_markers::{Once, Open, Rate, Repeat, Repeatable, Set};
+pub use builder_markers::{
+    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, WaitFor, Waits,
+    Wiring,
+};
 pub use task_builder::TaskBuilder;

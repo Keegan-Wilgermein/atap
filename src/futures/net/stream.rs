@@ -6,18 +6,15 @@ use crate::{
     RuntimeError,
     constants::{FILE_CHUNK, INLINE_PAYLOAD, STEP_BUDGET},
     futures::{
-        net::{
-            socket::Fd,
-            step::{Clock, Progress, settle},
-        },
+        net::step::{Clock, Progress, settle},
         task::{
-            Task,
+            Nothing, Task,
             sealed::{self, Step},
         },
         tcp::Connection,
         unix::UnixConnection,
     },
-    modules::{int_check::IntCheck, park},
+    modules::{fd::Fd, int_check::IntCheck, park},
 };
 use std::{
     mem,
@@ -167,7 +164,9 @@ fn read_raw(fd: libc::c_int, into: &mut Vec<u8>, room: usize) -> Result<Io, Runt
         let read = unsafe {
             libc::recv(
                 fd,
-                into.spare_capacity_mut().as_mut_ptr().cast::<libc::c_void>(),
+                into.spare_capacity_mut()
+                    .as_mut_ptr()
+                    .cast::<libc::c_void>(),
                 room,
                 0,
             )
@@ -186,7 +185,9 @@ fn read_raw(fd: libc::c_int, into: &mut Vec<u8>, room: usize) -> Result<Io, Runt
             }
 
             Err(RuntimeError::CheckError(Some(libc::EINTR))) => {}
-            Err(RuntimeError::CheckError(Some(libc::EAGAIN))) => return Ok(Io::Wait(libc::EVFILT_READ)),
+            Err(RuntimeError::CheckError(Some(libc::EAGAIN))) => {
+                return Ok(Io::Wait(libc::EVFILT_READ));
+            }
             Err(error) => return Err(error),
         }
     }
@@ -195,8 +196,8 @@ fn read_raw(fd: libc::c_int, into: &mut Vec<u8>, room: usize) -> Result<Io, Runt
 /// Writes as much of `data` to a plain socket as it will take
 fn write_raw(fd: libc::c_int, data: &[u8]) -> Result<Io, RuntimeError> {
     loop {
-        let put = unsafe { libc::send(fd, data.as_ptr().cast::<libc::c_void>(), data.len(), 0) }
-            .check();
+        let put =
+            unsafe { libc::send(fd, data.as_ptr().cast::<libc::c_void>(), data.len(), 0) }.check();
 
         match put {
             Ok(put) => return Ok(Io::Moved(put as usize)),
@@ -456,7 +457,10 @@ impl RecvTask {
                 Want::Until(_, _) | Want::ToEnd => FILE_CHUNK,
             };
 
-            match self.source.read(&mut self.progress.0.got, room.min(FILE_CHUNK))? {
+            match self
+                .source
+                .read(&mut self.progress.0.got, room.min(FILE_CHUNK))?
+            {
                 // The other side closed
                 Io::Closed => {
                     return match self.want {
@@ -531,13 +535,17 @@ impl RecvTask {
         match &self.want {
             Want::Some(max) => Ok((reading.got.len() >= *max).then(|| mem::take(&mut reading.got))),
 
-            Want::Exact(len) => Ok((reading.got.len() >= *len).then(|| mem::take(&mut reading.got))),
+            Want::Exact(len) => {
+                Ok((reading.got.len() >= *len).then(|| mem::take(&mut reading.got)))
+            }
 
             Want::ToEnd => Ok(None),
 
             Want::Until(delimiter, max) => {
                 // Backed up, since a delimiter can straddle two reads
-                let from = reading.searched.saturating_sub(delimiter.len().saturating_sub(1));
+                let from = reading
+                    .searched
+                    .saturating_sub(delimiter.len().saturating_sub(1));
 
                 let found = match delimiter.is_empty() {
                     true => Some(0),
@@ -624,6 +632,7 @@ impl sealed::Sealed for RecvTask {}
 
 impl Task for SendTask {
     type Output = Result<usize, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -642,6 +651,7 @@ impl Task for SendTask {
 
 impl Task for RecvTask {
     type Output = Result<Vec<u8>, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {

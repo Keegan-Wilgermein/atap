@@ -7,7 +7,9 @@
 //! the count with what it last saw, which makes every wake
 //! something it can check rather than something it has to trust
 
-use crate::{RuntimeError, futures::signal::signal::SigReleasePolicy, modules::int_check::IntCheck};
+use crate::{
+    RuntimeError, futures::signal::signal::SigReleasePolicy, modules::int_check::IntCheck,
+};
 use std::{
     fmt, mem, ptr,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
@@ -210,7 +212,10 @@ impl Drop for Watcher {
 
 impl fmt::Debug for Watcher {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("Watcher").field("signal", &self.signo).finish()
+        formatter
+            .debug_struct("Watcher")
+            .field("signal", &self.signo)
+            .finish()
     }
 }
 
@@ -225,7 +230,10 @@ mod tests {
         assert_eq!(catchable(libc::SIGSTOP), Err(RuntimeError::BadSignal));
         assert_eq!(catchable(0), Err(RuntimeError::BadSignal));
         assert_eq!(catchable(-1), Err(RuntimeError::BadSignal));
-        assert_eq!(catchable(MAX_SIGNAL as libc::c_int), Err(RuntimeError::BadSignal));
+        assert_eq!(
+            catchable(MAX_SIGNAL as libc::c_int),
+            Err(RuntimeError::BadSignal)
+        );
         assert!(catchable(libc::SIGUSR1).is_ok());
     }
 

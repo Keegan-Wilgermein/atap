@@ -20,7 +20,10 @@ fn concurrent_spawn_distinct_results() {
                         let millis = worker * per_thread + task + 1;
                         let duration = Duration::from_millis(millis);
 
-                        (duration, Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).spawn())
+                        (
+                            duration,
+                            Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).spawn(),
+                        )
                     })
                     .collect::<Vec<_>>()
             })

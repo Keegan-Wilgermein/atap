@@ -1,9 +1,12 @@
 //! Its own binary with a single test, since a signal's handler and
 //! its count belong to the whole process
 
+mod common;
+
 use atap::{Runtime, Signal, SignalKind};
+use common::send_signal;
 use std::{
-    process, thread,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -15,11 +18,6 @@ const KIND: SignalKind = SignalKind::User2;
 
 /// How many to send
 const SENDS: u32 = 3;
-
-/// Sends the signal to this program
-fn send() {
-    Runtime::block(Signal::send(process::id() as libc::pid_t, KIND)).expect("the signal must go");
-}
 
 /// A repeating wait reports every delivery, including ones that
 /// land between its runs
@@ -45,7 +43,7 @@ fn a_repeating_wait_reports_every_delivery() {
     let mut total = 0;
 
     for _ in 0..SENDS {
-        send();
+        send_signal(KIND);
 
         // Long enough for the run to publish and be read, and for the
         // next run to be waiting again

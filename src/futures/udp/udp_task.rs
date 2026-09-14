@@ -13,7 +13,7 @@ use crate::{
             step::{Clock, Progress, settle},
         },
         task::{
-            Task,
+            Nothing, Task,
             sealed::{self, Step},
         },
         udp::udp_socket::UdpSocket,
@@ -24,9 +24,8 @@ use std::{mem, net::SocketAddr, sync::Arc, time::Duration};
 
 // Anything larger costs a page mapping per task
 const _: () = assert!(mem::size_of::<Result<UdpSocket, RuntimeError>>() <= INLINE_PAYLOAD);
-const _: () = assert!(
-    mem::size_of::<Result<(Vec<u8>, SocketAddr), RuntimeError>>() <= INLINE_PAYLOAD
-);
+const _: () =
+    assert!(mem::size_of::<Result<(Vec<u8>, SocketAddr), RuntimeError>>() <= INLINE_PAYLOAD);
 
 /// Opens a UDP socket
 ///
@@ -260,6 +259,7 @@ impl sealed::Sealed for RecvFromTask {}
 
 impl Task for BindTask {
     type Output = Result<UdpSocket, RuntimeError>;
+    type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
@@ -279,6 +279,7 @@ impl Task for BindTask {
 
 impl Task for SendToTask {
     type Output = Result<usize, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -303,6 +304,7 @@ impl Task for SendToTask {
 
 impl Task for RecvFromTask {
     type Output = Result<(Vec<u8>, SocketAddr), RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {

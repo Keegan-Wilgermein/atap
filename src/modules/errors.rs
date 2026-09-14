@@ -126,7 +126,11 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CheckError(Some(errno)) => {
-                write!(formatter, "system call failed: {}", io::Error::from_raw_os_error(*errno))
+                write!(
+                    formatter,
+                    "system call failed: {}",
+                    io::Error::from_raw_os_error(*errno)
+                )
             }
             Self::CheckError(None) => write!(formatter, "system call failed"),
             Self::AddressLock => write!(formatter, "the kernel refused a wait on an address"),
@@ -141,10 +145,16 @@ impl fmt::Display for RuntimeError {
             Self::BadPath => write!(formatter, "the path can't be handed to the kernel"),
             Self::BadArgument => write!(formatter, "an argument contains a zero byte"),
             Self::BadVariable => {
-                write!(formatter, "an environment variable cannot be passed on as written")
+                write!(
+                    formatter,
+                    "an environment variable cannot be passed on as written"
+                )
             }
             Self::BadDirectory => {
-                write!(formatter, "the working directory is not an absolute path without zero bytes")
+                write!(
+                    formatter,
+                    "the working directory is not an absolute path without zero bytes"
+                )
             }
             Self::TimedOut => write!(formatter, "the task ran out of time"),
             Self::BadAddress => write!(formatter, "the address could not be parsed or found"),

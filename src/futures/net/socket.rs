@@ -2,34 +2,11 @@
 //! Making sockets, and the settings every socket here is kept
 //! in, whichever family it belongs to
 
-use crate::{RuntimeError, modules::int_check::IntCheck};
+use crate::{
+    RuntimeError,
+    modules::{fd::Fd, int_check::IntCheck},
+};
 use std::mem;
-
-/// An open descriptor that closes itself
-///
-/// #### Note
-/// Closing in `Drop` also keeps errno intact
-pub(crate) struct Fd(libc::c_int);
-
-impl Fd {
-    /// Takes ownership of a descriptor the kernel just handed out
-    #[inline(always)]
-    pub(crate) fn new(fd: libc::c_int) -> Self {
-        Self(fd)
-    }
-
-    /// The number, for handing to a syscall
-    #[inline(always)]
-    pub(crate) fn raw(&self) -> libc::c_int {
-        self.0
-    }
-}
-
-impl Drop for Fd {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.0) };
-    }
-}
 
 /// Makes a socket of `kind` in `domain`, set up the way every
 /// socket here is kept

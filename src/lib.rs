@@ -8,26 +8,46 @@ pub mod runtime;
 mod modules {
     pub(crate) mod address_lock;
     pub mod builder;
+    pub(crate) mod c_path;
     pub(crate) mod erased_task;
     pub mod errors;
     pub(crate) mod event_desc;
+    pub(crate) mod exit_guard;
+    pub(crate) mod extras;
+    pub(crate) mod faults;
+    pub(crate) mod fd;
+    pub(crate) mod forward;
+    pub(crate) mod gate;
+    pub(crate) mod gated;
+    pub(crate) mod gather;
+    pub(crate) mod handle_kind;
+    pub(crate) mod handle_set;
+    pub(crate) mod handle_set_tuples;
+    pub(crate) mod help;
     pub(crate) mod injector;
-    pub mod join_policy;
+    pub(crate) mod input;
     pub(crate) mod int_check;
+    pub mod join_policy;
     pub(crate) mod kevent;
     pub(crate) mod kqueue;
+    pub(crate) mod mailbox;
     pub(crate) mod mapping;
+    pub(crate) mod merge_set;
+    pub(crate) mod merge_set_tuples;
     pub(crate) mod park;
     pub mod pool_stats;
+    pub(crate) mod receivers;
+    pub(crate) mod retried;
     pub mod runtime_status;
     pub(crate) mod series;
     pub(crate) mod sleep_thread;
     pub(crate) mod task_data;
+    pub(crate) mod task_handle;
     pub(crate) mod task_kind;
     pub(crate) mod task_setup;
-    pub(crate) mod task_handle;
     pub mod task_state;
     pub(crate) mod task_table;
+    pub(crate) mod thread_slot;
     pub(crate) mod waiter;
     pub(crate) mod wake_target;
     pub(crate) mod worker;
@@ -37,6 +57,7 @@ mod modules {
 }
 
 mod futures {
+    pub mod compute;
     pub mod file;
     pub(crate) mod kernel_wait;
     pub mod net;
@@ -53,17 +74,21 @@ mod futures {
 }
 
 // Re-exports
+pub use constants::DEFAULT_PRIORITY;
+pub use futures::compute::{Compute, ComputeTask};
 pub use futures::file::{
     Change, File, FileKind, Metadata, MetadataTask, PathTask, ReadDirTask, ReadTask, WatchTask,
     WriteTask,
 };
+pub use futures::net::{NetAddress, RecvTask, SendTask};
 pub use futures::process::{ExitStatus, OutputTask, Process, ProcessOutput, StatusTask};
 pub use futures::signal::{SendSignalTask, SigReleasePolicy, Signal, SignalKind, SignalTask};
 pub use futures::sleep::{Sleep, SleepMode};
 pub use futures::sleep_task::SleepTask;
-pub use futures::task::Task;
-pub use futures::net::{NetAddress, RecvTask, SendTask};
-pub use futures::tcp::{AcceptTask, ConnectTask, Connection, ListenTask, Listener, RequestTask, Tcp};
+pub use futures::task::{Nothing, Task};
+pub use futures::tcp::{
+    AcceptTask, ConnectTask, Connection, ListenTask, Listener, RequestTask, Tcp,
+};
 #[cfg(feature = "tls")]
 pub use futures::tls::{
     Tls, TlsAcceptTask, TlsConnectTask, TlsConnection, TlsListenTask, TlsListener, TlsRequestTask,
@@ -73,14 +98,20 @@ pub use futures::unix::{
     Unix, UnixAcceptTask, UnixBindTask, UnixConnectTask, UnixConnection, UnixDatagram,
     UnixListenTask, UnixListener, UnixRecvFromTask, UnixSendToTask,
 };
+pub use modules::builder::{
+    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, TaskBuilder,
+    WaitFor, Waits, Wiring,
+};
 pub use modules::errors::RuntimeError;
-pub use modules::join_policy::JoinPolicy;
 pub use modules::event_desc::EventDesc;
+pub use modules::handle_kind::{HandleKind, Plain, Waiting};
+pub use modules::handle_set::HandleSet;
+pub use modules::input::{Ignore, Receives, Standalone, Use};
+pub use modules::join_policy::JoinPolicy;
+pub use modules::merge_set::MergeSet;
 pub use modules::pool_stats::PoolStats;
 pub use modules::runtime_status::RuntimeStatus;
-pub use modules::builder::{Once, Open, Rate, Repeat, Repeatable, Set, TaskBuilder};
 pub use modules::task_handle::TaskHandle;
 pub use modules::task_state::TaskState;
 pub use modules::worker_stats::WorkerStats;
-pub use constants::DEFAULT_PRIORITY;
 pub use runtime::Runtime;

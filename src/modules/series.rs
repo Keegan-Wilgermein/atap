@@ -8,7 +8,7 @@
 use crate::{
     executor::{self, Executor},
     futures::task::{
-        Task,
+        Nothing, Task,
         sealed::{self, Step},
     },
 };
@@ -77,6 +77,7 @@ where
     F: Task,
 {
     type Output = ();
+    type Input = Nothing;
 
     /// Runs this copy and publishes the result into the series
     #[inline(always)]

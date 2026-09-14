@@ -10,17 +10,14 @@ use crate::{
     RuntimeError,
     constants::{INLINE_PAYLOAD, VNODE_POLL},
     futures::{
-        file::{
-            change::{Change, EVERY_NOTE, Snapshot},
-            file_task::{Fd, as_c_path},
-        },
+        file::change::{Change, EVERY_NOTE, Snapshot},
         net::step::{Clock, settle},
         task::{
-            Task,
+            Nothing, Task,
             sealed::{self, Park, Step},
         },
     },
-    modules::{int_check::IntCheck, park},
+    modules::{c_path::c_path, fd::Fd, park, retried::retried},
 };
 use std::{
     ffi::CString,
@@ -85,7 +82,7 @@ impl WatchTask {
     /// Watches `path`
     pub(crate) fn new(path: impl AsRef<Path>) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             notes: EVERY_NOTE,
             clock: Clock::default(),
             seen: None,
@@ -210,6 +207,7 @@ impl sealed::Sealed for WatchTask {}
 
 impl Task for WatchTask {
     type Output = Result<Change, RuntimeError>;
+    type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
@@ -237,15 +235,7 @@ impl Task for WatchTask {
 fn open_watch(path: &CString) -> Result<Fd, RuntimeError> {
     let flags = libc::O_EVTONLY | libc::O_NONBLOCK | libc::O_CLOEXEC;
 
-    loop {
-        let raw = unsafe { libc::open(path.as_ptr(), flags) }.check();
-
-        match raw {
-            Ok(fd) => return Ok(Fd::new(fd)),
-            Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
-            Err(error) => return Err(error),
-        }
-    }
+    retried(|| unsafe { libc::open(path.as_ptr(), flags) }).map(Fd::new)
 }
 
 #[cfg(test)]

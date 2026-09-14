@@ -9,12 +9,11 @@
 //! request still went out over a real connection and a whole
 //! answer came back
 
-use atap::{Runtime, Tcp};
-use std::time::Duration;
+mod common;
 
-/// The site, and the file on it
-const HOST: &str = "www.req-audio.com";
-const PATH: &str = "/version.json";
+use atap::{Runtime, Tcp};
+use common::{HOST, PATH};
+use std::time::Duration;
 
 /// Asks the site for its version file and prints what comes back
 #[test]
@@ -41,7 +40,10 @@ fn the_site_answers_a_request_for_its_version() {
 
     let status = head.lines().next().unwrap_or_default();
 
-    assert!(status.starts_with("HTTP/1."), "not an HTTP answer: {status:?}");
+    assert!(
+        status.starts_with("HTTP/1."),
+        "not an HTTP answer: {status:?}"
+    );
 
     match status.split_whitespace().nth(1) {
         Some("200") => assert!(

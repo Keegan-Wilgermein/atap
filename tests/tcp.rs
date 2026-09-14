@@ -2,7 +2,10 @@
 //!
 //! Everything runs over loopback, against listeners on port 0
 
-use atap::{Connection, Listener, Runtime, RuntimeError, Tcp, TaskHandle};
+mod common;
+
+use atap::{Connection, Listener, Runtime, RuntimeError, Tcp};
+use common::until_started;
 use std::{
     thread,
     time::{Duration, Instant},
@@ -34,19 +37,6 @@ fn pair() -> (Connection, Connection) {
     (client, server)
 }
 
-/// Waits until a spawned task is parked or running, so what the
-/// test does next lands while it waits
-fn until_started<T>(handle: &TaskHandle<T>) {
-    let deadline = Instant::now() + PATIENCE;
-
-    while handle.is_pending() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    // Long enough for it to reach its park
-    thread::sleep(Duration::from_millis(20));
-}
-
 /// The two ends of a connection agree on who is who
 #[test]
 fn both_ends_agree_on_their_addresses() {
@@ -74,7 +64,7 @@ fn a_spawned_receive_waits_for_data() {
     let (client, server) = pair();
 
     let reading = Runtime::task(server.recv_exact(10)).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     assert!(
         reading.is_running(),
@@ -108,8 +98,14 @@ fn a_delimited_receive_leaves_the_rest() {
     // All in one read, so the rest has to be carried over
     thread::sleep(Duration::from_millis(20));
 
-    assert_eq!(Runtime::block(server.recv_until(b"\n", 64)).unwrap(), b"one\n");
-    assert_eq!(Runtime::block(server.recv_until(b"\n", 64)).unwrap(), b"two\n");
+    assert_eq!(
+        Runtime::block(server.recv_until(b"\n", 64)).unwrap(),
+        b"one\n"
+    );
+    assert_eq!(
+        Runtime::block(server.recv_until(b"\n", 64)).unwrap(),
+        b"two\n"
+    );
     assert_eq!(Runtime::block(server.recv(64)).unwrap(), b"three");
 }
 
@@ -119,7 +115,7 @@ fn a_delimiter_can_straddle_two_reads() {
     let (client, server) = pair();
 
     let reading = Runtime::task(server.recv_until(b"\r\n", 64)).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     Runtime::block(client.send(b"line\r".as_slice())).unwrap();
     thread::sleep(Duration::from_millis(20));
@@ -216,13 +212,16 @@ fn a_send_and_a_receive_can_wait_on_one_socket() {
     let (client, server) = pair();
 
     let reading = Runtime::task(client.recv_exact(4)).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     Runtime::block(client.send(b"ping".as_slice())).unwrap();
     assert_eq!(Runtime::block(server.recv_exact(4)).unwrap(), b"ping");
 
     Runtime::block(server.send(b"pong".as_slice())).unwrap();
-    assert_eq!(reading.take_with_timeout(PATIENCE).unwrap().unwrap(), b"pong");
+    assert_eq!(
+        reading.take_with_timeout(PATIENCE).unwrap().unwrap(),
+        b"pong"
+    );
 }
 
 /// Two accepts parked on one listener each get a connection,
@@ -233,8 +232,8 @@ fn two_accepts_can_wait_on_one_listener() {
 
     let first = Runtime::task(listener.accept()).spawn();
     let second = Runtime::task(listener.accept()).spawn();
-    until_started(&first);
-    until_started(&second);
+    until_started(&first, PATIENCE);
+    until_started(&second, PATIENCE);
 
     let _one = Runtime::block(Tcp::connect(listener.local_addr())).unwrap();
     let _two = Runtime::block(Tcp::connect(listener.local_addr())).unwrap();
@@ -296,8 +295,14 @@ fn a_blocking_receive_times_out() {
     let took = started.elapsed();
 
     assert_eq!(got, Err(RuntimeError::TimedOut));
-    assert!(took >= Duration::from_millis(100), "gave up early, after {took:?}");
-    assert!(took < Duration::from_secs(2), "gave up late, after {took:?}");
+    assert!(
+        took >= Duration::from_millis(100),
+        "gave up early, after {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(2),
+        "gave up late, after {took:?}"
+    );
 }
 
 /// So does a spawned one, parked with nothing holding its thread
@@ -307,12 +312,20 @@ fn a_spawned_receive_times_out() {
 
     let started = Instant::now();
     let handle = Runtime::task(server.recv(64).timeout(Duration::from_millis(100))).spawn();
-    let got = handle.take_with_timeout(PATIENCE).expect("the timeout must settle it");
+    let got = handle
+        .take_with_timeout(PATIENCE)
+        .expect("the timeout must settle it");
     let took = started.elapsed();
 
     assert_eq!(got, Err(RuntimeError::TimedOut));
-    assert!(took >= Duration::from_millis(100), "gave up early, after {took:?}");
-    assert!(took < Duration::from_secs(2), "gave up late, after {took:?}");
+    assert!(
+        took >= Duration::from_millis(100),
+        "gave up early, after {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(2),
+        "gave up late, after {took:?}"
+    );
 }
 
 /// A receive that times out part way puts back what it had,
@@ -338,7 +351,7 @@ fn a_parked_receive_can_be_cancelled() {
     let (client, server) = pair();
 
     let reading = Runtime::task(server.recv_exact(10)).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     Runtime::block(client.send(b"part".as_slice())).unwrap();
     thread::sleep(Duration::from_millis(20));
@@ -400,7 +413,11 @@ fn a_scheduled_send_sends_every_run() {
     }
 
     assert!(handle.is_finished(), "a bounded schedule ends");
-    assert_eq!(handle.join().unwrap(), Ok(2), "the last run's output is published");
+    assert_eq!(
+        handle.join().unwrap(),
+        Ok(2),
+        "the last run's output is published"
+    );
 }
 
 /// A request connects, sends, and reads everything back
@@ -418,10 +435,9 @@ fn a_request_reads_the_whole_answer() {
         asked
     });
 
-    let reply = Runtime::block(
-        Tcp::request(addr, b"GET / HTTP/1.0\r\n\r\n".as_slice()).timeout(PATIENCE),
-    )
-    .expect("the request must be answered");
+    let reply =
+        Runtime::block(Tcp::request(addr, b"GET / HTTP/1.0\r\n\r\n".as_slice()).timeout(PATIENCE))
+            .expect("the request must be answered");
 
     assert_eq!(reply, b"HTTP/1.0 200 OK\r\n\r\nhi");
     assert_eq!(server.join().unwrap(), b"GET / HTTP/1.0\r\n\r\n");
@@ -449,12 +465,15 @@ fn a_receive_in_flight_outlives_a_close() {
     let (client, server) = pair();
 
     let reading = Runtime::task(server.recv(64)).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     server.close();
     Runtime::block(client.send(b"late".as_slice())).unwrap();
 
-    assert_eq!(reading.take_with_timeout(PATIENCE).unwrap().unwrap(), b"late");
+    assert_eq!(
+        reading.take_with_timeout(PATIENCE).unwrap().unwrap(),
+        b"late"
+    );
 }
 
 /// The socket only closes when the last handle to it goes, and
@@ -469,7 +488,7 @@ fn the_socket_closes_with_its_last_handle() {
     let (server, _) = accepting.join_with_timeout(PATIENCE).unwrap().unwrap();
 
     let reading = Runtime::task(client.recv_to_end()).spawn();
-    until_started(&reading);
+    until_started(&reading, PATIENCE);
 
     // The accept's slot still holds a copy
     server.close();

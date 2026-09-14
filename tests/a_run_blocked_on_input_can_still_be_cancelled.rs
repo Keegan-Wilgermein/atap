@@ -11,8 +11,7 @@ fn a_run_blocked_on_input_can_still_be_cancelled() {
 
     let fed = vec![b'z'; 4 * 1024 * 1024];
 
-    let handle =
-        Runtime::task(Process::run("/bin/sleep", ["30"]).input(fed.as_slice())).spawn();
+    let handle = Runtime::task(Process::run("/bin/sleep", ["30"]).input(fed.as_slice())).spawn();
 
     // Long enough that the pipe has filled and the thread is
     // waiting to write

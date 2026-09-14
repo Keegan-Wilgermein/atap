@@ -2,12 +2,18 @@
 //! The type level states a `TaskBuilder` moves through, which
 //! make a chain that doesn't make sense fail to compile
 //!
-//! A builder tracks three things separately:
+//! A builder tracks four things separately:
 //!
 //! - **Kind** — `Once`, then `Repeat` or `Rate`
 //! - **Deadline** — `Open` until `for_duration` or `until`,
 //!   then `Set`
-//! - **Count** — `Open` until `count`, then `Set`
+//! - **Count** — `Open` until `count`, then `Set`. Each state
+//!   that has a count opens it afresh
+//! - **Wiring** — `NoWait`, or what starts each run: gives with
+//!   `WaitFor<T>`, a whole set with `ReceiveAll<H>`, or any of a
+//!   set with `ReceiveAny<H>`
+
+use std::marker::PhantomData;
 
 /// Stops the traits in here being implemented outside the crate
 pub(crate) mod sealed {
@@ -17,7 +23,8 @@ pub(crate) mod sealed {
 
 /// No kind chosen yet, so the task runs once
 ///
-/// The only state `repeat` and `at_rate` can be called from
+/// The only state `repeat`, `at_rate`, `wait_for`, `receive` and
+/// `receive_any` can be called from
 pub struct Once;
 
 /// Runs again when the last run finishes, one at a time
@@ -37,11 +44,30 @@ pub struct Open;
 /// before it
 pub struct Set;
 
+/// Runs as soon as it is spawned, the way every task does unless
+/// told to wait
+pub struct NoWait;
+
+/// Waits for a give of `T` before each run, or each series
+pub struct WaitFor<T>(PhantomData<fn(T)>);
+
+/// Waits for every task in the set `H` to publish before each run,
+/// or each series
+pub struct ReceiveAll<H>(PhantomData<fn(H)>);
+
+/// Starts a run, or a series, with each output of any task in the
+/// set `H`
+pub struct ReceiveAny<H>(PhantomData<fn(H)>);
+
 impl sealed::Sealed for Once {}
 impl sealed::Sealed for Repeat {}
 impl sealed::Sealed for Rate {}
 impl sealed::Sealed for Open {}
 impl sealed::Sealed for Set {}
+impl sealed::Sealed for NoWait {}
+impl<T> sealed::Sealed for WaitFor<T> {}
+impl<H> sealed::Sealed for ReceiveAll<H> {}
+impl<H> sealed::Sealed for ReceiveAny<H> {}
 
 /// A kind a bound can be put on
 ///
@@ -52,3 +78,48 @@ pub trait Repeatable: sealed::Sealed {}
 
 impl Repeatable for Repeat {}
 impl Repeatable for Rate {}
+
+/// What starts a task's runs, and what the builder carries for it
+#[allow(private_bounds)]
+pub trait Wiring: sealed::Sealed {
+    /// What the builder holds until spawn: the set a receive links
+    /// to, or nothing
+    #[doc(hidden)]
+    type Link;
+
+    /// The count axis once a kind is chosen
+    ///
+    /// Unchanged for a task that doesn't wait. A wait state had a
+    /// count of its own, so choosing a kind opens a fresh one
+    #[doc(hidden)]
+    type AfterKind<C>;
+}
+
+impl Wiring for NoWait {
+    type Link = ();
+    type AfterKind<C> = C;
+}
+
+impl<T> Wiring for WaitFor<T> {
+    type Link = ();
+    type AfterKind<C> = Open;
+}
+
+impl<H> Wiring for ReceiveAll<H> {
+    type Link = H;
+    type AfterKind<C> = Open;
+}
+
+impl<H> Wiring for ReceiveAny<H> {
+    type Link = H;
+    type AfterKind<C> = Open;
+}
+
+/// A wiring where something arriving starts each run, so a count of
+/// arrivals and a kind can be chained after it
+#[allow(private_bounds)]
+pub trait Waits: Wiring {}
+
+impl<T> Waits for WaitFor<T> {}
+impl<H> Waits for ReceiveAll<H> {}
+impl<H> Waits for ReceiveAny<H> {}

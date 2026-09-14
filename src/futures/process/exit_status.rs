@@ -137,7 +137,11 @@ mod tests {
         let failed = ExitStatus::from_raw(1 << 8);
 
         assert!(!failed.success(), "a non zero code must not be a success");
-        assert_eq!(failed.code(), Some(1), "the code must come out of the high byte");
+        assert_eq!(
+            failed.code(),
+            Some(1),
+            "the code must come out of the high byte"
+        );
         assert_eq!(failed.signal(), None, "a clean exit must have no signal");
     }
 

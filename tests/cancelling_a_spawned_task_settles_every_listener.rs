@@ -8,7 +8,8 @@ use std::time::Instant;
 fn cancelling_a_spawned_task_settles_every_listener() {
     Runtime::init();
 
-    let handle = Runtime::task(Sleep::sleep(Duration::from_secs(30)).mode(SleepMode::Relaxed)).spawn();
+    let handle =
+        Runtime::task(Sleep::sleep(Duration::from_secs(30)).mode(SleepMode::Relaxed)).spawn();
     let watcher = handle.clone();
 
     // Inside the kernel wait rather than still queued

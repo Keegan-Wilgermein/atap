@@ -2,8 +2,9 @@
 //! A kqueue per thread, reused by every task that waits on one
 
 use crate::{
-    RuntimeError, executor,
+    RuntimeError,
     constants::WAKE_IDENT,
+    executor,
     modules::{
         int_check::IntCheck,
         kevent::{KEvent, eventlist},

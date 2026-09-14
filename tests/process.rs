@@ -35,15 +35,15 @@ fn a_run_reports_its_exit_code() {
     Runtime::init();
 
     println!("running /usr/bin/true");
-    let ok = Runtime::block(Process::run("/usr/bin/true", Process::NO_ARGS))
-        .expect("true must run");
+    let ok =
+        Runtime::block(Process::run("/usr/bin/true", Process::NO_ARGS)).expect("true must run");
 
     assert!(ok.success(), "true must succeed, got {:?}", ok);
     assert_eq!(ok.code(), Some(0), "true must exit zero");
 
     println!("running /usr/bin/false");
-    let failed = Runtime::block(Process::run("/usr/bin/false", Process::NO_ARGS))
-        .expect("false must run");
+    let failed =
+        Runtime::block(Process::run("/usr/bin/false", Process::NO_ARGS)).expect("false must run");
 
     assert!(!failed.success(), "false must not succeed");
     assert_eq!(
@@ -93,9 +93,7 @@ fn a_child_that_floods_both_pipes_does_not_deadlock() {
 
     const FLOOD: usize = 4 * 1024 * 1024;
 
-    let script = format!(
-        "head -c {FLOOD} /dev/zero & head -c {FLOOD} /dev/zero 1>&2; wait"
-    );
+    let script = format!("head -c {FLOOD} /dev/zero & head -c {FLOOD} /dev/zero 1>&2; wait");
 
     println!("flooding both streams with {FLOOD} bytes each");
 
@@ -118,11 +116,7 @@ fn many_children_at_once() {
 
     let handles = (0..CHILDREN)
         .map(|index| {
-            Runtime::task(Process::output(
-                "/bin/sh",
-                ["-c", &format!("echo {index}")],
-            ))
-            .spawn()
+            Runtime::task(Process::output("/bin/sh", ["-c", &format!("echo {index}")])).spawn()
         })
         .collect::<Vec<_>>();
 
@@ -275,9 +269,8 @@ fn a_run_child_still_has_somewhere_to_write() {
         wrote.code()
     );
 
-    let to_stdout =
-        Runtime::block(Process::run("/bin/sh", ["-c", "echo run-inherits-stdout"]))
-            .expect("sh must run");
+    let to_stdout = Runtime::block(Process::run("/bin/sh", ["-c", "echo run-inherits-stdout"]))
+        .expect("sh must run");
 
     assert!(
         to_stdout.success(),
@@ -293,10 +286,9 @@ fn a_run_child_still_has_somewhere_to_write() {
 fn input_reaches_the_child() {
     Runtime::init();
 
-    let handle = Runtime::task(
-        Process::output("/bin/cat", Process::NO_ARGS).input(b"hello\n".as_slice()),
-    )
-    .spawn();
+    let handle =
+        Runtime::task(Process::output("/bin/cat", Process::NO_ARGS).input(b"hello\n".as_slice()))
+            .spawn();
 
     let found = settled(&handle, PATIENCE)
         .expect("cat must settle")
@@ -329,7 +321,11 @@ fn a_child_fed_more_than_a_pipe_holds_does_not_deadlock() {
         .expect("a flooded child must settle rather than deadlock")
         .expect("cat must run");
 
-    assert_eq!(found.stdout().len(), FLOOD, "cat gave back the wrong amount");
+    assert_eq!(
+        found.stdout().len(),
+        FLOOD,
+        "cat gave back the wrong amount"
+    );
     assert!(found.status().success(), "cat must finish happily");
 }
 
@@ -338,10 +334,8 @@ fn a_child_fed_more_than_a_pipe_holds_does_not_deadlock() {
 fn input_ends_so_the_child_sees_its_end() {
     Runtime::init();
 
-    let handle = Runtime::task(
-        Process::output("/usr/bin/wc", ["-c"]).input(b"12345".as_slice()),
-    )
-    .spawn();
+    let handle =
+        Runtime::task(Process::output("/usr/bin/wc", ["-c"]).input(b"12345".as_slice())).spawn();
 
     let found = settled(&handle, PATIENCE)
         .expect("wc must reach the end of its input")
@@ -359,10 +353,9 @@ fn a_child_that_ignores_its_input_finishes() {
 
     let fed = vec![b'z'; 4 * 1024 * 1024];
 
-    let handle = Runtime::task(
-        Process::output("/bin/sh", ["-c", "echo done"]).input(fed.as_slice()),
-    )
-    .spawn();
+    let handle =
+        Runtime::task(Process::output("/bin/sh", ["-c", "echo done"]).input(fed.as_slice()))
+            .spawn();
 
     let found = settled(&handle, PATIENCE)
         .expect("a child that ignores its input must still finish")
@@ -379,16 +372,18 @@ fn a_child_that_takes_part_of_its_input_finishes() {
 
     let fed = vec![b'z'; 4 * 1024 * 1024];
 
-    let handle = Runtime::task(
-        Process::output("/usr/bin/head", ["-c", "10"]).input(fed.as_slice()),
-    )
-    .spawn();
+    let handle =
+        Runtime::task(Process::output("/usr/bin/head", ["-c", "10"]).input(fed.as_slice())).spawn();
 
     let found = settled(&handle, PATIENCE)
         .expect("a child that stops reading must not hang its parent")
         .expect("head must run");
 
-    assert_eq!(found.stdout().len(), 10, "head takes exactly what it asked for");
+    assert_eq!(
+        found.stdout().len(),
+        10,
+        "head takes exactly what it asked for"
+    );
     assert!(
         found.status().success(),
         "a child stopping early is not a failure, exited {:?}",
@@ -401,17 +396,15 @@ fn a_child_that_takes_part_of_its_input_finishes() {
 fn input_reaches_a_run_child() {
     Runtime::init();
 
-    let found = Runtime::block(
-        Process::run("/usr/bin/grep", ["-q", "ping"]).input(b"ping\n".as_slice()),
-    )
-    .expect("grep must run");
+    let found =
+        Runtime::block(Process::run("/usr/bin/grep", ["-q", "ping"]).input(b"ping\n".as_slice()))
+            .expect("grep must run");
 
     assert!(found.success(), "grep must find what it was fed");
 
-    let missing = Runtime::block(
-        Process::run("/usr/bin/grep", ["-q", "ping"]).input(b"pong\n".as_slice()),
-    )
-    .expect("grep must run");
+    let missing =
+        Runtime::block(Process::run("/usr/bin/grep", ["-q", "ping"]).input(b"pong\n".as_slice()))
+            .expect("grep must run");
 
     assert_eq!(
         missing.code(),
@@ -450,7 +443,10 @@ fn in_dir_changes_where_the_child_starts() {
 
     let where_it_ran = String::from_utf8_lossy(found.stdout()).trim().to_string();
 
-    assert_eq!(where_it_ran, "/usr", "the child started in {where_it_ran:?}");
+    assert_eq!(
+        where_it_ran, "/usr",
+        "the child started in {where_it_ran:?}"
+    );
 }
 
 /// A relative program runs once, in the new directory
@@ -471,7 +467,10 @@ fn a_relative_program_runs_once_in_the_new_directory() {
     let wrote = fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0);
     let _ = fs::remove_file(&scratch);
 
-    assert_eq!(wrote, 2, "the program must run exactly once, wrote {wrote} bytes");
+    assert_eq!(
+        wrote, 2,
+        "the program must run exactly once, wrote {wrote} bytes"
+    );
 }
 
 /// A directory that isn't there is reported
@@ -516,8 +515,7 @@ fn env_puts_a_variable_in_the_child() {
     Runtime::init();
 
     let handle = Runtime::task(
-        Process::output("/bin/sh", ["-c", "printf %s \"$ATAP_TEST\""])
-            .env([("ATAP_TEST", "yes")]),
+        Process::output("/bin/sh", ["-c", "printf %s \"$ATAP_TEST\""]).env([("ATAP_TEST", "yes")]),
     )
     .spawn();
 
@@ -575,7 +573,11 @@ fn env_replaces_a_variable_rather_than_adding_it_twice() {
         .expect("sh must settle")
         .expect("sh must run");
 
-    assert_eq!(found.stdout(), b"/atap", "and the overlay's value is the one kept");
+    assert_eq!(
+        found.stdout(),
+        b"/atap",
+        "and the overlay's value is the one kept"
+    );
 }
 
 /// A replaced environment gives the child nothing else
@@ -583,10 +585,9 @@ fn env_replaces_a_variable_rather_than_adding_it_twice() {
 fn env_only_gives_the_child_nothing_else() {
     Runtime::init();
 
-    let handle = Runtime::task(
-        Process::output("/usr/bin/env", Process::NO_ARGS).env_only([("ONLY", "1")]),
-    )
-    .spawn();
+    let handle =
+        Runtime::task(Process::output("/usr/bin/env", Process::NO_ARGS).env_only([("ONLY", "1")]))
+            .spawn();
 
     let found = settled(&handle, PATIENCE)
         .expect("env must settle")
@@ -611,9 +612,8 @@ fn a_bad_variable_is_refused() {
         ("A=B", "x", "an equals sign in the name"),
         ("", "x", "an empty name"),
     ] {
-        let found = Runtime::block(
-            Process::run("/usr/bin/true", Process::NO_ARGS).env([(name, value)]),
-        );
+        let found =
+            Runtime::block(Process::run("/usr/bin/true", Process::NO_ARGS).env([(name, value)]));
 
         assert_eq!(
             found,
@@ -642,5 +642,8 @@ fn all_three_at_once() {
 
     let said = String::from_utf8_lossy(found.stdout()).to_string();
 
-    assert_eq!(said, "fed\n/usr\nset", "the three settings interfered: {said:?}");
+    assert_eq!(
+        said, "fed\n/usr\nset",
+        "the three settings interfered: {said:?}"
+    );
 }

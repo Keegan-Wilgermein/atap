@@ -1,5 +1,6 @@
 //! # Task
-//! The trait every task implements
+//! The trait every task implements, and the input of a task that
+//! takes none
 
 /// Stops `Task` being implemented outside the crate
 ///
@@ -43,6 +44,14 @@ pub(crate) mod sealed {
     }
 }
 
+/// The input of a task that takes none
+///
+/// No value of it can be made outside the crate, so no handle's
+/// output is ever one. That is what lets a task that takes
+/// nothing wait on a handle of any type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Nothing(pub(crate) ());
+
 /// Implemented by everything the runtime can run
 ///
 /// ## Behaviour
@@ -52,6 +61,12 @@ pub(crate) mod sealed {
 pub trait Task: sealed::Sealed + Send + 'static {
     /// The final output type
     type Output: Send + 'static;
+
+    /// What a run is handed before it starts
+    ///
+    /// [`Nothing`] for every task that makes its own way. A compute
+    /// takes whatever its closure does
+    type Input: Send + 'static;
 
     /// Runs the task and returns its output
     fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output;
@@ -70,6 +85,13 @@ pub trait Task: sealed::Sealed + Send + 'static {
     fn blocking(&self) -> bool {
         false
     }
+
+    /// Hands the task the input its runs use
+    ///
+    /// Only a task that takes input keeps it
+    #[doc(hidden)]
+    #[inline(always)]
+    fn give(&mut self, _input: Self::Input) {}
 
     /// Runs as much of the task as can be done without waiting
     ///

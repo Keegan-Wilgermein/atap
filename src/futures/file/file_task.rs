@@ -6,8 +6,12 @@ use crate::{
     RuntimeError,
     constants::{FILE_CHUNK, INLINE_PAYLOAD},
     executor,
-    futures::{file::metadata::Metadata, task::Task, task::sealed},
-    modules::int_check::IntCheck,
+    futures::{
+        file::metadata::Metadata,
+        task::sealed,
+        task::{Nothing, Task},
+    },
+    modules::{c_path::c_path, fd::Fd, int_check::IntCheck, retried::retried},
 };
 use std::{
     ffi::{CString, OsStr},
@@ -68,34 +72,6 @@ enum PathOp {
 
     /// `rename`
     Rename,
-}
-
-/// An open descriptor that closes itself
-///
-/// #### Note
-/// Closing in `Drop` also keeps errno intact, since the guard
-/// drops after the error value has been built
-#[derive(Debug)]
-pub(super) struct Fd(libc::c_int);
-
-impl Fd {
-    /// Takes ownership of a descriptor the kernel just handed out
-    #[inline(always)]
-    pub(super) fn new(fd: libc::c_int) -> Self {
-        Self(fd)
-    }
-
-    /// The number, for handing to a syscall
-    #[inline(always)]
-    pub(super) fn raw(&self) -> libc::c_int {
-        self.0
-    }
-}
-
-impl Drop for Fd {
-    fn drop(&mut self) {
-        unsafe { libc::close(self.0) };
-    }
 }
 
 /// An open directory stream that closes itself
@@ -184,7 +160,7 @@ impl ReadTask {
     /// Reads from the start of the file to the end of it
     pub(crate) fn whole(path: impl AsRef<Path>) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             extent: Extent::Whole,
         }
     }
@@ -192,7 +168,7 @@ impl ReadTask {
     /// Reads `len` bytes from `offset`, or fewer at the end
     pub(crate) fn range(path: impl AsRef<Path>, offset: u64, len: usize) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             extent: Extent::Range { offset, len },
         }
     }
@@ -202,7 +178,7 @@ impl WriteTask {
     /// Replaces whatever was in the file
     pub(crate) fn truncate(path: impl AsRef<Path>, data: impl Into<Arc<[u8]>>) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             data: data.into(),
             mode: WriteMode::Truncate,
         }
@@ -211,7 +187,7 @@ impl WriteTask {
     /// Adds to the end of whatever was in the file
     pub(crate) fn append(path: impl AsRef<Path>, data: impl Into<Arc<[u8]>>) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             data: data.into(),
             mode: WriteMode::Append,
         }
@@ -220,7 +196,7 @@ impl WriteTask {
     /// Writes at a byte offset, leaving the rest of the file
     pub(crate) fn at(path: impl AsRef<Path>, offset: u64, data: impl Into<Arc<[u8]>>) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             data: data.into(),
             mode: WriteMode::At(offset),
         }
@@ -231,7 +207,7 @@ impl MetadataTask {
     /// Follows a symbolic link before looking
     pub(crate) fn following(path: impl AsRef<Path>) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             follow: true,
         }
     }
@@ -239,7 +215,7 @@ impl MetadataTask {
     /// Stops at the link rather than following it
     pub(crate) fn link(path: impl AsRef<Path>) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             follow: false,
         }
     }
@@ -248,9 +224,7 @@ impl MetadataTask {
 impl ReadDirTask {
     /// Lists the directory at `path`
     pub(crate) fn new(path: impl AsRef<Path>) -> Self {
-        Self {
-            path: as_c_path(path),
-        }
+        Self { path: c_path(path) }
     }
 }
 
@@ -273,8 +247,8 @@ impl PathTask {
     /// Moves a path to another one
     pub(crate) fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Self {
         Self {
-            path: as_c_path(from),
-            other: as_c_path(to),
+            path: c_path(from),
+            other: c_path(to),
             op: PathOp::Rename,
         }
     }
@@ -282,7 +256,7 @@ impl PathTask {
     /// The shape every op but `rename` has
     fn one(path: impl AsRef<Path>, op: PathOp) -> Self {
         Self {
-            path: as_c_path(path),
+            path: c_path(path),
             other: None,
             op,
         }
@@ -297,6 +271,7 @@ impl sealed::Sealed for PathTask {}
 
 impl Task for ReadTask {
     type Output = Result<Vec<u8>, RuntimeError>;
+    type Input = Nothing;
 
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
@@ -322,6 +297,7 @@ impl Task for ReadTask {
 
 impl Task for WriteTask {
     type Output = Result<usize, RuntimeError>;
+    type Input = Nothing;
 
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
@@ -350,6 +326,7 @@ impl Task for WriteTask {
 
 impl Task for MetadataTask {
     type Output = Result<Metadata, RuntimeError>;
+    type Input = Nothing;
 
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
@@ -370,6 +347,7 @@ impl Task for MetadataTask {
 
 impl Task for ReadDirTask {
     type Output = Result<Vec<PathBuf>, RuntimeError>;
+    type Input = Nothing;
 
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
@@ -435,6 +413,7 @@ impl Task for ReadDirTask {
 
 impl Task for PathTask {
     type Output = Result<(), RuntimeError>;
+    type Input = Nothing;
 
     fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
@@ -465,15 +444,6 @@ impl Task for PathTask {
     }
 }
 
-/// Turns a path into the form the kernel takes
-///
-/// ## Returns
-/// `None` when the path has a zero byte in it, since passing
-/// the part before it would act on a different file
-pub(super) fn as_c_path(path: impl AsRef<Path>) -> Option<CString> {
-    CString::new(path.as_ref().as_os_str().as_bytes()).ok()
-}
-
 /// Opens a path, always closing on exec
 ///
 /// `mode` is only used when the flags create the file, but
@@ -498,21 +468,11 @@ fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, 
     }
 }
 
-/// Runs a syscall until it says something other than `EINTR`
-pub(super) fn retried(mut call: impl FnMut() -> libc::c_int) -> Result<libc::c_int, RuntimeError> {
-    loop {
-        match call().check() {
-            Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
-            other => return other,
-        }
-    }
-}
-
 /// Whether the open descriptor is a directory
 fn directory(fd: &Fd) -> Result<bool, RuntimeError> {
     let mut raw: libc::stat = unsafe { mem::zeroed() };
 
-    retried(|| unsafe { libc::fstat(fd.0, &mut raw) })?;
+    retried(|| unsafe { libc::fstat(fd.raw(), &mut raw) })?;
 
     Ok(raw.st_mode & libc::S_IFMT == libc::S_IFDIR)
 }
@@ -543,8 +503,11 @@ fn read_whole(fd: &Fd) -> Result<Vec<u8>, RuntimeError> {
 
         let read = unsafe {
             libc::read(
-                fd.0,
-                found.spare_capacity_mut().as_mut_ptr().cast::<libc::c_void>(),
+                fd.raw(),
+                found
+                    .spare_capacity_mut()
+                    .as_mut_ptr()
+                    .cast::<libc::c_void>(),
                 FILE_CHUNK,
             )
         }
@@ -593,8 +556,11 @@ fn read_range(fd: &Fd, offset: u64, len: usize) -> Result<Vec<u8>, RuntimeError>
 
         let read = unsafe {
             libc::pread(
-                fd.0,
-                found.spare_capacity_mut().as_mut_ptr().cast::<libc::c_void>(),
+                fd.raw(),
+                found
+                    .spare_capacity_mut()
+                    .as_mut_ptr()
+                    .cast::<libc::c_void>(),
                 want,
                 at,
             )
@@ -634,11 +600,11 @@ fn write_all(fd: &Fd, data: &[u8], at: Option<u64>) -> Result<usize, RuntimeErro
         let from = unsafe { data.as_ptr().add(done) }.cast::<libc::c_void>();
 
         let written = match at {
-            None => unsafe { libc::write(fd.0, from, want) }.check(),
+            None => unsafe { libc::write(fd.raw(), from, want) }.check(),
             Some(offset) => {
                 let to = seek_to(offset.saturating_add(done as u64))?;
 
-                unsafe { libc::pwrite(fd.0, from, want, to) }.check()
+                unsafe { libc::pwrite(fd.raw(), from, want, to) }.check()
             }
         };
 
@@ -674,11 +640,10 @@ fn seek_to(offset: u64) -> Result<libc::off_t, RuntimeError> {
 fn hint(fd: &Fd) -> Result<usize, RuntimeError> {
     let mut raw: libc::stat = unsafe { mem::zeroed() };
 
-    retried(|| unsafe { libc::fstat(fd.0, &mut raw) })?;
+    retried(|| unsafe { libc::fstat(fd.raw(), &mut raw) })?;
 
     Ok(raw.st_size.max(0) as usize)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -689,9 +654,15 @@ mod tests {
     fn every_file_task_says_it_blocks() {
         assert!(ReadTask::whole("a").blocking(), "read");
         assert!(ReadTask::range("a", 0, 1).blocking(), "read_at");
-        assert!(WriteTask::truncate("a", b"b".as_slice()).blocking(), "write");
+        assert!(
+            WriteTask::truncate("a", b"b".as_slice()).blocking(),
+            "write"
+        );
         assert!(WriteTask::append("a", b"b".as_slice()).blocking(), "append");
-        assert!(WriteTask::at("a", 0, b"b".as_slice()).blocking(), "write_at");
+        assert!(
+            WriteTask::at("a", 0, b"b".as_slice()).blocking(),
+            "write_at"
+        );
         assert!(MetadataTask::following("a").blocking(), "metadata");
         assert!(MetadataTask::link("a").blocking(), "symlink_metadata");
         assert!(ReadDirTask::new("a").blocking(), "read_dir");
@@ -699,12 +670,5 @@ mod tests {
         assert!(PathTask::remove_dir("a").blocking(), "remove_dir");
         assert!(PathTask::create_dir("a").blocking(), "create_dir");
         assert!(PathTask::rename("a", "b").blocking(), "rename");
-    }
-
-    /// A path with a zero byte in it doesn't convert
-    #[test]
-    fn a_path_with_a_zero_byte_does_not_convert() {
-        assert!(as_c_path("a\0b").is_none(), "a zero byte must not convert");
-        assert!(as_c_path("ab").is_some(), "an ordinary path must convert");
     }
 }

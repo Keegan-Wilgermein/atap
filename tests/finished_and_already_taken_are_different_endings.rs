@@ -1,29 +1,8 @@
-use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
-use std::thread;
+mod common;
+
+use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use common::drain;
 use std::time::Duration;
-use std::time::Instant;
-
-/// Drains a bounded series, counting what it published
-fn drain(handle: &TaskHandle<Duration>, patience: Duration) -> usize {
-    let deadline = Instant::now() + patience;
-    let mut seen = 0;
-
-    while Instant::now() < deadline {
-        match handle.maybe_take() {
-            Ok(_) => seen += 1,
-
-            // Between runs, or one still going
-            Err(RuntimeError::AlreadyTaken) | Err(RuntimeError::NotReady) => {
-                thread::sleep(Duration::from_millis(1))
-            }
-
-            // `Finished` and every other error are endings
-            Err(_) => break,
-        }
-    }
-
-    seen
-}
 
 /// A drained bounded series reads `Finished`, where a one shot
 /// that was already taken reads `AlreadyTaken`
@@ -32,7 +11,8 @@ fn finished_and_already_taken_are_different_endings() {
     Runtime::init();
 
     // A one shot, taken twice
-    let once = Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed)).spawn();
+    let once =
+        Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed)).spawn();
     let watcher = once.clone();
 
     once.take().expect("the value moves out");
