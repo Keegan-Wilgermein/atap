@@ -21,7 +21,7 @@ const KIND: SignalKind = SignalKind::User1;
 /// and nothing is lost when two arrive together
 #[test]
 fn a_signal_wakes_the_task_waiting_for_it() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // Spawned: parked with no thread until the signal arrives
     let waiting = Runtime::task(Signal::wait(KIND)).spawn();

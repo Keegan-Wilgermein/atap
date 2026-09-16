@@ -10,7 +10,7 @@ use std::{
 /// `block` working, then `init` starts the runtime again
 #[test]
 fn shutdown_drains_the_backlog_then_init_starts_it_again() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 2_000;
 
@@ -74,13 +74,13 @@ fn shutdown_drains_the_backlog_then_init_starts_it_again() {
         // Starts again, and only once
         assert_eq!(
             Runtime::init(),
-            None,
+            Ok(()),
             "cycle {cycle}: the runtime didn't start again"
         );
 
         assert_eq!(
             Runtime::init(),
-            Some(RuntimeError::AlreadyInit),
+            Err(RuntimeError::AlreadyInit),
             "cycle {cycle}: a running runtime was started twice",
         );
 

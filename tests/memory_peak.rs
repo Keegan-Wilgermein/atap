@@ -7,7 +7,7 @@ use std::time::Duration;
 /// Twelve million tasks alive at once, each holding its slot
 #[test]
 fn holds_a_peak_of_live_tasks() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 12_000_000;
 

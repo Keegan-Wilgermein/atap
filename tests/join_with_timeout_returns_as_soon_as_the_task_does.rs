@@ -6,7 +6,7 @@ use std::time::Instant;
 /// does, not when the timeout runs out
 #[test]
 fn join_with_timeout_returns_as_soon_as_the_task_does() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let timeout = Duration::from_secs(10);
     let handle =

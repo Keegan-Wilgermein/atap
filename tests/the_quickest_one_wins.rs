@@ -9,7 +9,7 @@ use std::time::Instant;
 /// the rest
 #[test]
 fn the_quickest_one_wins() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let quick = sleeping(5);
     let quick_id = quick.id();

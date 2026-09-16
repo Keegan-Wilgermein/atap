@@ -23,7 +23,7 @@ const SENDS: u32 = 3;
 /// land between its runs
 #[test]
 fn a_repeating_wait_reports_every_delivery() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // Spaced, so each run's output is read before the next replaces
     // it

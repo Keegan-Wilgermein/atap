@@ -21,7 +21,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// holds closes
 #[test]
 fn cancelling_parked_receives_frees_them() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let listener = Runtime::block(Tcp::listen("127.0.0.1:0")).unwrap();
 

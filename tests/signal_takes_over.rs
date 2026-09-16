@@ -20,7 +20,7 @@ const KIND: SignalKind = SignalKind::Interrupt;
 /// instead of ending the program, and releasing gives it back
 #[test]
 fn watching_an_interrupt_takes_it_over() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     assert!(!taken_over(KIND), "nothing has touched Ctrl-C yet");
 

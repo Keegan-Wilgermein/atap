@@ -9,7 +9,7 @@ use std::time::Instant;
 /// one after another
 #[test]
 fn concurrent_tasks_run_in_parallel_long() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let duration = Duration::from_secs(5);
     let tasks = cores();

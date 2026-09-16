@@ -48,7 +48,7 @@ fn fibonacci_plain(n: u64) -> u64 {
 /// answer
 #[test]
 fn a_compute_joins_a_child_it_spawned() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let parent = Runtime::task(Compute::compute(|()| {
         let child = Runtime::task(Compute::compute(|()| 20)).spawn();
@@ -64,7 +64,7 @@ fn a_compute_joins_a_child_it_spawned() {
 /// back with the right answer
 #[test]
 fn a_recursive_split_comes_back_right() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     for n in [1, 5, 12, 20] {
         let root = Runtime::task(Compute::compute(move |()| fibonacci(n))).spawn();
@@ -82,7 +82,7 @@ fn a_recursive_split_comes_back_right() {
 /// level counted
 #[test]
 fn a_chain_deeper_than_help_goes_comes_back() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     fn chain(depth: usize) -> usize {
         if depth == 0 {
@@ -104,7 +104,7 @@ fn a_chain_deeper_than_help_goes_comes_back() {
 /// Loops of spawns inside a compute all land
 #[test]
 fn a_loop_of_spawns_inside_a_compute_all_land() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let parent = Runtime::task(Compute::compute(|()| {
         let children: Vec<_> = (0..2_000u64)
@@ -127,7 +127,7 @@ fn a_loop_of_spawns_inside_a_compute_all_land() {
 /// Many parents each spawning their own loop of children, all at once
 #[test]
 fn many_parents_spawning_loops_at_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let parents: Vec<_> = (0..64u64)
         .map(|parent| {
@@ -163,7 +163,7 @@ fn many_parents_spawning_loops_at_once() {
 /// Blocking inside a compute runs on the worker itself
 #[test]
 fn blocking_inside_a_compute_runs_there() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|()| {
         let here = std::thread::current().id();
@@ -179,7 +179,7 @@ fn blocking_inside_a_compute_runs_there() {
 /// Blocking on a compute that spawns and joins, inside a compute
 #[test]
 fn a_block_that_spawns_inside_a_compute() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|()| {
         Runtime::block(Compute::compute(|()| {
@@ -197,7 +197,7 @@ fn a_block_that_spawns_inside_a_compute() {
 /// A race run from inside a compute picks a winner and settles
 #[test]
 fn a_race_inside_a_compute_picks_a_winner() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|()| {
         let racers: Vec<_> = (0..8u64)
@@ -227,7 +227,7 @@ fn a_race_inside_a_compute_picks_a_winner() {
 /// every outside handle is dropped
 #[test]
 fn a_captured_handle_outlives_the_outside_ones() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|()| {
         std::thread::sleep(Duration::from_millis(30));
@@ -253,7 +253,7 @@ fn a_captured_handle_outlives_the_outside_ones() {
 /// Handles given into a waiting compute are held until it finishes
 #[test]
 fn handles_given_as_values_are_held_while_waiting() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let summer = Runtime::task(Compute::compute(|handles: Vec<TaskHandle<u32>>| {
         Runtime::join_all(handles)
@@ -281,7 +281,7 @@ fn handles_given_as_values_are_held_while_waiting() {
 /// what it made
 #[test]
 fn a_compute_gives_to_a_waiting_task() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let squarer = Runtime::task(Compute::compute(|value: u64| value * value))
         .wait_for::<u64>()
@@ -331,7 +331,7 @@ fn a_compute_gives_to_a_waiting_task() {
 /// already exist
 #[test]
 fn a_receive_spawned_inside_a_compute() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|()| {
         let a = Runtime::task(Compute::compute(|()| 2u32)).spawn();
@@ -353,7 +353,7 @@ fn a_receive_spawned_inside_a_compute() {
 /// with every answer its own
 #[test]
 fn recursion_from_many_threads_never_crosses() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (sent, answers) = mpsc::channel();
 

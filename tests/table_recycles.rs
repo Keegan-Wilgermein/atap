@@ -8,7 +8,7 @@ use std::time::Duration;
 /// table
 #[test]
 fn recycles_ids_forever() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let waves = 16;
     let per_wave = 100_000;

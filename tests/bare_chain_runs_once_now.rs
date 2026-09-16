@@ -5,7 +5,7 @@ use std::time::Instant;
 /// A bare chain is a task that runs once, now
 #[test]
 fn bare_chain_runs_once_now() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let duration = Duration::from_millis(50);
     let started = Instant::now();

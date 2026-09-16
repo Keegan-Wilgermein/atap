@@ -50,7 +50,7 @@ impl Drop for TestFile {
 /// `Cancel` cancels every task that didn't win
 #[test]
 fn cancel_stops_the_losers() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let quick = sleeping(5);
 
@@ -77,7 +77,7 @@ fn cancel_stops_the_losers() {
 /// `Drop` leaves every task that didn't win running
 #[test]
 fn drop_leaves_the_losers_running() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let quick = sleeping(5);
     let slow: Vec<_> = (0..3).map(|_| sleeping(200)).collect();
@@ -103,7 +103,7 @@ fn drop_leaves_the_losers_running() {
 /// An empty set gives back a handle to no task
 #[test]
 fn an_empty_set_gives_back_a_dead_handle() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (first, rest) = Runtime::join_first(Vec::<TaskHandle<Duration>>::new(), JoinPolicy::Cancel);
 
@@ -127,7 +127,7 @@ fn an_empty_set_gives_back_a_dead_handle() {
 /// A set of one gives back that one task
 #[test]
 fn a_set_of_one_is_just_a_join() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let only = sleeping(20);
     let only_id = only.id();
@@ -147,7 +147,7 @@ fn a_set_of_one_is_just_a_join() {
 /// File reads can race each other, and the losers still read
 #[test]
 fn file_reads_race_each_other() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let small = TestFile::new("small", b"quick");
     let large = TestFile::new("large", &vec![b'x'; 8 * 1024 * 1024]);
@@ -179,7 +179,7 @@ fn file_reads_race_each_other() {
 /// Two threads racing the same set both get an answer
 #[test]
 fn a_race_from_several_threads_at_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // The same set, raced by two threads
     let shared: Vec<_> = (0..4).map(|_| sleeping(60)).collect();

@@ -6,7 +6,7 @@ use std::time::Instant;
 /// A high priority task is served ahead of a queued batch
 #[test]
 fn high_priority_runs_first() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 50_000;
     let started = Instant::now();

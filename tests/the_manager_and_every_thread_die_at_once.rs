@@ -116,7 +116,7 @@ fn a_mix_of_work(
 /// Every round of it, one after another
 #[test]
 fn the_manager_and_every_thread_die_at_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     report_full("before");
 
@@ -329,7 +329,7 @@ fn round_three() {
 fn round_four() {
     Runtime::shutdown();
 
-    assert_eq!(Runtime::init(), None, "the runtime wouldn't start again");
+    assert_eq!(Runtime::init(), Ok(()), "the runtime wouldn't start again");
 
     assert!(
         settles(|| Runtime::healthy()),

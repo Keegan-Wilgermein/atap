@@ -48,7 +48,7 @@ fn split(depth: u32) -> Result<u64, RuntimeError> {
 /// workers die under it, and the pool comes back afterwards
 #[test]
 fn a_worker_dying_mid_help_strands_nothing() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let depth = 9;
     let whole = 1u64 << depth;

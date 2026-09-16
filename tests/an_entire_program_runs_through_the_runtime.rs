@@ -650,7 +650,7 @@ fn files() -> PathBuf {
 /// Every program, through every stage, checked line by line
 #[test]
 fn an_entire_program_runs_through_the_runtime() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let before = Runtime::workers();
 

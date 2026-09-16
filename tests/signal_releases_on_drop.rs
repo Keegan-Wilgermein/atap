@@ -20,7 +20,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// keeps it, and a second watcher keeps it while it lives
 #[test]
 fn a_signal_goes_back_when_its_last_watcher_does() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let on_drop = SignalKind::Hangup;
     let held = SignalKind::WindowChange;

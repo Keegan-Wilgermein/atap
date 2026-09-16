@@ -97,7 +97,7 @@ fn certs(name: &str) -> Certs {
 /// A TLS listener on a free loopback port, and the authority its
 /// certificate came from
 fn server(name: &str) -> (TlsListener, String) {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let certs = certs(name);
     let listener = Runtime::block(Tls::listen("127.0.0.1:0", &certs.cert, &certs.key))
@@ -268,7 +268,7 @@ fn an_untrusted_authority_is_a_bad_certificate() {
 /// the timeout
 #[test]
 fn a_silent_server_times_the_handshake_out() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // Plain TCP, so the connect lands and the handshake is ignored
     let listener = Runtime::block(Tcp::listen("127.0.0.1:0")).unwrap();
@@ -292,7 +292,7 @@ fn a_silent_server_times_the_handshake_out() {
 /// handshake
 #[test]
 fn a_server_that_does_not_speak_tls_fails() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let listener = Runtime::block(Tcp::listen("127.0.0.1:0")).unwrap();
     let addr = listener.local_addr();

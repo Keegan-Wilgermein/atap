@@ -10,7 +10,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// A repeat runs the same program again on every run
 #[test]
 fn a_repeat_runs_the_same_program_again() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Process::output("/bin/echo", ["again"]))
         .repeat()

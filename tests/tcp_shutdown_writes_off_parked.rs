@@ -11,7 +11,7 @@ use std::{
 /// peer. It writes it off, and the runtime starts again after
 #[test]
 fn shutdown_writes_off_parked_receives() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let listener = Runtime::block(Tcp::listen("127.0.0.1:0")).unwrap();
     let client = Runtime::block(Tcp::connect(listener.local_addr())).unwrap();
@@ -36,7 +36,7 @@ fn shutdown_writes_off_parked_receives() {
     assert_eq!(reading.join(), Err(RuntimeError::TaskFailed));
 
     // Up again, and the same connection still works
-    Runtime::init();
+    let _ = Runtime::init();
 
     Runtime::block(client.send(b"again".as_slice())).unwrap();
 

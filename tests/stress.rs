@@ -457,7 +457,7 @@ fn settle() -> Duration {
 /// Every kind of work at once, then a quiet runtime afterwards
 #[test]
 fn everything_at_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // Panics asked for and threads killed on purpose would otherwise print
     // thousands of times over. Any other panic still prints
@@ -2117,7 +2117,7 @@ fn everything_at_once() {
     // ---- and starts again
     assert_eq!(
         Runtime::init(),
-        None,
+        Ok(()),
         "the runtime wouldn't start again after the storm"
     );
 

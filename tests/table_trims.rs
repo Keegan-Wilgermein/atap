@@ -8,7 +8,7 @@ use std::time::Duration;
 /// and the table still works afterwards
 #[test]
 fn gives_the_table_back() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let passes = 8;
 

@@ -26,7 +26,7 @@
 //! ```
 
 use super::builder_markers::{
-    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, WaitFor, Waits,
+    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, Unset, WaitFor, Waits,
     Wiring,
 };
 use crate::{
@@ -411,10 +411,10 @@ where
     }
 }
 
-impl<F, D, W> TaskBuilder<F, Once, D, Open, W>
+impl<F, D, C, W> TaskBuilder<F, Once, D, C, W>
 where
     F: Task,
-    W: Waits,
+    W: Wiring,
 {
     /// Stops taking what starts a run after `arrivals` of them
     ///
@@ -427,7 +427,7 @@ where
     ///
     /// Set once:
     ///
-    /// ```compile_fail,E0599
+    /// ```compile_fail,E0277
     /// use atap::{Compute, Runtime};
     ///
     /// let _ = Runtime::task(Compute::compute(|value: i32| value))
@@ -435,7 +435,19 @@ where
     ///     .count(3)
     ///     .count(4);
     /// ```
-    pub fn count(mut self, arrivals: u32) -> TaskBuilder<F, Once, D, Set, W> {
+    ///
+    /// And only on a task that waits:
+    ///
+    /// ```compile_fail,E0277
+    /// use atap::{Compute, Runtime};
+    ///
+    /// let _ = Runtime::task(Compute::compute(|()| 1)).count(3);
+    /// ```
+    pub fn count(mut self, arrivals: u32) -> TaskBuilder<F, Once, D, Set, W>
+    where
+        C: Unset,
+        W: Waits,
+    {
         self.setup.gives = arrivals;
         self.moved()
     }
@@ -495,7 +507,7 @@ where
     }
 }
 
-impl<F, K, D, W> TaskBuilder<F, K, D, Open, W>
+impl<F, K, D, C, W> TaskBuilder<F, K, D, C, W>
 where
     F: Task,
     K: Repeatable,
@@ -512,7 +524,22 @@ where
     /// #### Note
     /// A count of zero still runs a `repeat` once. On `at_rate` it
     /// starts nothing, and the handle reads `TaskFailed`
-    pub fn count(mut self, runs: u32) -> TaskBuilder<F, K, D, Set, W> {
+    ///
+    /// Set once, and before `after`:
+    ///
+    /// ```compile_fail,E0277
+    /// use atap::{Compute, Runtime};
+    /// use std::time::Duration;
+    ///
+    /// let _ = Runtime::task(Compute::compute(|()| 1))
+    ///     .repeat()
+    ///     .after(Duration::from_millis(1))
+    ///     .count(3);
+    /// ```
+    pub fn count(mut self, runs: u32) -> TaskBuilder<F, K, D, Set, W>
+    where
+        C: Unset,
+    {
         self.setup.runs = runs;
         self.moved()
     }

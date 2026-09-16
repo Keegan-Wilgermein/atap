@@ -10,7 +10,7 @@ use std::time::Duration;
 /// one and not three
 #[test]
 fn for_duration_stops_before_the_run_that_would_overrun() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()

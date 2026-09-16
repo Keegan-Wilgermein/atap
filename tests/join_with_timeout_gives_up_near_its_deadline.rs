@@ -5,7 +5,7 @@ use std::time::Instant;
 /// A timeout that runs out gives up close to its deadline
 #[test]
 fn join_with_timeout_gives_up_near_its_deadline() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let timeout = Duration::from_millis(100);
     let handle =

@@ -7,7 +7,7 @@ use std::time::Duration;
 /// A count and a deadline end at whichever comes first
 #[test]
 fn count_and_deadline_end_at_whichever_is_first() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let gap = Duration::from_millis(20);
 

@@ -7,7 +7,7 @@ use std::time::Duration;
 /// Spawning and joining tasks over and over doesn't grow memory
 #[test]
 fn spawning_does_not_leak() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let warmup = 1_000;
     let total = 200_000;

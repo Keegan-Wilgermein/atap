@@ -40,7 +40,7 @@ fn within(cap: Duration, mut condition: impl FnMut() -> bool) -> Option<Duration
 /// Every phase, one after another
 #[test]
 fn the_worker_target_bends_under_real_need() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let start = Runtime::workers();
     let floor = start.len();

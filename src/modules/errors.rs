@@ -6,6 +6,7 @@ use std::{error::Error, fmt, io};
 /// A collection of all the errors
 /// that can occur, that the user can see
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum RuntimeError {
     /// A `libc` call failed, carrying its `errno` if there was one
     CheckError(Option<i32>),
@@ -143,7 +144,9 @@ impl fmt::Display for RuntimeError {
             Self::NotReady => write!(formatter, "the task has not settled yet"),
             Self::StillInUse => write!(formatter, "too much of the task table is in use to trim"),
             Self::BadPath => write!(formatter, "the path can't be handed to the kernel"),
-            Self::BadArgument => write!(formatter, "an argument contains a zero byte"),
+            Self::BadArgument => {
+                write!(formatter, "an argument cannot be handed to the kernel as written")
+            }
             Self::BadVariable => {
                 write!(
                     formatter,
@@ -167,4 +170,57 @@ impl fmt::Display for RuntimeError {
     }
 }
 
+impl RuntimeError {
+    /// The `errno` a failed system call left, if there was one
+    pub fn raw_os_error(&self) -> Option<i32> {
+        match self {
+            Self::CheckError(errno) => *errno,
+            _ => None,
+        }
+    }
+}
+
 impl Error for RuntimeError {}
+
+/// The kernel's own error for a `CheckError`, and `Other` carrying
+/// the runtime's for everything else
+impl From<RuntimeError> for io::Error {
+    fn from(error: RuntimeError) -> Self {
+        match error.raw_os_error() {
+            Some(errno) => io::Error::from_raw_os_error(errno),
+            None => io::Error::other(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a failed system call carries an `errno`
+    #[test]
+    fn only_a_check_error_has_an_errno() {
+        assert_eq!(
+            RuntimeError::CheckError(Some(libc::ENOENT)).raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        assert_eq!(RuntimeError::CheckError(None).raw_os_error(), None);
+        assert_eq!(RuntimeError::TimedOut.raw_os_error(), None);
+    }
+
+    /// An `errno` becomes the kernel's own error, and anything else
+    /// keeps the runtime's
+    #[test]
+    fn converts_into_an_io_error() {
+        let os = io::Error::from(RuntimeError::CheckError(Some(libc::ENOENT)));
+        assert_eq!(os.kind(), io::ErrorKind::NotFound);
+        assert_eq!(os.raw_os_error(), Some(libc::ENOENT));
+
+        let other = io::Error::from(RuntimeError::Closed);
+        assert_eq!(other.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            other.get_ref().and_then(|inner| inner.downcast_ref::<RuntimeError>()),
+            Some(&RuntimeError::Closed)
+        );
+    }
+}

@@ -56,7 +56,8 @@ pub struct Runtime;
 impl Runtime {
     /// Inits a new runtime
     ///
-    /// If a runtime is already initialised, this is a no-op
+    /// If a runtime is already initialised, this returns
+    /// `AlreadyInit` and changes nothing
     ///
     /// After a `shutdown`, this starts it again. A shutdown still
     /// in progress is waited out first
@@ -65,7 +66,7 @@ impl Runtime {
     /// and instead handle all their operations and state internally
     ///
     /// For this reason, Runtimes are threadsafe
-    pub fn init() -> Option<RuntimeError> {
+    pub fn init() -> Result<(), RuntimeError> {
         if INIT.swap(true, Ordering::SeqCst) {
             // Somebody else is part way through, so wait it out
             while !READY.load(Ordering::Acquire) {
@@ -77,12 +78,12 @@ impl Runtime {
             return Executor::init();
         }
 
-        let error = init_runtime();
+        let started = init_runtime();
 
         // Set whether or not it worked
         READY.store(true, Ordering::Release);
 
-        error
+        started
     }
 
     /// Blocking call
@@ -392,11 +393,8 @@ impl Runtime {
 /// The real non user facing init function
 ///
 /// Called by the `Runtime::init()` method only
-fn init_runtime() -> Option<RuntimeError> {
-    let reactor_id = match unsafe { libc::kqueue() }.check() {
-        Ok(reactor_id) => reactor_id,
-        Err(error) => return Some(error),
-    };
+fn init_runtime() -> Result<(), RuntimeError> {
+    let reactor_id = unsafe { libc::kqueue() }.check()?;
 
     REACTOR_KQUEUE_ID.store(reactor_id, Ordering::SeqCst);
 
@@ -440,9 +438,5 @@ fn init_runtime() -> Option<RuntimeError> {
     });
 
     // Not spawned, since the kqueue has to exist before `init` returns
-    if let Some(error) = Executor::init() {
-        return Some(error);
-    }
-
-    None
+    Executor::init()
 }

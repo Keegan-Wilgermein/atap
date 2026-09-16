@@ -8,7 +8,7 @@ use std::time::Instant;
 /// A race with a task that has already finished returns at once
 #[test]
 fn a_task_that_already_finished_wins_at_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let done = sleeping(1);
 

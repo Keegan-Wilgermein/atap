@@ -8,7 +8,7 @@ use std::{thread, time::Duration};
 /// grows nothing
 #[test]
 fn waiting_costs_no_thread() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let interval = Duration::from_secs(1);
 

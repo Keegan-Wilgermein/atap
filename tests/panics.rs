@@ -28,7 +28,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// down with it
 #[test]
 fn a_panicking_compute_fails() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let doomed = Runtime::task(Compute::compute(|()| -> u32 {
         panic!("a compute went down")
@@ -54,7 +54,7 @@ fn a_panicking_compute_fails() {
 /// deal with
 #[test]
 fn a_parent_sees_its_child_fail() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let parent = Runtime::task(Compute::compute(|()| {
         let child =
@@ -74,7 +74,7 @@ fn a_parent_sees_its_child_fail() {
 /// was in
 #[test]
 fn a_panic_deep_in_a_split_fails_its_branch() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     fn split(depth: u32, doomed: u32) -> Result<u32, RuntimeError> {
         if depth == 0 {
@@ -106,7 +106,7 @@ fn a_panic_deep_in_a_split_fails_its_branch() {
 /// A repeat that panics part way ends there
 #[test]
 fn a_repeat_that_panics_ends() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&runs);
@@ -140,7 +140,7 @@ fn a_repeat_that_panics_ends() {
 /// after it
 #[test]
 fn a_waiting_task_that_panics_refuses_later_gives() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|value: i32| {
         if value < 0 {
@@ -168,7 +168,7 @@ fn a_waiting_task_that_panics_refuses_later_gives() {
 /// A receive whose source panics finishes rather than waiting forever
 #[test]
 fn a_receive_from_a_panicking_source_finishes() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|()| -> u32 {
         panic!("the source went down")
@@ -197,7 +197,7 @@ fn a_receive_from_a_panicking_source_finishes() {
 /// A receive that panics leaves its source untouched
 #[test]
 fn a_panicking_receive_leaves_its_source_alone() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|()| 12u32)).spawn();
 
@@ -219,7 +219,7 @@ fn a_panicking_receive_leaves_its_source_alone() {
 /// some of its runs
 #[test]
 fn give_to_skips_the_runs_that_panicked() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -268,7 +268,7 @@ fn give_to_skips_the_runs_that_panicked() {
 /// alone
 #[test]
 fn a_flood_of_panics_leaves_everything_else_right() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handles: Vec<_> = (0..2_000u32)
         .map(|value| {

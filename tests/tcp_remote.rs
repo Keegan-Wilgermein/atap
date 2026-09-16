@@ -17,7 +17,7 @@ use std::time::Duration;
 #[test]
 #[ignore = "needs the network"]
 fn the_site_answers_a_request_for_its_version() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let request = format!(
         "GET {PATH} HTTP/1.0\r\nHost: {HOST}\r\nUser-Agent: atap-test\r\nConnection: close\r\n\r\n"

@@ -10,7 +10,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// A repeat feeds its input to every run, not just the first
 #[test]
 fn a_repeat_feeds_every_run() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Process::output("/bin/cat", Process::NO_ARGS).input(b"hi".as_slice()))

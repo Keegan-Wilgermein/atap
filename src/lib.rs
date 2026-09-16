@@ -99,7 +99,7 @@ pub use futures::unix::{
     UnixListenTask, UnixListener, UnixRecvFromTask, UnixSendToTask,
 };
 pub use modules::builder::{
-    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, TaskBuilder,
+    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, TaskBuilder, Unset,
     WaitFor, Waits, Wiring,
 };
 pub use modules::errors::RuntimeError;

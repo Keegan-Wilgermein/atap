@@ -45,7 +45,7 @@ fn touch(path: &PathBuf, bytes: &[u8]) {
 /// A write to a watched file wakes the task waiting on it
 #[test]
 fn a_write_wakes_the_watch() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("written");
     fs::write(file.path(), b"before").unwrap();
@@ -72,7 +72,7 @@ fn a_write_wakes_the_watch() {
 /// A watch with a timeout gives up on a file nothing touches
 #[test]
 fn a_watch_gives_up_when_asked_to() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("untouched");
     fs::write(file.path(), b"still").unwrap();
@@ -98,7 +98,7 @@ fn a_watch_gives_up_when_asked_to() {
 /// A repeating watch reports every change, one run each
 #[test]
 fn a_repeating_watch_reports_every_change() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("repeated");
     fs::write(file.path(), b"one").unwrap();
@@ -130,7 +130,7 @@ fn a_repeating_watch_reports_every_change() {
 /// reported, rather than being lost with the run that missed it
 #[test]
 fn a_change_between_runs_is_not_lost() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("between");
     fs::write(file.path(), b"one").unwrap();
@@ -171,7 +171,7 @@ fn a_change_between_runs_is_not_lost() {
 /// Removing a watched file reports a removal
 #[test]
 fn a_removed_file_reads_as_removed() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("removed");
     fs::write(file.path(), b"here for now").unwrap();
@@ -196,7 +196,7 @@ fn a_removed_file_reads_as_removed() {
 /// one waits rather than spinning on an answer it already gave
 #[test]
 fn a_repeating_watch_reports_a_removal_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("removed-once");
     fs::write(file.path(), b"here for now").unwrap();
@@ -232,7 +232,7 @@ fn a_repeating_watch_reports_a_removal_once() {
 /// rename, and the watch stays on the file rather than the name
 #[test]
 fn a_renamed_file_reads_as_renamed() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("renamed");
     let moved = TestPath::new("renamed-to");
@@ -258,7 +258,7 @@ fn a_renamed_file_reads_as_renamed() {
 /// A new entry in a watched directory wakes the watch on it
 #[test]
 fn a_new_entry_wakes_a_directory_watch() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let dir = TestPath::new("directory");
     fs::create_dir(dir.path()).expect("could not make the watched directory");
@@ -285,7 +285,7 @@ fn a_new_entry_wakes_a_directory_watch() {
 /// on the removal
 #[test]
 fn a_narrowed_watch_ignores_what_it_did_not_ask_for() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("narrowed");
     fs::write(file.path(), b"before").unwrap();
@@ -318,7 +318,7 @@ fn a_narrowed_watch_ignores_what_it_did_not_ask_for() {
 /// A path that isn't there is an error rather than a wait
 #[test]
 fn a_path_that_is_not_there_says_so() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("never-made");
     let change = Runtime::block(File::watch(file.path()));
@@ -336,7 +336,7 @@ fn a_path_that_is_not_there_says_so() {
 /// the change, the same as a spawned one
 #[test]
 fn a_blocking_watch_waits_for_its_change() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("blocking");
     fs::write(file.path(), b"before").unwrap();
@@ -362,7 +362,7 @@ fn a_blocking_watch_waits_for_its_change() {
 /// waiting on a file nothing will touch
 #[test]
 fn a_cancelled_watch_settles() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("cancelled");
     fs::write(file.path(), b"never touched again").unwrap();

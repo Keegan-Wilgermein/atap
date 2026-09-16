@@ -31,7 +31,7 @@ fn chain(depth: usize) -> usize {
 /// the extra workers are reaped afterwards
 #[test]
 fn deep_recursion_replaces_blocked_workers() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let before = Runtime::workers();
 

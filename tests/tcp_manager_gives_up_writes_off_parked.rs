@@ -13,7 +13,7 @@ use std::{thread, time::Duration};
 /// gives their slots back
 #[test]
 fn a_manager_that_gives_up_writes_off_parked_receives() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let listener = Runtime::block(Tcp::listen("127.0.0.1:0")).unwrap();
     let client = Runtime::block(Tcp::connect(listener.local_addr())).unwrap();

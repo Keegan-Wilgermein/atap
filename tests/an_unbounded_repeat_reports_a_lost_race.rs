@@ -5,7 +5,7 @@ use std::time::Duration;
 /// rather than `Finished`, since another run is coming
 #[test]
 fn an_unbounded_repeat_reports_a_lost_race() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()

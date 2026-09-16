@@ -12,7 +12,7 @@ use std::{
 /// part way through a batch of wakes
 #[test]
 fn a_manager_dying_on_a_batch_loses_no_waits() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let waits = 32;
     let interval = Duration::from_millis(5);

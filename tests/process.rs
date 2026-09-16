@@ -32,7 +32,7 @@ fn settled<T>(handle: &TaskHandle<T>, patience: Duration) -> Option<T> {
 /// A program that ran and failed is an answer, not an error
 #[test]
 fn a_run_reports_its_exit_code() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     println!("running /usr/bin/true");
     let ok =
@@ -58,7 +58,7 @@ fn a_run_reports_its_exit_code() {
 /// Stdout and stderr each come back as themselves
 #[test]
 fn output_comes_back_on_the_right_stream() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Process::output(
         "/bin/sh",
@@ -89,7 +89,7 @@ fn output_comes_back_on_the_right_stream() {
 /// streams finishes
 #[test]
 fn a_child_that_floods_both_pipes_does_not_deadlock() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     const FLOOD: usize = 4 * 1024 * 1024;
 
@@ -110,7 +110,7 @@ fn a_child_that_floods_both_pipes_does_not_deadlock() {
 /// Many children spawned at once all finish
 #[test]
 fn many_children_at_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     const CHILDREN: usize = 16;
 
@@ -138,7 +138,7 @@ fn many_children_at_once() {
 /// A cancelled task's child stops running
 #[test]
 fn a_cancelled_child_stops_running() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let scratch = std::env::temp_dir().join(format!("atap-cancel-{}.txt", std::process::id()));
     let _ = fs::remove_file(&scratch);
@@ -189,7 +189,7 @@ fn a_cancelled_child_stops_running() {
 /// A program that isn't there says so
 #[test]
 fn a_program_that_is_not_there_reports_it() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let found = Runtime::block(Process::run("/no/such/program", Process::NO_ARGS));
 
@@ -203,7 +203,7 @@ fn a_program_that_is_not_there_reports_it() {
 /// A child's standard input is `/dev/null`, not this process's
 #[test]
 fn stdin_is_not_the_terminal() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Process::output("/bin/cat", Process::NO_ARGS)).spawn();
 
@@ -218,7 +218,7 @@ fn stdin_is_not_the_terminal() {
 /// A child gets the default `SIGPIPE` back
 #[test]
 fn sigpipe_is_reset() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Process::output("/bin/sh", ["-c", "yes | head -1"])).spawn();
 
@@ -233,7 +233,7 @@ fn sigpipe_is_reset() {
 /// wrong
 #[test]
 fn a_zero_byte_is_refused() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let bad_argument = Runtime::block(Process::run("/bin/echo", ["a\0b"]));
 
@@ -255,7 +255,7 @@ fn a_zero_byte_is_refused() {
 /// A run child can still write to this process's stderr
 #[test]
 fn a_run_child_still_has_somewhere_to_write() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let wrote = Runtime::block(Process::run(
         "/bin/sh",
@@ -284,7 +284,7 @@ fn a_run_child_still_has_somewhere_to_write() {
 /// The bytes reach the child
 #[test]
 fn input_reaches_the_child() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Process::output("/bin/cat", Process::NO_ARGS).input(b"hello\n".as_slice()))
@@ -306,7 +306,7 @@ fn input_reaches_the_child() {
 /// finishes
 #[test]
 fn a_child_fed_more_than_a_pipe_holds_does_not_deadlock() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     const FLOOD: usize = 4 * 1024 * 1024;
 
@@ -332,7 +332,7 @@ fn a_child_fed_more_than_a_pipe_holds_does_not_deadlock() {
 /// The child is told when its input has ended
 #[test]
 fn input_ends_so_the_child_sees_its_end() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Process::output("/usr/bin/wc", ["-c"]).input(b"12345".as_slice())).spawn();
@@ -349,7 +349,7 @@ fn input_ends_so_the_child_sees_its_end() {
 /// A child that never reads its input still finishes
 #[test]
 fn a_child_that_ignores_its_input_finishes() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let fed = vec![b'z'; 4 * 1024 * 1024];
 
@@ -368,7 +368,7 @@ fn a_child_that_ignores_its_input_finishes() {
 /// A child that takes only part of its input still finishes
 #[test]
 fn a_child_that_takes_part_of_its_input_finishes() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let fed = vec![b'z'; 4 * 1024 * 1024];
 
@@ -394,7 +394,7 @@ fn a_child_that_takes_part_of_its_input_finishes() {
 /// Input reaches a run child too
 #[test]
 fn input_reaches_a_run_child() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let found =
         Runtime::block(Process::run("/usr/bin/grep", ["-q", "ping"]).input(b"ping\n".as_slice()))
@@ -416,7 +416,7 @@ fn input_reaches_a_run_child() {
 /// An empty input is the same as none at all
 #[test]
 fn an_empty_input_is_the_same_as_none() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Process::output("/bin/cat", Process::NO_ARGS).input(b"".as_slice())).spawn();
@@ -432,7 +432,7 @@ fn an_empty_input_is_the_same_as_none() {
 /// The child starts where it was told to
 #[test]
 fn in_dir_changes_where_the_child_starts() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Process::output("/bin/pwd", Process::NO_ARGS).in_dir("/usr")).spawn();
@@ -452,7 +452,7 @@ fn in_dir_changes_where_the_child_starts() {
 /// A relative program runs once, in the new directory
 #[test]
 fn a_relative_program_runs_once_in_the_new_directory() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let scratch = std::env::temp_dir().join(format!("atap-relative-{}.txt", std::process::id()));
     let _ = fs::remove_file(&scratch);
@@ -476,7 +476,7 @@ fn a_relative_program_runs_once_in_the_new_directory() {
 /// A directory that isn't there is reported
 #[test]
 fn a_directory_that_is_not_there_is_reported() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let found = Runtime::block(Process::run("/bin/pwd", Process::NO_ARGS).in_dir("/no/such/dir"));
 
@@ -490,7 +490,7 @@ fn a_directory_that_is_not_there_is_reported() {
 /// runs
 #[test]
 fn a_relative_directory_is_refused() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let relative = Runtime::block(Process::run("/bin/pwd", Process::NO_ARGS).in_dir("build"));
 
@@ -512,7 +512,7 @@ fn a_relative_directory_is_refused() {
 /// A variable reaches the child
 #[test]
 fn env_puts_a_variable_in_the_child() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(
         Process::output("/bin/sh", ["-c", "printf %s \"$ATAP_TEST\""]).env([("ATAP_TEST", "yes")]),
@@ -529,7 +529,7 @@ fn env_puts_a_variable_in_the_child() {
 /// An overlay leaves the rest of the environment alone
 #[test]
 fn env_leaves_the_rest_of_the_environment_alone() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(
         Process::output("/bin/sh", ["-c", "printf %s \"$PATH\""]).env([("ATAP_TEST", "yes")]),
@@ -549,7 +549,7 @@ fn env_leaves_the_rest_of_the_environment_alone() {
 /// An overlay replaces a variable rather than adding it twice
 #[test]
 fn env_replaces_a_variable_rather_than_adding_it_twice() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(
         Process::output("/bin/sh", ["-c", "env | grep -c '^HOME='"]).env([("HOME", "/atap")]),
@@ -583,7 +583,7 @@ fn env_replaces_a_variable_rather_than_adding_it_twice() {
 /// A replaced environment gives the child nothing else
 #[test]
 fn env_only_gives_the_child_nothing_else() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Process::output("/usr/bin/env", Process::NO_ARGS).env_only([("ONLY", "1")]))
@@ -604,7 +604,7 @@ fn env_only_gives_the_child_nothing_else() {
 /// A variable that can't be passed on is refused
 #[test]
 fn a_bad_variable_is_refused() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     for (name, value, why) in [
         ("A\0B", "x", "a zero byte in the name"),
@@ -626,7 +626,7 @@ fn a_bad_variable_is_refused() {
 /// Input, directory and environment all at once
 #[test]
 fn all_three_at_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(
         Process::output("/bin/sh", ["-c", "cat; pwd; printf %s \"$V\""])

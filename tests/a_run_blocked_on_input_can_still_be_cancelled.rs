@@ -7,7 +7,7 @@ use std::time::Instant;
 /// still be cancelled
 #[test]
 fn a_run_blocked_on_input_can_still_be_cancelled() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let fed = vec![b'z'; 4 * 1024 * 1024];
 

@@ -9,7 +9,7 @@ use std::time::Instant;
 /// last one to finish
 #[test]
 fn every_overlaps_its_runs() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let interval = Duration::from_millis(50);
     let duration = Duration::from_millis(200);

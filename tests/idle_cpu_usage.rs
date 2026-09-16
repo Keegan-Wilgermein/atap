@@ -14,7 +14,7 @@ use std::{
 /// almost no cpu
 #[test]
 fn idle_cpu_usage() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 20;
     let waiting = Duration::from_secs(5);

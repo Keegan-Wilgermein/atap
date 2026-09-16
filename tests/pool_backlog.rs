@@ -7,7 +7,7 @@ use std::time::Duration;
 /// with it
 #[test]
 fn backlog_is_visible_while_running() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 200_000;
 

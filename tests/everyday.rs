@@ -46,7 +46,7 @@ fn workspace() -> PathBuf {
 /// still works afterwards
 #[test]
 fn a_program_that_just_runs() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // ---- startup
 

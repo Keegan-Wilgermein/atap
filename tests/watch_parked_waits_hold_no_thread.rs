@@ -56,7 +56,7 @@ impl Drop for TestDir {
 #[test]
 fn parked_watches_hold_no_thread() {
     raise_descriptor_limit();
-    Runtime::init();
+    let _ = Runtime::init();
 
     let dir = TestDir::new();
 

@@ -7,7 +7,7 @@ use std::time::Instant;
 /// of a queued batch
 #[test]
 fn builder_priority_reaches_the_band() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 10_000;
     let started = Instant::now();

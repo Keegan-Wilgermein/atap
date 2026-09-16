@@ -10,7 +10,7 @@ use std::{
 /// Prints how a blocking precise sleep compares to `thread::sleep`
 #[test]
 fn sleep_accuracy_vs_std_blocking() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let duration = Duration::from_secs(1);
 
@@ -42,7 +42,7 @@ fn sleep_accuracy_vs_std_blocking() {
 /// Blocking sleeps on several threads at once
 #[test]
 fn sleep_multi_threaded_blocking() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let threads = 4;
 
@@ -69,7 +69,7 @@ fn sleep_multi_threaded_blocking() {
 /// A single spawned sleep joins
 #[test]
 fn single_spawned_task() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Sleep::sleep(Duration::from_secs(2))).spawn();
 
@@ -83,7 +83,7 @@ fn single_spawned_task() {
 /// Two handles to one task both read the same output
 #[test]
 fn duplicated_handles_both_join() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let duration = Duration::from_millis(200);
 
@@ -102,7 +102,7 @@ fn duplicated_handles_both_join() {
 /// A take leaves other handles reading `AlreadyTaken`
 #[test]
 fn take_invalidates_other_handles() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let first =
         Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn();
@@ -121,7 +121,7 @@ fn take_invalidates_other_handles() {
 /// A cancelled task reads `Cancelled` through every handle
 #[test]
 fn cancelled_task_is_unreadable() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let first =
         Runtime::task(Sleep::sleep(Duration::from_secs(1)).mode(SleepMode::Relaxed)).spawn();
@@ -139,7 +139,7 @@ fn cancelled_task_is_unreadable() {
 /// `maybe_join` says why there is nothing to read
 #[test]
 fn maybe_join_says_why_rather_than_just_nothing() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Sleep::sleep(Duration::from_secs(1)).mode(SleepMode::Relaxed)).spawn();
@@ -163,7 +163,7 @@ fn maybe_join_says_why_rather_than_just_nothing() {
 /// A timed out join leaves the handle usable
 #[test]
 fn join_with_timeout_gives_up_without_giving_up_the_handle() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let duration = Duration::from_secs(1);
     let handle = Runtime::task(Sleep::sleep(duration).mode(SleepMode::Relaxed)).spawn();
@@ -192,7 +192,7 @@ fn join_with_timeout_gives_up_without_giving_up_the_handle() {
 /// A back to back repeat keeps running until it is cancelled
 #[test]
 fn repeating_runs_until_cancelled() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let wanted = 20;
     let handle = Runtime::task(Sleep::sleep(Duration::from_millis(5)).mode(SleepMode::Relaxed))
@@ -227,7 +227,7 @@ fn repeating_runs_until_cancelled() {
 /// A back to back repeat never overlaps its runs
 #[test]
 fn repeating_finishes_a_run_before_the_next() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let duration = Duration::from_millis(50);
     let runs: u32 = 5;
@@ -269,7 +269,7 @@ fn repeating_finishes_a_run_before_the_next() {
 /// A repeat with a gap waits out the gap between runs
 #[test]
 fn repeat_every_waits_between_runs() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let interval = Duration::from_millis(50);
     let runs: u32 = 5;
@@ -313,7 +313,7 @@ fn repeat_every_waits_between_runs() {
 /// `at_rate` starts its runs no closer together than the period
 #[test]
 fn every_starts_runs_on_the_interval() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let interval = Duration::from_millis(50);
     let runs: u32 = 5;
@@ -356,7 +356,7 @@ fn every_starts_runs_on_the_interval() {
 /// Cancelling an `at_rate` schedule ends every run of it
 #[test]
 fn every_ends_the_whole_series_on_cancel() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Sleep::sleep(Duration::from_nanos(1)))
         .at_rate(Duration::from_millis(5))
@@ -389,7 +389,7 @@ fn every_ends_the_whole_series_on_cancel() {
 /// A million tasks spawned and joined one at a time
 #[test]
 fn many_one_by_one_tasks() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 1_000_000;
 
@@ -413,7 +413,7 @@ fn many_one_by_one_tasks() {
 /// comes back
 #[test]
 fn survives_losing_its_manager() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 200_000;
     let quick = || Sleep::sleep(Duration::from_nanos(1));
@@ -463,7 +463,7 @@ fn survives_losing_its_manager() {
 /// without committing to waiting for it
 #[test]
 fn maybe_take_polls_without_committing() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn();
@@ -489,7 +489,7 @@ fn maybe_take_polls_without_committing() {
 /// Giving up on a take leaves the output where it was
 #[test]
 fn take_with_timeout_costs_nothing_when_it_gives_up() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Sleep::sleep(Duration::from_millis(300)).mode(SleepMode::Relaxed)).spawn();
@@ -511,7 +511,7 @@ fn take_with_timeout_costs_nothing_when_it_gives_up() {
 /// Waiting without reading, and without giving up the handle
 #[test]
 fn wait_settles_without_consuming_or_reading() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Sleep::sleep(Duration::from_millis(50)).mode(SleepMode::Relaxed)).spawn();
@@ -527,7 +527,7 @@ fn wait_settles_without_consuming_or_reading() {
 /// The state and the predicates say the same thing
 #[test]
 fn state_and_predicates_agree() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let ready =
         Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
@@ -570,7 +570,7 @@ fn state_and_predicates_agree() {
 /// A repeat built at a priority is still a repeat
 #[test]
 fn builder_repeats_at_a_priority() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed))
         .priority(200)
@@ -607,7 +607,7 @@ fn builder_repeats_at_a_priority() {
 fn handles_compare_and_hash_on_the_task() {
     use std::collections::HashSet;
 
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Sleep::sleep(Duration::from_millis(20)).mode(SleepMode::Relaxed)).spawn();
@@ -631,7 +631,7 @@ fn handles_compare_and_hash_on_the_task() {
 /// Every task in a set, in the order they were given
 #[test]
 fn join_all_keeps_the_order_it_was_given() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handles: Vec<_> = (1..=5)
         .map(|step| {
@@ -660,7 +660,7 @@ fn join_all_keeps_the_order_it_was_given() {
 /// A healthy runtime says so
 #[test]
 fn status_reports_a_live_runtime() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let status = Runtime::status();
     println!("{status}");
@@ -677,7 +677,7 @@ fn status_reports_a_live_runtime() {
 /// A delayed task waits, then runs
 #[test]
 fn after_waits_before_it_runs() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(200);
     let started = Instant::now();
@@ -710,7 +710,7 @@ fn after_waits_before_it_runs() {
 /// through, since a delay costs a slot and no thread
 #[test]
 fn many_delayed_tasks_cost_no_threads() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(300);
     let started = Instant::now();
@@ -742,7 +742,7 @@ fn many_delayed_tasks_cost_no_threads() {
 /// The builder reaches the same delay the method does
 #[test]
 fn builder_after_delays_too() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(150);
     let started = Instant::now();
@@ -766,7 +766,7 @@ fn builder_after_delays_too() {
 /// A delay and a repeat compose rather than replacing each other
 #[test]
 fn delay_and_repeat_compose() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(200);
     let gap = Duration::from_millis(20);
@@ -797,7 +797,7 @@ fn delay_and_repeat_compose() {
 /// A deadline already past runs once and stops
 #[test]
 fn until_in_the_past_runs_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed))
         .repeat()
@@ -815,7 +815,7 @@ fn until_in_the_past_runs_once() {
 /// A schedule counts what it starts
 #[test]
 fn at_rate_starts_exactly_its_count() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = 4;
 
@@ -844,7 +844,7 @@ fn at_rate_starts_exactly_its_count() {
 /// A schedule can be delayed too
 #[test]
 fn at_rate_waits_out_a_delay_before_its_first_run() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(200);
     let started = Instant::now();
@@ -872,7 +872,7 @@ fn at_rate_waits_out_a_delay_before_its_first_run() {
 /// Cancelling a bounded series still ends it
 #[test]
 fn a_cancelled_bounded_repeat_is_finished() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Sleep::sleep(Duration::from_millis(10)).mode(SleepMode::Relaxed))
         .repeat()
@@ -902,7 +902,7 @@ fn a_cancelled_bounded_repeat_is_finished() {
 /// A repeat with no bound is not finished between runs
 #[test]
 fn an_unbounded_repeat_is_never_finished() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // A long gap, so the read below lands between runs rather
     // than racing the next one

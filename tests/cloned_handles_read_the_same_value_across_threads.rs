@@ -6,7 +6,7 @@ use std::time::Duration;
 /// Clones of a handle read the same value from any thread
 #[test]
 fn cloned_handles_read_the_same_value_across_threads() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let threads = 16;
     let rounds = 32;

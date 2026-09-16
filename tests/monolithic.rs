@@ -19,7 +19,7 @@ use std::{
 /// Runs every phase below, one after another
 #[test]
 fn monolithic() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     report("starting");
 

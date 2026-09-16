@@ -7,7 +7,7 @@ use common::sleeping;
 /// were given
 #[test]
 fn pass_back_hands_the_losers_over_in_order() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let quick = sleeping(5);
     let quick_id = quick.id();

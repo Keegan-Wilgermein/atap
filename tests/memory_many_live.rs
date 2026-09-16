@@ -7,7 +7,7 @@ use std::time::Duration;
 /// A million live tasks fit in the memory their slots should cost
 #[test]
 fn many_concurrent_tasks() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = 1_000_000;
     let mut handle_list = Vec::with_capacity(tasks);

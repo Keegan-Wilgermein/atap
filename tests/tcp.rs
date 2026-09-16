@@ -16,7 +16,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A listener on a free loopback port
 fn listener() -> Listener {
-    Runtime::init();
+    let _ = Runtime::init();
 
     Runtime::block(Tcp::listen("127.0.0.1:0")).expect("a loopback listener must open")
 }
@@ -276,7 +276,7 @@ fn nobody_listening_is_refused() {
 /// Something that isn't an address fails as one
 #[test]
 fn a_nonsense_address_is_a_bad_address() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     assert_eq!(
         Runtime::block(Tcp::connect("not an address")).map(|_| ()),

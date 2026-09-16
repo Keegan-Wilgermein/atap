@@ -27,7 +27,7 @@ const QUIET: Duration = Duration::from_millis(100);
 /// A give starts one run with its value, and nothing more
 #[test]
 fn a_give_starts_one_run_with_its_value() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -51,7 +51,7 @@ fn a_give_starts_one_run_with_its_value() {
 /// Nothing runs before the first give
 #[test]
 fn nothing_runs_before_the_first_give() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&runs);
@@ -89,7 +89,7 @@ fn nothing_runs_before_the_first_give() {
 /// A task takes gives one after another until it is cancelled
 #[test]
 fn a_task_takes_gives_until_it_is_cancelled() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -131,7 +131,7 @@ fn a_task_takes_gives_until_it_is_cancelled() {
 /// over, and keeps its last output
 #[test]
 fn a_count_of_gives_finishes_the_task() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -171,7 +171,7 @@ fn a_count_of_gives_finishes_the_task() {
 /// with the newest value
 #[test]
 fn gives_during_a_run_leave_one_more_run_with_the_newest_value() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (started, starts) = mpsc::channel();
     let (release, released) = mpsc::channel::<()>();
@@ -216,7 +216,7 @@ fn gives_during_a_run_leave_one_more_run_with_the_newest_value() {
 /// value given always runs
 #[test]
 fn gives_from_many_threads_never_overlap_and_the_last_one_runs() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     const LAST: u64 = u64::MAX;
 
@@ -283,7 +283,7 @@ fn gives_from_many_threads_never_overlap_and_the_last_one_runs() {
 /// A give to a cancelled task is refused
 #[test]
 fn a_give_to_a_cancelled_task_is_refused() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|value: u8| value))
         .wait_for::<u8>()
@@ -306,7 +306,7 @@ fn a_give_to_a_cancelled_task_is_refused() {
 /// A task that takes nothing can wait for a value of any type
 #[test]
 fn a_task_that_takes_nothing_waits_for_anything() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let asked = Duration::from_millis(2);
 
@@ -333,7 +333,7 @@ fn a_task_that_takes_nothing_waits_for_anything() {
 /// A compute whose closure takes nothing waits for `()`
 #[test]
 fn a_compute_that_takes_nothing_waits_for_unit() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|()| 5))
         .wait_for::<()>()
@@ -347,7 +347,7 @@ fn a_compute_that_takes_nothing_waits_for_unit() {
 /// An output taken between gives is replaced by the next give's run
 #[test]
 fn taking_between_gives_leaves_room_for_the_next_output() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -380,7 +380,7 @@ fn taking_between_gives_leaves_room_for_the_next_output() {
 /// `after` is waited out after every give
 #[test]
 fn after_is_waited_out_after_every_give() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(30);
     let (ran, runs) = mpsc::channel();
@@ -418,7 +418,7 @@ fn after_is_waited_out_after_every_give() {
 /// Dropping every handle to a task never given anything lets it go
 #[test]
 fn dropping_every_handle_to_a_waiting_task_lets_it_go() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let held = Arc::new(());
     let captured = Arc::clone(&held);
@@ -454,7 +454,7 @@ fn dropping_every_handle_to_a_waiting_task_lets_it_go() {
 /// over, and not before
 #[test]
 fn the_last_handle_going_mid_run_lets_the_task_go_after_the_run() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let held = Arc::new(());
     let captured = Arc::clone(&held);
@@ -498,7 +498,7 @@ fn the_last_handle_going_mid_run_lets_the_task_go_after_the_run() {
 /// holds it is done with it
 #[test]
 fn a_handle_given_as_data_lives_as_long_as_the_task_holding_it() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let inner = Runtime::task(Compute::compute(|()| 11)).spawn();
 
@@ -528,7 +528,7 @@ struct Holding {
 /// so neither keeps the other alive
 #[test]
 fn a_task_given_its_own_handle_lets_go_of_it_once_cancelled() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let probe = Arc::new(());
     let (ran, runs) = mpsc::channel();
@@ -561,7 +561,7 @@ fn a_task_given_its_own_handle_lets_go_of_it_once_cancelled() {
 /// A waiting task that panics takes no more gives
 #[test]
 fn a_waiting_task_that_panics_takes_no_more_gives() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|value: u8| -> u8 {
         if value == 0 {
@@ -585,7 +585,7 @@ fn a_waiting_task_that_panics_takes_no_more_gives() {
 /// `join_first` races handles to waiting tasks like any others
 #[test]
 fn join_first_races_waiting_handles() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let first = Runtime::task(Compute::compute(|value: u8| value))
         .wait_for::<u8>()

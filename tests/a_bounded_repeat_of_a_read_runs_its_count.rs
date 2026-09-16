@@ -8,7 +8,7 @@ use std::time::Duration;
 /// A counted repeat of a read runs exactly its count, then finishes
 #[test]
 fn a_bounded_repeat_of_a_read_runs_its_count() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let file = TestPath::new("counted");
     fs::write(file.path(), b"counted").unwrap();

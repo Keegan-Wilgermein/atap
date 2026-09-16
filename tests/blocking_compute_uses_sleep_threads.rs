@@ -21,7 +21,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// running on the workers alongside them
 #[test]
 fn blocking_computes_wait_on_sleep_threads() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let waits = cores() * 4;
     let wait = Duration::from_millis(200);

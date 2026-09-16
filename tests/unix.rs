@@ -15,7 +15,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// A socket path of this test's own, with nothing left at it
 /// from an earlier run
 fn sock(name: &str) -> PathBuf {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let path = PathBuf::from(format!("/tmp/atap-{}-{name}.sock", process::id()));
     let _ = fs::remove_file(&path);
@@ -181,7 +181,7 @@ fn connecting_to_nothing_is_not_found() {
 /// it gets there
 #[test]
 fn a_path_too_long_is_a_bad_path() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let path = format!("/tmp/{}", "x".repeat(200));
 

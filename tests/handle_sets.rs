@@ -36,7 +36,7 @@ where
 /// A tuple of handles of different types arrives as that tuple
 #[test]
 fn a_tuple_of_mixed_types_arrives_as_that_tuple() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let joined = Runtime::task(Compute::compute(|(a, b, c): (u8, String, f64)| {
         format!("{a} {b} {c}")
@@ -54,7 +54,7 @@ fn a_tuple_of_mixed_types_arrives_as_that_tuple() {
 /// Sets inside sets arrive in the same shape
 #[test]
 fn nested_sets_arrive_nested() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let total = Runtime::task(Compute::compute(
         |(a, (b, [c, d])): (u8, (u16, [u32; 2]))| a as u64 + b as u64 + c as u64 + d as u64,
@@ -69,7 +69,7 @@ fn nested_sets_arrive_nested() {
 /// A set bigger than twelve is built by nesting tuples
 #[test]
 fn a_set_past_twelve_is_built_by_nesting() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     type Twelve = (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64);
 
@@ -104,7 +104,7 @@ fn a_set_past_twelve_is_built_by_nesting() {
 /// A `Vec` of a thousand handles is gathered whole
 #[test]
 fn a_vec_of_a_thousand_handles_is_gathered_whole() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handles: Vec<_> = (0..1_000u64).map(value).collect();
 
@@ -119,7 +119,7 @@ fn a_vec_of_a_thousand_handles_is_gathered_whole() {
 /// A `Vec` of tuples arrives as a `Vec` of tuples, in order
 #[test]
 fn a_vec_of_tuples_arrives_as_a_vec_of_tuples() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let pairs = Runtime::task(Compute::compute(|pairs: Vec<(u8, char)>| pairs))
         .receive(vec![(value(1u8), value('a')), (value(2u8), value('b'))])
@@ -135,7 +135,7 @@ fn a_vec_of_tuples_arrives_as_a_vec_of_tuples() {
 /// An array of handles arrives as an array, in order
 #[test]
 fn an_array_of_handles_arrives_as_an_array() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let all = Runtime::task(Compute::compute(|all: [u8; 4]| all))
         .receive([value(1u8), value(2u8), value(3u8), value(4u8)])
@@ -149,7 +149,7 @@ fn an_array_of_handles_arrives_as_an_array() {
 /// once with nothing and finishes
 #[test]
 fn an_empty_set_runs_once_with_nothing() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let empty = Runtime::task(Compute::compute(|all: Vec<u8>| all.len()))
         .receive(Vec::<TaskHandle<u8>>::new())
@@ -165,7 +165,7 @@ fn an_empty_set_runs_once_with_nothing() {
 /// The same handle twice in a set fills both places
 #[test]
 fn the_same_handle_twice_fills_both_places() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let five = value(5u8);
 
@@ -180,7 +180,7 @@ fn the_same_handle_twice_fills_both_places() {
 /// A task that takes nothing waits for the whole set before it runs
 #[test]
 fn a_task_that_takes_nothing_waits_for_the_whole_set() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let first = Runtime::task(Compute::compute(|value: u8| value))
         .wait_for::<u8>()
@@ -215,7 +215,7 @@ fn a_task_that_takes_nothing_waits_for_the_whole_set() {
 /// than the one before, place by place
 #[test]
 fn rounds_from_repeats_never_go_backwards() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let fast_count = Arc::new(AtomicUsize::new(0));
     let slow_count = Arc::clone(&Arc::new(AtomicUsize::new(0)));
@@ -268,7 +268,7 @@ fn rounds_from_repeats_never_go_backwards() {
 /// receiver off
 #[test]
 fn a_failing_task_in_a_set_writes_the_receiver_off() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let good = value(1u8);
 
@@ -291,7 +291,7 @@ fn a_failing_task_in_a_set_writes_the_receiver_off() {
 /// takes, one at a time
 #[test]
 fn receive_any_turns_mixed_types_into_the_input() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let small = Runtime::task(Compute::compute(|value: u8| value))
         .wait_for::<u8>()
@@ -326,7 +326,7 @@ fn receive_any_turns_mixed_types_into_the_input() {
 /// `receive_any` starts a task that takes nothing, on any output
 #[test]
 fn receive_any_starts_a_task_that_takes_nothing() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let first = Runtime::task(Compute::compute(|value: u8| value))
         .wait_for::<u8>()
@@ -353,7 +353,7 @@ fn receive_any_starts_a_task_that_takes_nothing() {
 /// `receive_any` takes a `Vec` of handles
 #[test]
 fn receive_any_takes_a_vec() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let sources: Vec<_> = (0..4)
         .map(|_| {

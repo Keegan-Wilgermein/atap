@@ -22,7 +22,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 #[test]
 fn parked_receives_hold_no_thread() {
     raise_descriptor_limit();
-    Runtime::init();
+    let _ = Runtime::init();
 
     let listener = Runtime::block(Tcp::listen("127.0.0.1:0")).unwrap();
 

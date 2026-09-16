@@ -13,7 +13,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A socket on a free loopback port
 fn socket() -> UdpSocket {
-    Runtime::init();
+    let _ = Runtime::init();
 
     Runtime::block(Udp::bind("127.0.0.1:0")).expect("a loopback socket must bind")
 }

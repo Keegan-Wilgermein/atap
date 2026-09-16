@@ -9,7 +9,7 @@ use std::time::Instant;
 /// still found promptly
 #[test]
 fn a_task_that_settles_during_registration_is_still_found() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // Short enough to finish while `join_first` is still registering
     for _ in 0..32 {

@@ -11,7 +11,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// a repeat
 #[test]
 fn every_setting_survives_a_repeat() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(
         Process::output("/bin/sh", ["-c", "pwd; printf %s \"$V\""])

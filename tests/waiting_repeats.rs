@@ -34,7 +34,7 @@ fn collect<T>(runs: &mpsc::Receiver<T>, count: usize) -> Vec<T> {
 /// of gives finishes the task
 #[test]
 fn each_give_starts_a_series_of_its_own_count() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -82,7 +82,7 @@ fn each_give_starts_a_series_of_its_own_count() {
 /// handed, and starts nothing of its own
 #[test]
 fn a_give_mid_series_only_replaces_the_value() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -128,7 +128,7 @@ fn a_give_mid_series_only_replaces_the_value() {
 /// starts one new series, never two and never none
 #[test]
 fn a_give_racing_the_end_of_a_series_never_starts_two() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     for round in 0..200u64 {
         let (ran, runs) = mpsc::channel();
@@ -172,7 +172,7 @@ fn a_give_racing_the_end_of_a_series_never_starts_two() {
 /// Every series gets its whole count and keeps its gaps
 #[test]
 fn every_gap_and_count_start_afresh_for_each_series() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let gap = Duration::from_millis(15);
     let (ran, runs) = mpsc::channel();
@@ -225,7 +225,7 @@ fn every_gap_and_count_start_afresh_for_each_series() {
 /// last one it starts
 #[test]
 fn for_duration_starts_afresh_for_each_series() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let span = Duration::from_millis(300);
     let (ran, runs) = mpsc::channel();
@@ -276,7 +276,7 @@ fn for_duration_starts_afresh_for_each_series() {
 /// A schedule a give starts runs its count, then waits for the next
 #[test]
 fn an_at_rate_series_runs_for_each_give() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -315,7 +315,7 @@ fn an_at_rate_series_runs_for_each_give() {
 /// An unbounded repeat keeps running, with whatever was given last
 #[test]
 fn an_unbounded_repeat_keeps_running_with_the_latest_value() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -358,7 +358,7 @@ fn an_unbounded_repeat_keeps_running_with_the_latest_value() {
 /// `after` is waited out before every series a give starts
 #[test]
 fn after_is_waited_out_before_each_series() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(25);
     let (ran, runs) = mpsc::channel();

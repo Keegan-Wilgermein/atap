@@ -7,7 +7,7 @@ use std::time::Duration;
 /// A count runs exactly that many times
 #[test]
 fn count_runs_exactly_that_many_times() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = 5;
 

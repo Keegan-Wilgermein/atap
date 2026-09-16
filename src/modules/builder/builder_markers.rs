@@ -79,6 +79,17 @@ pub trait Repeatable: sealed::Sealed {}
 impl Repeatable for Repeat {}
 impl Repeatable for Rate {}
 
+/// An axis whose setter is still available
+#[diagnostic::on_unimplemented(
+    message = "`count` is already set",
+    label = "set once, and before `after`",
+    note = "`after` closes the count, so chain `count` first"
+)]
+#[allow(private_bounds)]
+pub trait Unset: sealed::Sealed {}
+
+impl Unset for Open {}
+
 /// What starts a task's runs, and what the builder carries for it
 #[allow(private_bounds)]
 pub trait Wiring: sealed::Sealed {
@@ -118,6 +129,11 @@ impl<H> Wiring for ReceiveAny<H> {
 /// A wiring where something arriving starts each run, so a count of
 /// arrivals and a kind can be chained after it
 #[allow(private_bounds)]
+#[diagnostic::on_unimplemented(
+    message = "a task that runs once has nothing to count",
+    label = "not repeating or waiting",
+    note = "chain `repeat`, `at_rate`, `wait_for` or `receive` before `count`"
+)]
 pub trait Waits: Wiring {}
 
 impl<T> Waits for WaitFor<T> {}

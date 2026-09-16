@@ -10,7 +10,7 @@ use std::{
 /// Cancelled sleeps give their sleep threads straight back
 #[test]
 fn cancelling_hands_the_thread_back() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let sleeps = 16;
     let patience = Duration::from_secs(5);

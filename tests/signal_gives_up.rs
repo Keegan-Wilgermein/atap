@@ -20,7 +20,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// and two tasks on one signal both wake
 #[test]
 fn a_wait_gives_up_when_asked_to() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // A timeout on a signal nothing sends
     let quiet = SignalKind::Quit;

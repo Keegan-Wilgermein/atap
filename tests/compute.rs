@@ -23,7 +23,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// what it returned
 #[test]
 fn a_compute_that_takes_nothing_runs_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let answer = Runtime::task(Compute::compute(|()| 6 * 7)).spawn();
 
@@ -33,7 +33,7 @@ fn a_compute_that_takes_nothing_runs_once() {
 /// Blocking on a compute runs it on the calling thread
 #[test]
 fn blocking_on_a_compute_runs_it_here() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let caller = thread::current().id();
     let ran_on = Runtime::block(Compute::compute(|()| thread::current().id()));
@@ -47,7 +47,7 @@ fn blocking_on_a_compute_runs_it_here() {
 /// A repeated compute runs exactly as many times as its count
 #[test]
 fn a_repeated_compute_runs_exactly_its_count() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&runs);
@@ -73,7 +73,7 @@ fn a_repeated_compute_runs_exactly_its_count() {
 /// A compute on a rate runs once a period until its count is up
 #[test]
 fn a_compute_on_a_rate_runs_its_count() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&runs);
@@ -95,7 +95,7 @@ fn a_compute_on_a_rate_runs_its_count() {
 /// Runs of an `every` compute start at least the gap apart
 #[test]
 fn every_spaces_compute_runs_by_at_least_its_gap() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let gap = Duration::from_millis(20);
     let starts = Arc::new(Mutex::new(Vec::new()));
@@ -136,7 +136,7 @@ fn every_spaces_compute_runs_by_at_least_its_gap() {
 /// A compute that panics fails alone, and the pool carries on
 #[test]
 fn a_panicking_compute_fails_and_the_pool_carries_on() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let doomed = Runtime::task(Compute::compute(|()| -> u8 {
         panic!("this compute is meant to go down")
@@ -161,7 +161,7 @@ fn a_panicking_compute_fails_and_the_pool_carries_on() {
 /// whole
 #[test]
 fn an_output_bigger_than_a_slot_comes_back_whole() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle = Runtime::task(Compute::compute(|()| {
         let mut big = [0u64; 64];
@@ -190,7 +190,7 @@ fn an_output_bigger_than_a_slot_comes_back_whole() {
 /// it
 #[test]
 fn a_compute_drops_what_it_captured_once_it_is_done() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let held = Arc::new(());
     let captured = Arc::clone(&held);
@@ -215,7 +215,7 @@ fn a_compute_drops_what_it_captured_once_it_is_done() {
 /// An output that can't be cloned can still be moved out
 #[test]
 fn an_output_that_cannot_be_cloned_can_be_taken() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     /// Owns its bytes, and can't be copied
     struct Owned(Vec<u8>);
@@ -232,7 +232,7 @@ fn an_output_that_cannot_be_cloned_can_be_taken() {
 /// A compute that says it blocks still runs to its end
 #[test]
 fn a_blocking_compute_runs_to_its_end() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let asked = Duration::from_millis(20);
 
@@ -261,7 +261,7 @@ fn a_blocking_compute_runs_to_its_end() {
 /// A compute can spawn another compute and wait for its answer
 #[test]
 fn a_compute_can_spawn_another_and_wait_for_it() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let outer = Runtime::task(Compute::compute(|()| {
         let inner = Runtime::task(Compute::compute(|()| 20)).spawn();
@@ -276,7 +276,7 @@ fn a_compute_can_spawn_another_and_wait_for_it() {
 /// A delayed compute doesn't run before its delay is up
 #[test]
 fn a_delayed_compute_waits_out_its_delay() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let delay = Duration::from_millis(30);
     let spawned = Instant::now();
@@ -300,7 +300,7 @@ fn a_delayed_compute_waits_out_its_delay() {
 /// A compute cancelled before its delay is up never runs
 #[test]
 fn a_compute_cancelled_before_its_delay_never_runs() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&runs);
@@ -329,7 +329,7 @@ fn a_compute_cancelled_before_its_delay_never_runs() {
 /// Thousands of computes each come back with their own answer
 #[test]
 fn every_compute_comes_back_with_its_own_answer() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handles: Vec<_> = (0..10_000u64)
         .map(|index| {

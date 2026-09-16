@@ -102,7 +102,7 @@ fn fibonacci(n: u64) -> u64 {
 #[test]
 fn resource_usage() {
     let (_, started) = measured("phase 1: starting the runtime", || {
-        Runtime::init();
+        let _ = Runtime::init();
         format!("{} cores", cores())
     });
 

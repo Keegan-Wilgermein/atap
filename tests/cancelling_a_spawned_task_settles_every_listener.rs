@@ -6,7 +6,7 @@ use std::time::Instant;
 /// Cancelling a task settles every handle to it straight away
 #[test]
 fn cancelling_a_spawned_task_settles_every_listener() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handle =
         Runtime::task(Sleep::sleep(Duration::from_secs(30)).mode(SleepMode::Relaxed)).spawn();

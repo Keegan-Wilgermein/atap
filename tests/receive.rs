@@ -28,7 +28,7 @@ const QUIET: Duration = Duration::from_millis(100);
 /// output
 #[test]
 fn receiving_from_a_finished_task_runs_with_its_output() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|()| 21)).spawn();
 
@@ -49,7 +49,7 @@ fn receiving_from_a_finished_task_runs_with_its_output() {
 /// A receive from a task that hasn't published yet runs once it does
 #[test]
 fn receiving_from_a_waiting_task_runs_once_it_is_given() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|value: i32| value + 1))
         .wait_for::<i32>()
@@ -81,7 +81,7 @@ fn receiving_from_a_waiting_task_runs_once_it_is_given() {
 /// finishes once the repeat does
 #[test]
 fn receiving_from_a_repeat_follows_it_and_finishes_with_it() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let counter = Arc::new(AtomicUsize::new(0));
     let counting = Arc::clone(&counter);
@@ -127,7 +127,7 @@ fn receiving_from_a_repeat_follows_it_and_finishes_with_it() {
 /// publishes
 #[test]
 fn a_receive_with_a_count_of_one_runs_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let runs = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&runs);
@@ -165,7 +165,7 @@ fn a_receive_with_a_count_of_one_runs_once() {
 /// A source that panics without publishing writes its receiver off
 #[test]
 fn a_source_that_panics_writes_its_receiver_off() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|()| -> u8 {
         panic!("this source is meant to go down")
@@ -185,7 +185,7 @@ fn a_source_that_panics_writes_its_receiver_off() {
 /// A source cancelled before it published writes its receiver off
 #[test]
 fn a_cancelled_source_writes_its_receiver_off() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|value: u8| value))
         .wait_for::<u8>()
@@ -207,7 +207,7 @@ fn a_cancelled_source_writes_its_receiver_off() {
 /// receiver waits for the next
 #[test]
 fn an_output_taken_before_the_receive_waits_for_the_next() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|value: u32| value))
         .wait_for::<u32>()
@@ -244,7 +244,7 @@ fn an_output_taken_before_the_receive_waits_for_the_next() {
 /// `give_to` hands an output to every task it was chained to
 #[test]
 fn give_to_fans_out_to_every_waiter() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (ran, runs) = mpsc::channel();
 
@@ -283,7 +283,7 @@ fn give_to_fans_out_to_every_waiter() {
 /// `give_to` gives every output of a repeat, in order
 #[test]
 fn give_to_follows_every_output_of_a_repeat() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let counter = Arc::new(AtomicUsize::new(0));
     let counting = Arc::clone(&counter);
@@ -323,7 +323,7 @@ fn give_to_follows_every_output_of_a_repeat() {
 /// A value carried through a chain of receives comes out the far end
 #[test]
 fn a_chain_of_receives_carries_a_value_through() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let start = Runtime::task(Compute::compute(|()| 20)).spawn();
 
@@ -344,7 +344,7 @@ fn a_chain_of_receives_carries_a_value_through() {
 /// stage
 #[test]
 fn a_pipeline_of_a_thousand_stages_counts_every_stage() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let mut last = Runtime::task(Compute::compute(|()| 0u64)).spawn();
 
@@ -362,7 +362,7 @@ fn a_pipeline_of_a_thousand_stages_counts_every_stage() {
 /// exactly once
 #[test]
 fn a_receive_racing_a_publish_gets_the_output_exactly_once() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     for round in 0..500u64 {
         let runs = Arc::new(AtomicUsize::new(0));
@@ -402,7 +402,7 @@ fn a_receive_racing_a_publish_gets_the_output_exactly_once() {
 /// A waiting source given before the receive hands that output over
 #[test]
 fn a_waiting_source_given_before_the_receive_hands_its_output_over() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|value: u32| value * 3))
         .wait_for::<u32>()
@@ -424,7 +424,7 @@ fn a_waiting_source_given_before_the_receive_hands_its_output_over() {
 /// output over once it is done
 #[test]
 fn a_waiting_source_mid_run_hands_its_output_over_when_done() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let (started, starts) = mpsc::channel();
     let (release, released) = mpsc::channel::<()>();
@@ -464,7 +464,7 @@ fn a_waiting_source_mid_run_hands_its_output_over_when_done() {
 /// next one
 #[test]
 fn a_waiting_source_with_an_old_output_hands_that_over_then_the_next() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|value: u32| value))
         .wait_for::<u32>()
@@ -498,7 +498,7 @@ fn a_waiting_source_with_an_old_output_hands_that_over_then_the_next() {
 /// A waiting source out of gives lets its receiver finish
 #[test]
 fn a_waiting_source_out_of_gives_lets_its_receiver_finish() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let source = Runtime::task(Compute::compute(|value: u32| value))
         .wait_for::<u32>()
@@ -522,7 +522,7 @@ fn a_waiting_source_out_of_gives_lets_its_receiver_finish() {
 /// receiver go, and then goes itself
 #[test]
 fn a_waiting_source_held_only_by_a_receive_lets_both_go() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let probe = Arc::new(());
     let captured = Arc::clone(&probe);

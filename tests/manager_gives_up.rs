@@ -16,7 +16,7 @@ use std::{thread, time::Duration};
 /// on it, and the pool keeps working
 #[test]
 fn a_manager_that_gives_up_strands_nothing() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let quick = || Sleep::sleep(Duration::from_nanos(1));
     let interval = Duration::from_millis(20);

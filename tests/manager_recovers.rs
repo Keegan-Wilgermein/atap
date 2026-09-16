@@ -11,7 +11,7 @@ use std::time::Duration;
 /// manager comes back with its timers
 #[test]
 fn manager_comes_back_from_going_down() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let interval = Duration::from_millis(20);
     let before = Runtime::task(Sleep::sleep(Duration::from_nanos(1)))

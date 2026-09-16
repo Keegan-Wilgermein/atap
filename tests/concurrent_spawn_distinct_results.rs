@@ -5,7 +5,7 @@ use std::time::Duration;
 /// Tasks spawned from many threads at once each get their own result
 #[test]
 fn concurrent_spawn_distinct_results() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let threads = 8;
     let per_thread = 8;

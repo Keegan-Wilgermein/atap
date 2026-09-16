@@ -7,7 +7,7 @@ use std::{thread, time::Duration};
 /// Sleep threads with nothing to do are reaped
 #[test]
 fn pool_reaps_idle_sleep_threads() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let handles: Vec<_> = (0..cores() * 4)
         .map(|_| {

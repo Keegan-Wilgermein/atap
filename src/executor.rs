@@ -269,12 +269,12 @@ impl Executor {
     /// ## Returns
     /// `AlreadyInit` when the runtime is already running. A
     /// shutdown or a start still in progress is waited out first
-    pub(crate) fn init() -> Option<RuntimeError> {
+    pub(crate) fn init() -> Result<(), RuntimeError> {
         loop {
             match LIFECYCLE.compare_exchange(STOPPED, STARTING, Ordering::SeqCst, Ordering::SeqCst)
             {
                 Ok(_) => break,
-                Err(RUNNING) => return Some(RuntimeError::AlreadyInit),
+                Err(RUNNING) => return Err(RuntimeError::AlreadyInit),
                 Err(_) => thread::sleep(SHUTDOWN_POLL),
             }
         }
@@ -283,7 +283,7 @@ impl Executor {
             Ok(id) => id,
             Err(error) => {
                 LIFECYCLE.store(STOPPED, Ordering::SeqCst);
-                return Some(error);
+                return Err(error);
             }
         };
 
@@ -298,7 +298,7 @@ impl Executor {
 
         LIFECYCLE.store(RUNNING, Ordering::SeqCst);
 
-        None
+        Ok(())
     }
 
     /// Adds a new `Task` to be processed
@@ -2579,7 +2579,7 @@ mod tests {
     /// finishes
     #[test]
     fn pool_grows_when_tasks_hold_their_workers() {
-        crate::Runtime::init();
+        let _ = crate::Runtime::init();
 
         let cores = thread::available_parallelism()
             .map(|count| count.get())
@@ -2612,7 +2612,7 @@ mod tests {
     /// start a delayed task that has since taken its id
     #[test]
     fn a_stale_park_wake_cannot_start_a_delayed_task() {
-        crate::Runtime::init();
+        let _ = crate::Runtime::init();
 
         let handle = crate::Runtime::task(Sleep::sleep(Duration::from_micros(1)))
             .after(Duration::from_millis(300))
@@ -2644,7 +2644,7 @@ mod tests {
     /// around it still finishes
     #[test]
     fn panicking_task_does_not_lose_its_queue() {
-        crate::Runtime::init();
+        let _ = crate::Runtime::init();
 
         let quick = || Sleep::sleep(Duration::from_micros(50));
 

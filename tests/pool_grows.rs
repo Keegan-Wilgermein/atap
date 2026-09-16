@@ -10,7 +10,7 @@ use std::{
 /// Blocking tasks grow the sleep threads, and run side by side
 #[test]
 fn pool_grows_under_blocking_load() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let tasks = cores() * 4;
     let duration = Duration::from_millis(400);

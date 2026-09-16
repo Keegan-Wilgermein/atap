@@ -13,7 +13,7 @@ use std::{thread, time::Duration};
 /// for data that arrives after
 #[test]
 fn a_parked_receive_survives_manager_restarts() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     let listener = Runtime::block(Tcp::listen("127.0.0.1:0")).unwrap();
     let client = Runtime::block(Tcp::connect(listener.local_addr())).unwrap();

@@ -8,7 +8,7 @@ use std::time::Duration;
 /// that was already taken reads `AlreadyTaken`
 #[test]
 fn finished_and_already_taken_are_different_endings() {
-    Runtime::init();
+    let _ = Runtime::init();
 
     // A one shot, taken twice
     let once =
