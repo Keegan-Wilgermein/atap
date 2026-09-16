@@ -30,8 +30,7 @@ impl TaskKind {
     /// The bit in the kind byte that marks a task spawned with
     /// `wait_for`
     ///
-    /// Beside the kind rather than one of them, since any kind can
-    /// wait for gives
+    /// Any kind can wait for gives
     pub(crate) const WAITS: u8 = 0x80;
 
     /// Rebuilds a kind from the raw value in the slot

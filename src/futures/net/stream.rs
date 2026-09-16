@@ -278,9 +278,7 @@ impl SendTask {
         loop {
             let sent = self.sent.0;
 
-            // Handed over isn't sent until nothing is held back inside,
-            // or TLS's last records would sit there with nobody to send
-            // them
+            // Handed over isn't sent until nothing is held back inside
             if sent == self.data.len() {
                 return match self.source.flush()? {
                     Io::Wait(filter) => self.clock.wait(fd, filter),

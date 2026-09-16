@@ -1,11 +1,6 @@
 //! # Dispatch
 //! The counting handler behind every signal task, and which
 //! signals the runtime has taken over
-//!
-//! A signal says nothing a task could look at, unlike a socket,
-//! so the runtime counts deliveries itself. A task then compares
-//! the count with what it last saw, which makes every wake
-//! something it can check rather than something it has to trust
 
 use crate::{
     RuntimeError, futures::signal::signal::SigReleasePolicy, modules::int_check::IntCheck,

@@ -1,8 +1,6 @@
 //! # Faults
 //! Failures the crate's own tests can ask for, so the paths that
 //! recover from them run on demand
-//!
-//! Each check costs a thread one load while nothing is owed
 
 use std::{
     any::Any,

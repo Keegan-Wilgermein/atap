@@ -15,8 +15,7 @@ use crate::{
 
 /// A task a schedule can make more of
 ///
-/// `Send` but not `Sync`, because only the manager thread ever
-/// calls `launch`
+/// Only the manager thread ever calls `launch`
 pub(crate) trait SeriesTask: Send {
     /// Spawns one run of the series
     ///

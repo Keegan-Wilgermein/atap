@@ -1,10 +1,6 @@
 //! # Executor
 //! Owns every task slot in the process and manages the pool of
 //! workers that run them
-//!
-//! A `TaskHandle` is only an id, so every operation on a task
-//! comes through here. The manager never sits between a task
-//! and a worker; it only adapts the pool
 
 use crate::{
     Runtime, RuntimeError,
@@ -96,13 +92,10 @@ const STOPPING: u8 = 3;
 
 /// Where the runtime is between an `init` and a `shutdown`
 ///
-/// Only a `STOPPED` runtime is started and only a `RUNNING` one
-/// is stopped, so a start and a stop never overlap. `SeqCst`
-/// throughout
+/// `SeqCst` throughout
 static LIFECYCLE: AtomicU8 = AtomicU8::new(STOPPED);
 
-/// The thread supervising the manager, so a shutdown can wait
-/// for it to be gone before the runtime can start again
+/// The thread supervising the manager
 static SUPERVISOR: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 /// Whether the runtime is stopping or stopped
@@ -214,9 +207,7 @@ pub(crate) fn shutdown_now() {
         // manager would otherwise arm it again
         data.disarm();
 
-        // A parked task holds no thread, so nothing would ever give
-        // this one's reference back. Written off, like a delay still
-        // waiting
+        // A parked task holds no thread to give its reference back
         if data.parked() {
             unpark(task, data);
             continue;
@@ -244,8 +235,7 @@ pub(crate) fn shutdown_now() {
     LIFECYCLE.store(STOPPED, Ordering::SeqCst);
 }
 
-/// Manager deaths still owed, so tests can exercise the restart
-/// path
+/// Manager deaths still owed
 static INJECTED_FAULTS: AtomicU32 = AtomicU32::new(0);
 
 /// Makes the manager come apart the next `count` times it goes
@@ -274,9 +264,7 @@ impl Executor {
     /// Starts the manager and opens the pool
     ///
     /// Used by the first `Runtime::init` and by every one after a
-    /// shutdown. The kqueue and the first workers are created on
-    /// the calling thread, so a task spawned the moment `init`
-    /// returns has somewhere to go
+    /// shutdown
     ///
     /// ## Returns
     /// `AlreadyInit` when the runtime is already running. A
@@ -474,8 +462,7 @@ impl Executor {
 
     /// Takes 1 off the listener count on a piece of data
     ///
-    /// Whoever takes it to zero frees the slot, since nobody else
-    /// can still see it
+    /// Whoever takes it to zero frees the slot
     pub(crate) fn drop_listener(id: usize) {
         let Some(data) = slot(id) else {
             return;
@@ -531,9 +518,6 @@ impl Executor {
     /// ## Returns
     /// How it settled, or `NotReady` if the deadline came first.
     /// `None` waits forever
-    ///
-    /// The time left is worked out afresh each time round, so
-    /// spurious wakes can't stretch the wait
     pub(crate) fn wait_until(
         id: usize,
         deadline: Option<Instant>,
@@ -939,8 +923,7 @@ where
     (handle, false)
 }
 
-/// Spawns one run of a series, dropping its handle, since the
-/// run's output goes to the series slot
+/// Spawns one run of a series, dropping its handle
 ///
 /// ## Returns
 /// Whether a run is on its way
@@ -1071,8 +1054,7 @@ pub(crate) fn run(id: usize) {
 
         // Only a task coming back from a park is turned away while
         // still `Running`, with its task in the slot. It carries on
-        // where it was. Asked only once `begin` has refused, so a run
-        // that begins pays nothing for it
+        // where it was
         false if data.state() == TaskState::Running => true,
 
         // Cancelled or failed, so it is dropped unrun
@@ -1092,9 +1074,6 @@ pub(crate) fn run(id: usize) {
     let reactor = Runtime::reactor_id();
     let payload = data.payload();
 
-    // A panic costs this task, not the thread. `AssertUnwindSafe`
-    // because the task is dropped unrun afterwards and its output
-    // is never read
     // Put back afterwards rather than cleared, since a worker helping
     // inside a task runs this inside that task's own run
     let outer = CURRENT.with(|current| current.replace(id));
@@ -1116,10 +1095,8 @@ pub(crate) fn run(id: usize) {
 
         Ok(None) => true,
 
-        // The thread going down rather than the task, from a worker
-        // helping inside this run. Carried on down through every run the
-        // thread is inside, leaving each one to the recovery that fails
-        // what a dead thread was holding
+        // The thread going down rather than the task. Carried on down
+        // through every run the thread is inside
         Err(payload) if faults::is_thread_death(payload.as_ref()) => {
             drop(task);
             panic::resume_unwind(payload);
@@ -1181,7 +1158,7 @@ pub(crate) fn run(id: usize) {
     }
 
     // Bounds checked before the task goes back, so an unwanted run
-    // is never queued. The count first, since it needs no clock
+    // is never queued
     let gap = match data.kind().waits() {
         true => Duration::from_nanos(data.interval()),
         false => Duration::ZERO,
@@ -1279,10 +1256,8 @@ enum Fired {
 /// thread back to the pool
 ///
 /// ## Behaviour
-/// The task goes back in its slot and is marked parked before
-/// anything is registered, so every wake can find it. The watch
-/// and the deadline go on the manager's queue, and whichever
-/// fires first queues the task again
+/// The watch and the deadline go on the manager's queue, and
+/// whichever fires first queues the task again
 ///
 /// A listener is held across the registration, so a cancel that
 /// takes the park down meanwhile can't free the slot under it
@@ -1551,9 +1526,7 @@ fn fire(ident: usize) {
 
 /// Starts a schedule whose first run goes now
 ///
-/// The first run counts against `count` like any other. The
-/// deadline isn't checked, since a window measured from now
-/// always has room for the run at its start
+/// The first run counts against `count` like any other
 ///
 /// ## Returns
 /// Whether the series is under way
@@ -1568,10 +1541,8 @@ fn start_series(id: usize, data: &TaskData) -> bool {
 
     // A schedule counts the runs it starts, since its runs overlap
     if data.count_run() {
-        // The only run allowed is away, so there is no timer to arm.
-        // The reference goes back now, since no tick will come for
-        // it, and the run holds a claim of its own. One that waits
-        // goes back for its next give instead
+        // The only run allowed is away, so the reference goes back
+        // now. One that waits goes back for its next give instead
         match data.takes_input() {
             true => rewait_series(id, data),
 
@@ -1591,8 +1562,7 @@ fn start_series(id: usize, data: &TaskData) -> bool {
 /// Starts the next run of a series, or clears the series up
 ///
 /// A cancelled schedule comes off the clock here, at its next
-/// tick, so only the manager ever touches its timer. Its slot
-/// is held until then
+/// tick. Its slot is held until then
 fn tick(id: usize, data: &TaskData) {
     // A delayed schedule's first wake was its delay, so the
     // repeating timer is armed now, once
@@ -1913,10 +1883,7 @@ fn wake(data: &TaskData) {
 
 /// Waits until one of `ids` has settled, and says which
 ///
-/// Each slot is asked to poke this thread's queue when it
-/// settles, which makes the answer prompt. The states are
-/// re-read on every wake, which makes it right, so a missed
-/// poke only costs `SELECT_POLL`
+/// A missed wake only costs `SELECT_POLL`
 ///
 /// ## Returns
 /// The first id found settled, or `None` for an empty set. An
@@ -2200,7 +2167,7 @@ pub(crate) fn abandon(id: usize) {
 ///
 /// A waiting task takes no more gives, and a task whose outputs are
 /// forwarded hands the last one to anything that hasn't had it, then
-/// lets every registration go. A task with no extras pays one load
+/// lets every registration go
 #[inline(always)]
 fn close_extras(data: &TaskData) {
     let Some(extras) = data.extras() else {
@@ -2217,10 +2184,8 @@ fn close_extras(data: &TaskData) {
 /// Lets go of what a finished schedule's outputs are forwarded to,
 /// once none of its runs can publish again
 ///
-/// A run that finishes after its schedule has finished is turned away
-/// unless nothing had landed yet, so once an output has landed nothing
-/// more ever will. A schedule still waiting on its first output is let
-/// go when that run publishes
+/// A schedule still waiting on its first output is let go when that
+/// run publishes
 fn close_finished_series(data: &TaskData) {
     if data.kind().repeats() || data.takes_input() || data.state() == TaskState::Pending {
         return;
@@ -2295,9 +2260,6 @@ pub(crate) fn write_off(id: usize) {
 
 /// Keeps the manager alive, restarting it with the same
 /// backoff, window and limit as the `Reactor`
-///
-/// Nothing is lost on a restart, since no task lives on the
-/// manager's stack
 fn supervise(id: i32) {
     let supervisor = thread::spawn(move || {
         let mut failures = 0;
@@ -2377,9 +2339,7 @@ fn executor_loop(id: i32) {
             return;
         }
 
-        // Only when a test asks. Here, after the wakes have been
-        // handed over, since that is the one place a death can lose
-        // something
+        // Only when a test asks
         if injected_fault() {
             panic!("injected manager fault");
         }
@@ -2423,9 +2383,8 @@ fn executor_loop(id: i32) {
 /// Writes off everything the manager's queue was driving, once
 /// that queue has closed
 ///
-/// A schedule's slot would otherwise be held for the life of
-/// the process. A run publishing into a series holds its own
-/// claim, so releasing here is safe
+/// A run publishing into a series holds its own claim, so
+/// releasing here is safe
 fn orphaned() {
     for task in 0..DATA.high_water() {
         let Some(data) = slot(task) else {
@@ -2469,12 +2428,8 @@ fn orphaned() {
 
 /// Puts back the wakes a dead manager took down with it
 ///
-/// A manager that dies holding a batch of wakes loses them, so
-/// every wait still marked armed is armed again. Re-arming one
-/// that wasn't lost is harmless: `EV_ADD` replaces the timer,
-/// and the wake is claimed once
-///
-/// A schedule needs none of this, since its timer repeats
+/// Every wait still marked armed is armed again. Re-arming one
+/// that wasn't lost is harmless
 fn recover_waits() {
     for task in 0..DATA.high_water() {
         let Some(data) = slot(task) else {
@@ -2514,8 +2469,7 @@ fn recover_waits() {
 /// started again
 ///
 /// Doesn't fail the backlog, since the pool carries on without
-/// a manager. Tasks are only written off when nothing is left
-/// that could run them
+/// a manager
 fn shutdown(id: i32) {
     EXECUTOR_KQUEUE_ID.store(DEAD_KQUEUE_ID, Ordering::SeqCst);
     let _ = unsafe { libc::close(id) };
@@ -2538,14 +2492,11 @@ fn shutdown(id: i32) {
 /// Writes off everything the pool was going to run, once nothing is
 /// left that could
 ///
-/// The pool is shut until a shutdown and an `init` start it again,
-/// since everything here is failed and its slot given back. Used when
-/// the manager gives up with no thread left, and when the pool can't
-/// bring a thread back on its own
+/// Used when the manager gives up with no thread left, and when the
+/// pool can't bring a thread back on its own
 pub(crate) fn write_off_pool() {
     // Nothing is left running. The pool is shut until a shutdown
-    // and an `init` start it again, since everything below is about
-    // to be failed and its slot given back
+    // and an `init` start it again
     POOL.close();
     POOL.abandon();
 

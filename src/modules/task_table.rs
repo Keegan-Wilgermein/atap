@@ -31,7 +31,7 @@ pub(crate) struct TaskTable {
     /// The highest `next_id` had been when a trim last lowered it
     ///
     /// `next_id` only climbs between trims, so the larger of the
-    /// two is the exact peak, with no work on the spawn path
+    /// two is the exact peak
     peak: AtomicUsize,
 
     /// Slots handed out and not yet given back
@@ -311,9 +311,8 @@ impl TaskTable {
     /// Takes the free list, putting back straight away every id
     /// below the floor
     ///
-    /// Keeps the window where spawns find no free id, and grow the
-    /// table instead, as short as it can. The tag is bumped so a
-    /// thread part way through a pop fails its exchange
+    /// The tag is bumped so a thread part way through a pop fails its
+    /// exchange
     fn drain_free(&self, floor: usize) -> Vec<usize> {
         let mut cursor = loop {
             let head = self.free.load(Ordering::Acquire);

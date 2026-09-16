@@ -69,9 +69,7 @@ impl Clock {
 
 /// Where one run of a task has got to
 ///
-/// A clone starts from the beginning, since a clone is always a
-/// fresh run: the copy a blocking call drives, or the next run
-/// of a schedule
+/// A clone starts from the beginning
 #[derive(Default)]
 pub(crate) struct Progress<T: Default>(pub(crate) T);
 

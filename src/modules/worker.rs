@@ -1,10 +1,6 @@
 //! # Worker
 //! One thread that takes tasks and runs them, and the ring of
 //! task ids waiting for it
-//!
-//! The ring lives in the pool's static array rather than on the
-//! thread's stack, so a worker that dies leaves its queue
-//! behind to be recovered
 
 use crate::{
     constants::{HELP_DEPTH, LOCAL_QUEUE, LOCAL_QUEUE_MASK, NO_TASK, WORKER_STACK},
@@ -53,9 +49,7 @@ pub(crate) struct Worker {
     /// yet, as its id plus one, taken before anything in the ring
     ///
     /// Taken with a swap, by the worker or a thief, so it only ever runs
-    /// once. The first rather than the newest, since a task that spawns
-    /// several and then joins them in order waits on the first, so a
-    /// worker helping while it waits runs the very task it waits on
+    /// once
     lifo: AtomicU32,
 
     /// Tasks taken from `lifo` in a row
@@ -67,14 +61,14 @@ pub(crate) struct Worker {
     /// Waits on other tasks this worker is inside right now
     ///
     /// A worker in one looks for work to help with between short
-    /// sleeps, so it isn't blocked the way a thread stuck in a call is
+    /// sleeps
     waits: AtomicU32,
 
     /// The tasks run while helping, each as its id plus one, by how
     /// deep it was run
     ///
-    /// Kept here, beside the task the loop holds, so a worker that dies
-    /// part way through helping leaves a note of all of them
+    /// So a worker that dies part way through helping leaves a note of
+    /// all of them
     nested: [AtomicUsize; HELP_DEPTH],
 
     /// Task ids waiting on this worker, each as its id plus one

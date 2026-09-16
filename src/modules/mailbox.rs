@@ -16,9 +16,7 @@ pub struct Mailbox<T> {
 
     /// The latest value given
     ///
-    /// Replaced by a give and never taken by a run, so every run of
-    /// a series is handed the latest value, and anything given lives
-    /// as long as the task does
+    /// Replaced by a give and never taken by a run
     value: Mutex<Option<T>>,
 }
 

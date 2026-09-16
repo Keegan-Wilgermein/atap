@@ -28,10 +28,8 @@ fn until_parked<T>(handle: &TaskHandle<T>) {
 /// here changes a path with
 ///
 /// #### Note
-/// An append rather than a `fs::write`, which truncates first. A
-/// watch can catch a truncating write between its two halves and
-/// report a file that got shorter, which is a true answer but not
-/// one a test can rely on. Appending only ever grows the file
+/// An append rather than a `fs::write`, which truncates first and
+/// can be caught half way through
 fn touch(path: &PathBuf, bytes: &[u8]) {
     use std::io::Write;
 

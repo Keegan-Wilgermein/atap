@@ -3,9 +3,6 @@
 //! takes none
 
 /// Stops `Task` being implemented outside the crate
-///
-/// `Task` has to be public for the signatures that name it, so
-/// sealing is what keeps it closed
 pub(crate) mod sealed {
     use std::time::Instant;
 
@@ -46,9 +43,8 @@ pub(crate) mod sealed {
 
 /// The input of a task that takes none
 ///
-/// No value of it can be made outside the crate, so no handle's
-/// output is ever one. That is what lets a task that takes
-/// nothing wait on a handle of any type
+/// No value of it can be made outside the crate, so a task that
+/// takes nothing can wait on a handle of any type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Nothing(pub(crate) ());
 

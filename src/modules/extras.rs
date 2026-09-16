@@ -1,6 +1,5 @@
 //! # Extras
-//! What only some tasks carry, kept off the slot's header so a
-//! plain task pays nothing for it
+//! What only some tasks carry, kept off the slot's header
 
 use crate::modules::{gate::Gate, receivers::Receivers, series::SeriesTask};
 use libc::c_void;

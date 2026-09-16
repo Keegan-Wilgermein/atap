@@ -1,11 +1,6 @@
 //! # Gate
 //! Whether a give starts a waiting task's next run, and what
 //! follows once a run, or a series of runs, is over
-//!
-//! Every handle that can give to the task shares it with the
-//! task's slot, so the executor reaches it without touching the
-//! task. One compare exchange on its state settles every race
-//! between gives, runs ending, cancels and the last handle going
 
 use crate::modules::task_setup::Deadline;
 use std::{

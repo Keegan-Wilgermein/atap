@@ -2,9 +2,7 @@
 //! The task `File::watch` returns, and everything it does once
 //! run
 //!
-//! The one file task that parks. A watch is nearly all waiting,
-//! so it holds the descriptor and gives its thread back the same
-//! way a socket task does, rather than sitting on a sleep thread
+//! The one file task that parks, holding no thread while it waits
 
 use crate::{
     RuntimeError,
@@ -55,8 +53,7 @@ pub struct WatchTask {
     path: Option<CString>,
 
     /// Which notes count, both for the watch the kernel is given
-    /// and for what the comparison looks at, so the two can never
-    /// disagree
+    /// and for what the comparison looks at
     notes: u32,
 
     /// The timeout
@@ -65,16 +62,14 @@ pub struct WatchTask {
     /// What this task last reported, and `None` before it has ever
     /// run
     ///
-    /// Deliberately kept across runs, which is what makes a repeat
-    /// lose nothing: the next run compares against where the last
-    /// one stopped
+    /// Kept across runs, so a repeat loses nothing
     seen: Option<Snapshot>,
 
     /// The descriptor the watch goes on, held open for as long as
     /// the task is
     ///
     /// Shared, so a copy watches the same file rather than opening
-    /// the path again and finding whatever is there by then
+    /// the path again
     fd: Option<Arc<Fd>>,
 }
 
@@ -128,10 +123,7 @@ impl WatchTask {
     /// look is against, opening the path on the first run
     ///
     /// ## Returns
-    /// A copy of both, so the caller isn't holding a borrow of the
-    /// task while it updates what the task has seen. The
-    /// descriptor is shared rather than opened again, so every run
-    /// watches the file the first one found
+    /// A copy of both
     fn watching(&mut self) -> Result<(Arc<Fd>, Snapshot), RuntimeError> {
         if let (Some(fd), Some(seen)) = (self.fd.as_ref(), self.seen) {
             return Ok((Arc::clone(fd), seen));
@@ -172,15 +164,9 @@ impl WatchTask {
             return Err(RuntimeError::TimedOut);
         }
 
-        // A path's watch only reports what happens once it is on,
-        // unlike a socket's. So a change landing between the look
-        // above and the watch going on would wake nothing, and the
-        // backstop is what makes that cost latency rather than the
-        // answer
-        //
-        // A file whose last name is gone is the one case that needs
-        // no backstop: nothing can reach it again, so looking again
-        // would only burn a thread
+        // A change landing before the watch goes on wakes nothing, so
+        // the backstop bounds the wait. A file with no names left
+        // needs none
         let deadline = match seen.gone() {
             true => self.clock.deadline(),
 
@@ -228,10 +214,8 @@ impl Task for WatchTask {
 /// Opens a path for watching and nothing else
 ///
 /// ## Behaviour
-/// `O_EVTONLY` is the descriptor this filter wants: it doesn't
-/// count as a use of the file, so a watch can't hold a volume
-/// from being unmounted. It opens a directory as readily as a
-/// file, which is what lets a directory be watched at all
+/// `O_EVTONLY`, so a watch doesn't hold a volume from being
+/// unmounted, and a directory opens as readily as a file
 fn open_watch(path: &CString) -> Result<Fd, RuntimeError> {
     let flags = libc::O_EVTONLY | libc::O_NONBLOCK | libc::O_CLOEXEC;
 

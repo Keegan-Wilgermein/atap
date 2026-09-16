@@ -19,9 +19,7 @@ const MAX_DATAGRAM: usize = 64 * 1024;
 ///
 /// #### Note
 /// A datagram the kernel won't take at all, too large or with
-/// nowhere to queue it, is an error rather than a wait. A
-/// datagram is allowed to be lost, so sending again is up to
-/// the caller
+/// nowhere to queue it, is an error rather than a wait
 pub(crate) fn send_datagram(
     fd: libc::c_int,
     data: &[u8],

@@ -5,9 +5,8 @@ use crate::futures::compute::compute_task::ComputeTask;
 
 /// Runs work of the program's own as a task
 ///
-/// The one family whose work is written by the program rather
-/// than the crate. Everything else a task can be chained with
-/// works the same: priorities, delays, repeats and schedules
+/// Everything a task can be chained with works the same:
+/// priorities, delays, repeats and schedules
 pub struct Compute;
 
 impl Compute {

@@ -4,10 +4,8 @@
 //! `cargo test --test tcp_remote -- --ignored --nocapture`
 //!
 //! #### Note
-//! Plain HTTP only, since the TCP tasks don't speak TLS. The
-//! site redirects HTTP to HTTPS, so a redirect is a pass: the
-//! request still went out over a real connection and a whole
-//! answer came back
+//! Plain HTTP only. The site redirects HTTP to HTTPS, so a
+//! redirect is a pass
 
 mod common;
 

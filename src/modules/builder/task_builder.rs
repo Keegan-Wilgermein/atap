@@ -56,10 +56,10 @@ type Forwards = Vec<Box<dyn FnOnce(usize)>>;
 /// Nothing runs until `spawn` is called, so a dropped builder
 /// starts nothing
 ///
-/// - `K` — the kind: `Once`, `Repeat` or `Rate`
-/// - `D` — whether a deadline has been set
-/// - `C` — whether the open state's count has been set
-/// - `W` — what starts each run: `NoWait`, `WaitFor<T>`,
+/// - `K`: the kind, `Once`, `Repeat` or `Rate`
+/// - `D`: whether a deadline has been set
+/// - `C`: whether the open state's count has been set
+/// - `W`: what starts each run, `NoWait`, `WaitFor<T>`,
 ///   `ReceiveAll<H>` or `ReceiveAny<H>`
 pub struct TaskBuilder<F, K = Once, D = Open, C = Open, W = NoWait>
 where
@@ -586,7 +586,7 @@ where
     /// Starts the schedule and gives back its handle
     ///
     /// The first run goes now, not a period from now. Each run is a
-    /// fresh clone of the task, which is why this needs `Clone`
+    /// fresh clone of the task
     pub fn spawn(self) -> TaskHandle<F::Output> {
         let TaskBuilder {
             mut task,

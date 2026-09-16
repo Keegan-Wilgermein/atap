@@ -4,12 +4,12 @@
 //!
 //! A builder tracks four things separately:
 //!
-//! - **Kind** — `Once`, then `Repeat` or `Rate`
-//! - **Deadline** — `Open` until `for_duration` or `until`,
+//! - **Kind**: `Once`, then `Repeat` or `Rate`
+//! - **Deadline**: `Open` until `for_duration` or `until`,
 //!   then `Set`
-//! - **Count** — `Open` until `count`, then `Set`. Each state
+//! - **Count**: `Open` until `count`, then `Set`. Each state
 //!   that has a count opens it afresh
-//! - **Wiring** — `NoWait`, or what starts each run: gives with
+//! - **Wiring**: `NoWait`, or what starts each run: gives with
 //!   `WaitFor<T>`, a whole set with `ReceiveAll<H>`, or any of a
 //!   set with `ReceiveAny<H>`
 
@@ -89,8 +89,8 @@ pub trait Wiring: sealed::Sealed {
 
     /// The count axis once a kind is chosen
     ///
-    /// Unchanged for a task that doesn't wait. A wait state had a
-    /// count of its own, so choosing a kind opens a fresh one
+    /// Unchanged for a task that doesn't wait, and a fresh one for
+    /// a task that does
     #[doc(hidden)]
     type AfterKind<C>;
 }

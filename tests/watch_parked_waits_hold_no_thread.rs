@@ -85,9 +85,7 @@ fn parked_watches_hold_no_thread() {
 
     assert_eq!(parked, WAITING, "every watch is waiting on its file");
 
-    // The point of the whole family: a watch is nearly all waiting,
-    // so it must not sit on a sleep thread the way every other file
-    // task does
+    // A watch must not sit on a sleep thread
     assert_eq!(
         stats.sleep_threads(),
         0,
@@ -101,12 +99,8 @@ fn parked_watches_hold_no_thread() {
         stats.sleep_busy(),
     );
 
-    // Not zero busy workers, which is what a parked socket would
-    // give. A watch wakes on its own backstop every so often to look
-    // at the path again, so with hundreds of them a few are always
-    // part way through a step. What matters is that the pool serves
-    // all of them from its usual handful of workers rather than
-    // growing a thread per watch
+    // Not zero busy workers, since a watch wakes on its own backstop
+    // now and then. The pool mustn't grow a thread per watch
     assert!(
         stats.len() < WAITING / 4,
         "{} watches grew the pool to {} workers",

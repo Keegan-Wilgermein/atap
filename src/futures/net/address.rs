@@ -64,9 +64,6 @@ impl Target {
 }
 
 /// Stops `NetAddress` being implemented outside the crate
-///
-/// `Target` is crate private, which is the point: nothing outside can
-/// name `target`, so nothing outside can implement it
 #[allow(private_interfaces)]
 pub(crate) mod sealed {
     use super::Target;

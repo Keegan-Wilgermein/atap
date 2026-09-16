@@ -1,16 +1,8 @@
 //! # An entire program, run through the runtime
 //!
-//! A small interpreter whose every stage is a task. Source files are
-//! written and read back through the runtime, then each line is given
-//! to a lexer waiting for gives, received by a parser, received by an
-//! evaluator that splits its work into tasks of its own, and handed on
-//! by `give_to` to a printer that appends to a log on a sleep thread.
-//! One logger hears every evaluator at once through `receive_any`, and
-//! a gather reads where every stage finished
-//!
-//! Several programs run side by side, each driven from its own thread
-//! with handles cloned across to it, and every line that comes out the
-//! end is checked against the same program run the plain way
+//! A small interpreter whose every stage is a task. Several programs
+//! run side by side, and every line that comes out the end is checked
+//! against the same program run the plain way
 //!
 //! Reads the process wide live count at the end, so it has a binary to
 //! itself

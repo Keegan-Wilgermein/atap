@@ -40,25 +40,20 @@ static CORES: AtomicUsize = AtomicUsize::new(0);
 /// target it may go
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Start {
-    /// Bringing the pool up to its floor, which never needs to pass
-    /// the target
+    /// Bringing the pool up to its floor
     Floor,
 
-    /// Growing for waiting work, which the tick has already judged
-    /// worth it, so only the ceiling bounds it
+    /// Growing for waiting work, bounded only by the ceiling
     Grow,
 
-    /// Replacing a worker that is blocked or gone, which is a need
-    /// rather than a guess, so only the ceiling bounds it
+    /// Replacing a worker that is blocked or gone, bounded only by
+    /// the ceiling
     Replace,
 }
 
 /// The pool of workers and the work waiting for them
 pub(crate) struct WorkerPool {
     /// Every worker slot, used or not
-    ///
-    /// Fixed and static, since workers park on their state word
-    /// and their rings outlive their threads
     workers: [Worker; MAX_WORKERS],
 
     /// The queue every task lands in
@@ -122,9 +117,6 @@ pub(crate) struct WorkerPool {
     starving: AtomicBool,
 
     /// Threads that died and haven't been recovered yet
-    ///
-    /// Written only on a death and its recovery, so spawning pays a
-    /// load for it and nothing more
     dead: AtomicUsize,
 
     /// Every thread death since the process started
@@ -388,8 +380,7 @@ impl WorkerPool {
     /// that worker's LIFO slot if it is empty, its ring if not, and the
     /// shared queue if both are full
     ///
-    /// Kept local so a task that waits on what it spawned can run it
-    /// itself. A peer that is parked is woken to steal the rest
+    /// A peer that is parked is woken to steal the rest
     pub(crate) fn submit_local(&'static self, worker: &'static Worker, id: usize) -> bool {
         if self.stopped.load(Ordering::Acquire) {
             return false;
@@ -731,11 +722,8 @@ impl WorkerPool {
     /// Makes sure the blocking queue has threads coming for it
     ///
     /// Wakes parked sleep threads first, then starts new ones up to
-    /// the target, so anything `offload` missed is put right within a
-    /// tick. Past the target when every sleep thread has been held in
-    /// one task for a tick with work still waiting, or when every one
-    /// is busy and the queue is deep, and then for longer the further
-    /// past it the pool already is
+    /// the target. Past the target only when every sleep thread is
+    /// stuck or busy with work still waiting
     fn balance_blocking(&'static self) {
         let mut pending = self.blocking.len();
 
@@ -755,8 +743,8 @@ impl WorkerPool {
         }
 
         // Every sleep thread held in one task for a whole tick, with more
-        // waiting behind them. A thread blocked like that uses no core, so
-        // as many are started as are waiting, at most doubling the pool
+        // waiting behind them. As many are started as are waiting, at most
+        // doubling the pool
         if self.sleeps_all_stuck() {
             if earned(&self.sleeps_overloaded, true, 0) {
                 for _ in 0..pending.min(live.max(1)) {
@@ -823,8 +811,7 @@ impl WorkerPool {
         }
 
         // Waits for the pool to go quiet, since a trim briefly takes
-        // the free list away from spawns. The counter is kept, so it
-        // runs the moment things go quiet
+        // the free list away from spawns
         if !self.idle() {
             return;
         }
@@ -1012,13 +999,10 @@ impl WorkerPool {
     /// Adds a worker if the pool isn't getting through what it has
     ///
     /// Workers stuck waiting in the kernel don't count against the
-    /// target, so while work waits, enough are started for a target's
-    /// worth to run. Otherwise, below the target, grows when a worker
-    /// finished nothing in a whole tick, while work waits and nobody is
-    /// free to take it. At or past the target, only when every worker
-    /// is stuck and work has nowhere to go, and only once that has
-    /// lasted a tick longer for every worker already past the target.
-    /// Never past the ceiling
+    /// target. Below the target, grows when work waits and nobody is
+    /// free to take it. At or past it, only when every worker is stuck,
+    /// and a tick later for each worker already past. Never past the
+    /// ceiling
     fn grow(&'static self) {
         let live = self.live();
 
@@ -1080,9 +1064,7 @@ impl WorkerPool {
             return;
         }
 
-        // Workers blocked in the kernel aren't using a core, so they don't
-        // count against the target. Enough are started for a target's
-        // worth to run again, as long as there is work for them
+        // Workers blocked in the kernel don't count against the target
         let blocked = stuck_workers
             .iter()
             .filter(|index| self.workers[**index].blocked_in_a_call())
@@ -1123,7 +1105,7 @@ impl WorkerPool {
     /// Stops workers that have had nothing to do for a while, never
     /// below the floor
     ///
-    /// Past the target they go sooner, so a burst past it is short
+    /// Past the target they go sooner
     fn reap(&'static self) {
         let highest = self.highest.load(Ordering::Acquire);
 
@@ -1271,9 +1253,8 @@ impl WorkerPool {
     /// Whether threads have been dying faster than a restart window
     /// allows
     ///
-    /// Scaled to the pool, so the whole pool going at once is one
-    /// death, not a storm. A storm is every thread the pool has ever
-    /// run dying more than `RESTART_LIMIT` times over inside one window
+    /// Scaled to the pool, so the whole pool going at once isn't a
+    /// storm
     fn in_a_storm(&self) -> bool {
         let started = self.storm_started.load(Ordering::Relaxed);
 
@@ -1322,11 +1303,9 @@ impl WorkerPool {
     /// Clears up after dead threads and brings the pool back up
     ///
     /// ## Behaviour
-    /// Needs no manager and no live thread, so it works when every
-    /// thread the pool had went at once. If nothing can be started and
-    /// no manager is left to try again, or threads keep dying with no
-    /// manager to back off, everything still waiting is written off, so
-    /// no listener waits forever
+    /// Needs no manager and no live thread. If nothing can be started
+    /// and nothing is left to try again, everything still waiting is
+    /// written off
     pub(crate) fn heal(&'static self) {
         self.sweep_all();
 
@@ -1454,8 +1433,8 @@ fn over_ticks() -> u32 {
 /// enough to earn one more thread
 ///
 /// Each thread already past the target makes the next wait a tick
-/// longer, so the pool leans back towards the target. A tick without
-/// overload starts the count again, and so does earning a thread
+/// longer. A tick without overload starts the count again, and so
+/// does earning a thread
 fn earned(ticks: &AtomicU32, overloaded: bool, over: usize) -> bool {
     if !overloaded {
         ticks.store(0, Ordering::Relaxed);

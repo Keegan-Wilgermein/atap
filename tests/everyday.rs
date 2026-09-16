@@ -1,11 +1,7 @@
 //! A program, rather than a test of one
 //!
-//! Ordinary work at an ordinary pace for half a minute, mixing
-//! spawned tasks with blocking ones, computes with sleeps, a config
-//! that is watched, parsed and applied through tasks that hand their
-//! outputs on, totals given by hand, and reports gathered from tasks
-//! that split their work, to catch leaks, drift and schedules that
-//! quietly stop
+//! Ordinary work at an ordinary pace for half a minute, to catch
+//! leaks, drift and schedules that quietly stop
 
 use atap::{Compute, DEFAULT_PRIORITY, File, Runtime, RuntimeError, Sleep, SleepMode};
 use std::{
@@ -66,12 +62,8 @@ fn a_program_that_just_runs() {
 
     let line: Arc<[u8]> = Arc::from(b"tick\n".as_slice());
 
-    // Watches the config the way a program that reloads on change
-    // does, waking when it actually changes rather than asking
-    // over and over
-    //
-    // Spaced, since a slot holds the latest output rather than a
-    // queue of them, and the loop below only looks once a tick
+    // Watches the config, spaced since a slot holds the latest output
+    // rather than a queue of them
     let watcher = Runtime::task(File::watch(&config))
         .repeat()
         .every(Duration::from_millis(50))

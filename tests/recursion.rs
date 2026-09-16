@@ -3,7 +3,7 @@
 //! Computes that spawn, join, give to and block on other tasks from
 //! inside themselves. Each test checks only the values its own tasks
 //! come back with, so they share a binary and run side by side on
-//! purpose, which is also what makes the helping they lean on real
+//! purpose
 
 mod common;
 

@@ -1,9 +1,6 @@
 //! # Thread Slot
 //! What a worker and a sleep thread both keep about the thread
 //! behind them, and the moves both make on it
-//!
-//! It lives in the pool's static arrays with the rest of each
-//! slot, so a thread that dies leaves it behind to be recovered
 
 use crate::{
     constants::NO_TASK,
@@ -35,8 +32,7 @@ pub(crate) struct ThreadSlot {
     /// none
     ///
     /// Kept here so a thread that dies leaves a note of which task
-    /// went with it. Zero for none keeps a fresh slot all zeros, which
-    /// lets the pool's static arrays cost no space in the binary
+    /// went with it
     current: AtomicUsize,
 
     /// Manager ticks this thread has been idle for

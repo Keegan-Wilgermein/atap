@@ -1,9 +1,6 @@
 //! # Unix task
 //! The tasks the `Unix` constructors, a `UnixListener` and a
 //! `UnixDatagram` return, and everything they do once run
-//!
-//! Sending and receiving on a connection are in `net::stream`,
-//! shared with TCP
 
 use crate::{
     RuntimeError,
@@ -162,8 +159,7 @@ impl UnixListenTask {
     /// Gives up once `timeout` has passed
     ///
     /// ## Behaviour
-    /// Binding a path never waits, so this can't run out. It is
-    /// here so every socket task takes one
+    /// Binding a path never waits, so this can't run out
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
@@ -274,8 +270,7 @@ impl UnixBindTask {
     /// Gives up once `timeout` has passed
     ///
     /// ## Behaviour
-    /// Binding a path never waits, so this can't run out. It is
-    /// here so every socket task takes one
+    /// Binding a path never waits, so this can't run out
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
@@ -325,8 +320,7 @@ impl UnixSendToTask {
     /// Gives up once `timeout` has passed
     ///
     /// ## Behaviour
-    /// A Unix datagram send never waits, so this can't run out. It
-    /// is here so every socket task takes one
+    /// A Unix datagram send never waits, so this can't run out
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
@@ -346,9 +340,7 @@ impl UnixSendToTask {
             len,
         )?;
 
-        // Room on a Unix datagram socket is the receiver's, and
-        // nothing here would say when it came back, so no room is an
-        // answer rather than a wait
+        // No room is an answer rather than a wait
         sent.ok_or(RuntimeError::CheckError(Some(libc::EAGAIN)))
     }
 }

@@ -40,8 +40,7 @@ use std::{path::Path, sync::Arc};
 /// ## Waiting
 /// A spawned task waiting on the network holds no thread, the
 /// same as a TCP one. A connect still asks for a sleep thread for
-/// its steps, since checking a certificate can itself go to the
-/// network
+/// its steps
 ///
 /// [`Tcp`]: crate::Tcp
 /// [`TlsConnection`]: crate::TlsConnection

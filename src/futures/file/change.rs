@@ -1,10 +1,6 @@
 //! # Change
 //! What happened to a watched path, and the snapshot a watch
 //! works it out from
-//!
-//! The kernel reports a change by waking the task and nothing
-//! more, so what changed is read back off the path itself rather
-//! than off the event
 
 use crate::{
     RuntimeError,
@@ -18,10 +14,7 @@ use std::{
 
 /// Every note a watch looks for unless it is told otherwise
 ///
-/// `NOTE_REVOKE` is deliberately not among them. Nothing here
-/// can report it, and a watch only ever asks for notes it has an
-/// answer for. A revoked file is found by the backstop instead,
-/// as the error its next look fails with
+/// `NOTE_REVOKE` is left out, since nothing here can report it
 pub(super) const EVERY_NOTE: u32 = libc::NOTE_WRITE
     | libc::NOTE_EXTEND
     | libc::NOTE_ATTRIB
@@ -108,8 +101,7 @@ impl Change {
     ///
     /// Timestamps are not among them: a write time set by hand
     /// reads as a [`written`], and a read time is not reported at
-    /// all, since a watch is not meant to fire on someone reading
-    /// the file
+    /// all
     ///
     /// [`written`]: Change::written
     pub fn attributes(self) -> bool {
@@ -128,16 +120,14 @@ impl Change {
     ///
     /// True whether the file was moved out from under the path or
     /// something else was moved on top of it. The watch stays on
-    /// the file it started on either way, since it holds that
-    /// file's descriptor rather than the name
+    /// the file it started on either way
     pub fn renamed(self) -> bool {
         self.holds(Self::RENAMED)
     }
 
     /// Whether the last name the file had was taken away
     ///
-    /// Nothing can happen to the file after this: the watch holds
-    /// the only reference left to it
+    /// Nothing can happen to the file after this
     pub fn removed(self) -> bool {
         self.holds(Self::REMOVED)
     }
@@ -166,18 +156,11 @@ impl BitOrAssign for Change {
 ///
 /// ## Behaviour
 /// Taken through the descriptor the watch holds as well as
-/// through the path, which is what lets a removal or a rename be
-/// told apart: the descriptor keeps the file alive after its last
-/// name is gone
+/// through the path, so a removal and a rename can be told apart
 ///
 /// #### Note
-/// The change time is deliberately not among these, even though
-/// it is what `NOTE_ATTRIB` follows. A filesystem may move it on
-/// its own schedule: APFS bumps it tens to hundreds of
-/// milliseconds after a write lands, leaving the write time
-/// where it was, which is indistinguishable from someone setting
-/// a mode. So the attributes are compared directly instead, and
-/// the change time is not read at all
+/// The change time isn't read, since APFS moves it on its own
+/// after a write
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Snapshot {
     /// Which file this is
@@ -231,16 +214,11 @@ impl Snapshot {
     pub(super) fn against(&self, now: &Self, wanted: u32) -> Option<Change> {
         let mut change = Change::new(0);
 
-        // Every one of these is a move between the two snapshots
-        // rather than something true of the later one. A file that
-        // is still gone, or still away from its path, has not
-        // changed again since the run that said so, and reporting
-        // it twice would leave a repeat spinning on an answer it
-        // has already given
+        // Every one of these is a move between the two snapshots, so
+        // nothing already reported is reported again
         if now.nlink == 0 {
             // Nothing else can be said about a file with no names
-            // left, and the notes that go with losing one would only
-            // muddy it
+            // left
             if self.nlink != 0 {
                 change |= Change::REMOVED;
             }
@@ -262,8 +240,6 @@ impl Snapshot {
             }
 
             // The attributes themselves rather than the change time
-            // that follows them, which a filesystem moves on its own
-            // after a write
             if now.mode != self.mode || now.owner != self.owner {
                 change |= Change::ATTRIBUTES;
             }
@@ -291,8 +267,7 @@ impl Snapshot {
 ///
 /// ## Returns
 /// `None` for a path that leads nowhere, and for one that can't
-/// be asked about at all, which amounts to the same thing for a
-/// watch
+/// be asked about at all
 fn at_path(path: &CString) -> Option<u64> {
     let mut raw: libc::stat = unsafe { mem::zeroed() };
 

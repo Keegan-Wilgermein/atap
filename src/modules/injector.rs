@@ -2,8 +2,7 @@
 //! The queue every spawned task lands in, and the one workers
 //! fall back to when their own is empty
 //!
-//! Unbounded, and allocates nothing, since the link lives in
-//! each task's slot. Each band is two stacks: reversing the
+//! Unbounded. Each band is two stacks: reversing the
 //! pushed side when the served side runs dry gives first in,
 //! first out order
 

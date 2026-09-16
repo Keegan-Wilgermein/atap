@@ -41,19 +41,14 @@ struct TlsStream {
 /// leave it empty
 const DRAIN_READS: usize = 16;
 
-/// Says goodbye properly before the socket closes, so the other
-/// side can tell a finished answer from a cut one
+/// Says goodbye properly before the socket closes
 ///
 /// ## Behaviour
 /// Anything the other side already sent is taken off the socket
-/// first, such as the session tickets a TLS 1.3 server sends
-/// after its handshake, which a side that only ever sends never
-/// reads. A socket closed with unread bytes in it is reset rather
-/// than closed, and a reset throws away whatever the other side
-/// hadn't read yet, this goodbye included
+/// first, so the close isn't a reset
 ///
-/// Best effort. It never waits, a full socket loses the goodbye,
-/// and anything arriving after the drain can still cause a reset
+/// Best effort. It never waits, and a full socket loses the
+/// goodbye
 impl Drop for TlsStream {
     fn drop(&mut self) {
         let fd = self.tcp.pipe().fd();
@@ -110,8 +105,7 @@ fn drain(tls: &mut rustls::Connection, fd: libc::c_int) {
 ///
 /// #### Note
 /// A connection the other side drops without saying so ends a
-/// receive with [`RuntimeError::Closed`] rather than an answer,
-/// since it could be somebody cutting the answer short
+/// receive with [`RuntimeError::Closed`] rather than an answer
 ///
 /// [`Connection`]: crate::Connection
 /// [`Tls::connect`]: crate::Tls::connect
@@ -203,8 +197,7 @@ impl TlsConnection {
                 return Ok(Io::Truncated);
             }
 
-            // Anything the session owes the other side goes first, since
-            // the other side may be waiting on it
+            // Anything the session owes the other side goes first
             if let Some(filter) = send_pending(&mut tls, fd)? {
                 return Ok(Io::Wait(filter));
             }

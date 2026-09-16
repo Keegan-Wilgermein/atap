@@ -83,8 +83,6 @@ where
 
     /// Another handle of the same kind on the same task, naming a
     /// different output
-    ///
-    /// Only for the crate's own links, which never read through it
     pub(crate) fn retyped<O>(&self) -> TaskHandle<O, W> {
         Executor::add_listener(self.id);
 

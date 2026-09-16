@@ -294,15 +294,7 @@ fn survives_losing_its_manager() {
 /// Tasks parked on the manager's own queue come back when the
 /// manager does
 ///
-/// ## Behaviour
-/// A park lives on the manager's kqueue, and so does the timer
-/// that backstops it, so a manager that dies takes both down and
-/// nothing is left to wake the task. What puts them back is the
-/// recovery pass the next manager runs, which queues every parked
-/// task again to look at the world and park afresh
-///
-/// Watches are what this parks, since they need no sockets: a
-/// file is touched and the task has to notice
+/// Watches are what this parks, since they need no sockets
 fn parks_outlive_the_manager() {
     let watching = 200;
     let patience = Duration::from_secs(10);

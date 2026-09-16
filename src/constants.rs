@@ -87,23 +87,18 @@ pub(crate) const LOCAL_QUEUE_MASK: u32 = (LOCAL_QUEUE - 1) as u32;
 /// Slots in the pool's static arrays, for workers and sleep
 /// threads alike
 ///
-/// The hard bound on either kind of thread. The pool only ever runs
-/// up to its ceiling, the lower of this and what the kernel lets a
-/// process hold. A slot nothing has used is a zero page, so unused
-/// slots cost address space rather than memory
+/// The hard bound on either kind of thread
 pub(crate) const MAX_WORKERS: usize = 4096;
 
 /// Live workers the pool settles around under load, per core
 ///
 /// A target rather than a limit: the pool passes it on overload or
-/// real need, and leans back towards it once that is over
+/// real need
 pub(crate) const WORKER_MULTIPLIER: usize = 4;
 
 /// Sleep threads the pool settles around under load, per core
 ///
-/// Higher than the worker multiplier, since a sleep thread is
-/// almost always waiting in the kernel rather than on a core. A
-/// target rather than a limit, the same as `WORKER_MULTIPLIER`
+/// A target rather than a limit, the same as `WORKER_MULTIPLIER`
 pub(crate) const SLEEP_MULTIPLIER: usize = 8;
 
 /// How often the manager wakes to do policy on its own
@@ -118,9 +113,6 @@ pub(crate) const IDLE_REAP: Duration = Duration::from_millis(500);
 
 /// How long a worker or sleep thread past its target sits idle
 /// before it is reaped
-///
-/// Shorter than `IDLE_REAP`, so a burst past the target doesn't
-/// outstay the work that earned it
 pub(crate) const IDLE_REAP_OVER: Duration = Duration::from_millis(50);
 
 /// Tasks waiting for each running thread before the pool counts as
@@ -135,23 +127,17 @@ pub(crate) const THREAD_RESERVE: usize = 256;
 /// How many runs deep a worker helps while a task it is running
 /// waits on another
 ///
-/// Past this it waits instead, and a new worker takes the queued work.
-/// Bounds how deep one thread's stack can get
+/// Past this it waits instead, and a new worker takes the queued work
 pub(crate) const HELP_DEPTH: usize = 64;
 
 /// Tasks a worker takes from its LIFO slot in a row before it gives
 /// the queue a turn
-///
-/// The slot keeps a task that spawns and waits on the same branch of
-/// work, and the cap stops a task that spawns forever from starving
-/// everything else
 pub(crate) const LIFO_STREAK: u32 = 3;
 
 /// The longest a worker waiting inside a task sleeps before looking
 /// for queued work to help with again
 ///
-/// It starts far shorter and backs off to this, so a quick wait costs
-/// nothing and a long one costs almost nothing
+/// It starts far shorter and backs off to this
 pub(crate) const HELP_POLL: Duration = Duration::from_millis(10);
 
 /// How long a wait sleeps at a time while the manager is gone, before
@@ -159,9 +145,6 @@ pub(crate) const HELP_POLL: Duration = Duration::from_millis(10);
 pub(crate) const STRANDED_POLL: Duration = Duration::from_secs(1);
 
 /// Stack reserved for each worker thread
-///
-/// A worker runs tasks inside tasks while it helps, so it gets more
-/// than a thread's default. Reserved, not used, until it is needed
 pub(crate) const WORKER_STACK: usize = 8 * 1024 * 1024;
 
 /// How much of a file or a pipe one read or write
@@ -223,28 +206,20 @@ pub(crate) const NO_SELECT: i32 = -1;
 pub(crate) const SELECT_IDENT: usize = 1;
 
 /// How long a `join_first` waits before looking again anyway
-///
-/// A missed wake costs latency, not an answer
 pub(crate) const SELECT_POLL: Duration = Duration::from_millis(50);
 
 /// How long a signal task waits before looking at its count again
 /// anyway
 ///
-/// A signal's watch only reports what arrives once it is on, unlike
-/// a socket's, which reports a socket that is ready already. So a
-/// delivery landing between a task reading the count and its watch
-/// going on wakes nothing, and this is what bounds the wait for the
-/// next look. A missed wake costs latency, not an answer
+/// Bounds the wait for a delivery that landed before the watch
+/// went on
 pub(crate) const SIGNAL_POLL: Duration = Duration::from_millis(50);
 
 /// How long a watch waits before looking at the path again
 /// anyway
 ///
-/// A path's watch only reports what happens once it is on, the
-/// same as a signal's. A change landing between a task taking its
-/// snapshot and the watch going on wakes nothing, and this is what
-/// bounds the wait for the next look. A missed wake costs latency,
-/// not an answer
+/// Bounds the wait for a change that landed before the watch went
+/// on
 pub(crate) const VNODE_POLL: Duration = Duration::from_millis(50);
 
 /// Stored in a slot's waiting field while a canceller is part
@@ -270,8 +245,7 @@ pub(crate) const MANAGER_TICK_IDENT: usize = 1;
 /// well as its ident and filter
 ///
 /// Lets two tasks park on one descriptor without replacing
-/// each other's watch. Not in `libc`'s bindings for this
-/// platform
+/// each other's watch
 pub(crate) const EV_UDATA_SPECIFIC: u16 = 0x0100;
 
 /// The user data a parked task's deadline timer carries, which
@@ -280,9 +254,6 @@ pub(crate) const PARK_TIMER: usize = 1;
 
 /// Bytes one step of a socket task moves before it parks and
 /// lets the rest of the pool have the thread
-///
-/// Readiness is level triggered, so a socket with more to give
-/// wakes the task again at once
 pub(crate) const STEP_BUDGET: usize = 1024 * 1024;
 
 /// How long a blocking socket call waits before looking again,

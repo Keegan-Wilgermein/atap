@@ -29,8 +29,7 @@ fn provider() -> Arc<CryptoProvider> {
 /// The client settings every connection without extra roots
 /// shares
 ///
-/// Built once, since asking macOS for its verifier isn't free. A
-/// failure is kept too, so it isn't retried on every connect
+/// Built once. A failure is kept too
 pub(crate) fn client() -> Result<Arc<ClientConfig>, RuntimeError> {
     static CLIENT: OnceLock<Result<Arc<ClientConfig>, RuntimeError>> = OnceLock::new();
 
@@ -101,8 +100,7 @@ pub(crate) fn server(cert: &Path, key: &Path) -> Result<Arc<ServerConfig>, Runti
 
 /// Turns a rustls failure into the runtime's
 ///
-/// A refused certificate is told apart from everything else,
-/// since it is the one a caller can do something about
+/// A refused certificate is told apart from everything else
 pub(crate) fn tls_error(error: rustls::Error) -> RuntimeError {
     match error {
         rustls::Error::InvalidCertificate(_) => RuntimeError::BadCertificate,

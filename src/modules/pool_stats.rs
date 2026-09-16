@@ -121,9 +121,8 @@ impl PoolStats {
 
     /// Workers the pool settles around under load
     ///
-    /// A target rather than a limit. The pool passes it when every
-    /// worker is stuck behind a deep queue, or when a worker is blocked
-    /// or lost, and leans back towards it once that is over
+    /// A target rather than a limit. The pool passes it on overload or
+    /// real need
     pub fn target(&self) -> usize {
         self.target
     }
@@ -167,8 +166,7 @@ impl PoolStats {
 
     /// Threads that have died and haven't been recovered yet
     ///
-    /// Recovery needs no manager and no live thread, so this comes back
-    /// to zero on its own
+    /// Comes back to zero on its own
     pub fn recovering(&self) -> usize {
         self.recovering
     }

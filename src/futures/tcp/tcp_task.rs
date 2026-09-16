@@ -1,14 +1,6 @@
 //! # TCP task
 //! The tasks the `Tcp` constructors and a `Listener` return,
 //! and everything they do once run
-//!
-//! Every task here that waits on a socket does so in steps.
-//! A step does what it can without waiting, then parks, and
-//! the runtime steps it again once the socket is ready. A
-//! spawned one holds no thread while it waits
-//!
-//! Sending and receiving on a connection are in `net::stream`,
-//! since a Unix connection shares them
 
 use crate::{
     RuntimeError,
@@ -108,8 +100,6 @@ impl ConnectTask {
 
     /// Runs to a clock already started, for a task made of other
     /// tasks
-    ///
-    /// Only TLS composes a TCP task today
     #[cfg_attr(not(feature = "tls"), allow(dead_code))]
     pub(crate) fn timed(mut self, clock: Clock) -> Self {
         self.clock = clock;
@@ -313,8 +303,6 @@ impl AcceptTask {
 
     /// Runs to a clock already started, for a task made of other
     /// tasks
-    ///
-    /// Only TLS composes a TCP task today
     #[cfg_attr(not(feature = "tls"), allow(dead_code))]
     pub(crate) fn timed(mut self, clock: Clock) -> Self {
         self.clock = clock;

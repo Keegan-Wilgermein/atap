@@ -25,7 +25,7 @@ pub enum RuntimeError {
     /// A bounded repeat reached its end, and its last output has
     /// been taken
     ///
-    /// Nothing more is coming. Only repeats return this — a one
+    /// Nothing more is coming. Only repeats return this, a one
     /// shot says `AlreadyTaken`
     Finished,
 

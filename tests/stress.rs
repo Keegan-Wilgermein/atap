@@ -1,16 +1,11 @@
 //! One test, and its whole job is to be unfair
 //!
-//! Every kind of work runs at once on threads that know nothing
-//! about each other, while the manager is killed every few
-//! seconds and pool threads now and then. Computes split into a
-//! task per call, chain hundreds deep, gather sets of handles,
-//! take gives, run pipelines, rally values back and forth and
-//! panic on purpose, all on the same workers. Every output is
-//! checked against what its own task was asked for, every join
-//! has a ceiling, and the only errors allowed are cancels, lost
-//! races, and tasks lost with a thread killed moments before. Once it goes quiet, the
-//! runtime has to go idle, give its slots back, still grow for
-//! a burst, stop burning cpu, shut down, and start again
+//! Every kind of work runs at once while the manager and pool
+//! threads are killed now and then. Every output is checked
+//! against what its own task was asked for, and the only errors
+//! allowed are cancels, lost races, and tasks lost with a killed
+//! thread. Once it goes quiet, the runtime has to go idle, give
+//! its slots back, shut down, and start again
 //!
 //! ## Knobs
 //! `ATAP_STRESS_SECS` runs it longer than the default twenty
@@ -1235,10 +1230,8 @@ fn everything_at_once() {
 
     // ---- watches, parked on files that keep changing under them
     //
-    // The only work here that holds no thread while it waits. A
-    // park lives on the manager's own queue, which is the queue the
-    // crew below keeps killing, so this is what says whether a park
-    // survives losing it
+    // The only work here that holds no thread while it waits, parked
+    // on the manager queue the crew below keeps killing
     for crew in 0..2u64 {
         let stop = Arc::clone(&stop);
         let tally = Arc::clone(&tally);
@@ -1254,12 +1247,8 @@ fn everything_at_once() {
 
                 let handle = Runtime::task(File::watch(&path).timeout(STALL)).spawn();
 
-                // Touched over and over rather than once. A watch
-                // takes its baseline when it first runs, and under a
-                // deep enough queue a single append can land before
-                // that first look and become part of the baseline
-                // rather than a change. A park that was genuinely lost
-                // still shows up, as the stall below
+                // Touched over and over, since a single append can land
+                // before the watch's first look and become its baseline
                 let deadline = Instant::now() + STALL;
                 let mut settled = None;
 

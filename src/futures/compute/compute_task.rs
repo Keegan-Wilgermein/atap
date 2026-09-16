@@ -14,9 +14,8 @@ pub struct ComputeTask<F, V, T> {
 
     /// What each run is handed, once something has given it
     ///
-    /// Kept rather than moved into a run, so a repeat hands every
-    /// run the same value, and anything given as input, a handle
-    /// included, lives as long as the task does
+    /// Kept for the life of the task, so a repeat hands every run the
+    /// same value
     input: Option<V>,
 
     /// Whether the work waits on something outside the runtime
@@ -42,7 +41,7 @@ impl<F, V, T> ComputeTask<F, V, T> {
     /// ## Behaviour
     /// The task runs on a sleep thread, the way a file task does,
     /// so no worker is held while it waits. Work that keeps a core
-    /// busy doesn't need this, since a worker is where it belongs
+    /// busy doesn't need this
     ///
     /// ## Returns
     /// The task. Calling it twice keeps it blocking
@@ -69,8 +68,7 @@ where
 }
 
 impl<F, V, T> fmt::Debug for ComputeTask<F, V, T> {
-    /// Whether it has its input and whether it blocks, since the
-    /// work itself can't be printed
+    /// Whether it has its input and whether it blocks
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ComputeTask")

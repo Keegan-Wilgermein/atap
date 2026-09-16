@@ -111,8 +111,6 @@ pub struct WriteTask {
     path: Option<CString>,
 
     /// The bytes to put in it
-    ///
-    /// An `Arc` so `.at_rate()` doesn't copy the buffer every run
     data: Arc<[u8]>,
 
     /// Where they go
@@ -450,9 +448,7 @@ impl Task for PathTask {
 /// `open` is variadic so it is always passed
 fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, RuntimeError> {
     loop {
-        // Nothing registers on a queue, so this and the chunk checks
-        // are the only places a cancel can land. A `FIFO` with no
-        // writer never reaches a chunk
+        // Only here and between chunks can a cancel land
         if executor::cancelled() {
             return Err(RuntimeError::Cancelled);
         }

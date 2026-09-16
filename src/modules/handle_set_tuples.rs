@@ -1,9 +1,7 @@
 //! # Handle Set Tuples
 //! Tuples of sets as sets, from one element to twelve
 //!
-//! Written once as a macro, since each arity is the same code with
-//! one more element. Twelve matches the standard library, and a
-//! larger set nests tuples inside tuples
+//! A larger set nests tuples inside tuples
 
 use crate::modules::{
     gather::{Access, Gather, access},

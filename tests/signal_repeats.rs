@@ -50,8 +50,7 @@ fn a_repeating_wait_reports_every_delivery() {
         let until = Instant::now() + Duration::from_secs(2);
 
         // `maybe_take` rather than `take`, which would wait for the
-        // next run rather than poll, and wait for ever if one were
-        // lost
+        // next run rather than poll
         while Instant::now() < until {
             if let Ok(count) = handle.maybe_take() {
                 total += count.expect("every run succeeds");

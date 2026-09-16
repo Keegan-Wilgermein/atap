@@ -162,8 +162,7 @@ impl Runtime {
     ///
     /// ## Returns
     /// One result per task, in the order they were given, each
-    /// exactly what `join` would have given for that task, so
-    /// one task failing doesn't hide the others
+    /// exactly what `join` would have given for that task
     pub fn join_all<T, W, I>(handles: I) -> Vec<Result<T, RuntimeError>>
     where
         I: IntoIterator<Item = TaskHandle<T, W>>,
@@ -183,9 +182,6 @@ impl Runtime {
     /// the rest. Only [`JoinPolicy::PassBack`] gives a `Some`,
     /// and it keeps the order they were given in
     ///
-    /// The winner is a handle, not an output, so reading it with
-    /// `join` or `take` is left to the caller
-    ///
     /// An empty set has no winner, so what comes back is a
     /// handle to no task, and every read on it answers
     /// `NoSuchTask`
@@ -194,14 +190,6 @@ impl Runtime {
     /// let (first, rest) = Runtime::join_first(handles, JoinPolicy::Cancel);
     /// let answer = first.take()?;
     /// ```
-    ///
-    /// #### Note
-    /// A task that isn't the winner is untouched by having been
-    /// in the set
-    ///
-    /// #### Note
-    /// Every handle in the set has the same output type. Use
-    /// `join_with_timeout` to put a deadline on a single task
     pub fn join_first<T, W, I>(
         handles: I,
         policy: JoinPolicy,
@@ -271,8 +259,7 @@ impl Runtime {
     /// What the runtime looks like right now
     ///
     /// #### Note
-    /// A snapshot rather than a lock. The `Reactor` and the
-    /// manager carry on while it is being looked at
+    /// A snapshot rather than a lock
     pub fn status() -> RuntimeStatus {
         let initialised = Self::initialised();
 
@@ -297,7 +284,7 @@ impl Runtime {
     /// Blocks until the pool has nothing left to do and every
     /// thread it started has gone. Anything the drain can't
     /// reach, like a repeat between runs or a socket task waiting
-    /// on the network, is failed so its listeners get an answer
+    /// on the network, is failed
     ///
     /// `block` still works during and after a shutdown
     ///
@@ -330,8 +317,7 @@ impl Runtime {
     ///
     /// #### Note
     /// The runtime already does this by itself every few
-    /// seconds. This forces a pass, such as straight after a
-    /// burst you know isn't coming back
+    /// seconds. This forces a pass
     pub fn trim() -> Result<usize, RuntimeError> {
         executor::trim()
     }
@@ -345,8 +331,7 @@ impl Runtime {
     /// waiting on its queue is failed
     ///
     /// #### Note
-    /// Only here for the crate's own tests, since nothing else
-    /// can reach the restart path
+    /// Only here for the crate's own tests
     #[doc(hidden)]
     pub fn inject_manager_faults(count: u32) {
         executor::inject_manager_faults(count);
@@ -357,10 +342,8 @@ impl Runtime {
     /// itself would take them down
     ///
     /// ## Behaviour
-    /// A thread checks at the top of its loop, just before it runs a
-    /// task, and just before a task it helps with, so some die idle,
-    /// some holding a task and some part way through helping. Parked
-    /// threads are woken so the deaths land together
+    /// Some die idle, some holding a task and some part way through
+    /// helping
     ///
     /// #### Note
     /// Only here for the crate's own tests
@@ -394,9 +377,7 @@ impl Runtime {
     ///
     /// #### Note
     /// A snapshot rather than a lock. Every number in it was
-    /// true when it was read, and the pool carries on growing,
-    /// shrinking and moving work about while it is being
-    /// looked at
+    /// true when it was read
     pub fn workers() -> PoolStats {
         POOL.stats()
     }

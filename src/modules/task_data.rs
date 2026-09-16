@@ -58,9 +58,6 @@ pub(crate) struct TaskData {
 
     /// The next task in whichever queue holds this one, as its id
     /// plus one
-    ///
-    /// Separate from `next`, since a queued task is alive and a
-    /// free slot isn't
     queue_next: AtomicU32,
 
     /// Whether the payload currently holds a value
@@ -125,9 +122,6 @@ pub(crate) struct TaskData {
 
     /// The moment this stops repeating, if it does, as nanoseconds
     /// past the deadline epoch plus one, or zero for never
-    ///
-    /// Atomic, since a task that waits for gives starts every series
-    /// with a deadline of its own
     until: AtomicU64,
 
     /// Nanoseconds to wait before the first run, or zero
@@ -147,8 +141,7 @@ pub(crate) struct TaskData {
     /// The kqueue a `join_first` wants poked when this settles, or
     /// `NO_SELECT`
     ///
-    /// One at a time, and only an optimisation, since a
-    /// `join_first` re-reads the state regardless
+    /// One at a time
     select: AtomicI32,
 
     /// The class this task was spawned at and the order it was
@@ -680,8 +673,7 @@ impl TaskData {
 
     /// Starts a new series with its runs and deadline back to full
     ///
-    /// Only for a task that waits for gives, as a give starts a
-    /// series, so nothing is counting them down
+    /// Only for a task that waits for gives
     pub(crate) fn reset_series(&self, runs: u32, until: Option<Instant>) {
         self.runs_left.store(runs, Ordering::Release);
         self.until.store(encode_until(until), Ordering::Release);

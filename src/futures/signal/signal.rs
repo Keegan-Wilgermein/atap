@@ -92,9 +92,7 @@ impl SignalKind {
 pub enum SigReleasePolicy {
     /// Keeps the signal for the life of the program
     ///
-    /// Nothing hands it back except [`Signal::release`], so a
-    /// Ctrl-C can never start killing the program again at a moment
-    /// nobody chose
+    /// Nothing hands it back except [`Signal::release`]
     #[default]
     Hold,
 
@@ -144,9 +142,7 @@ pub enum SigReleasePolicy {
 /// The count is of **deliveries**, not of sends. A signal sent
 /// while the same one is already waiting to be delivered is dropped
 /// by the kernel, so two sends can be one delivery. Signals that
-/// arrive faster than a task is woken also merge into one wake,
-/// which is why a wait answers with a count rather than just
-/// happening
+/// arrive faster than a task is woken also merge into one wake
 ///
 /// [`RuntimeError::BadSignal`]: crate::RuntimeError::BadSignal
 pub struct Signal;

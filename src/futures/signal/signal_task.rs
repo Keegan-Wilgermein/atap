@@ -59,9 +59,7 @@ pub struct SignalTask {
     /// The count this task last reported, and `None` before it has
     /// ever run
     ///
-    /// Deliberately kept across runs, which is what makes a repeat
-    /// lose nothing: the next run carries on from where the last
-    /// one stopped
+    /// Kept across runs, so a repeat loses nothing
     seen: Option<u32>,
 
     /// The claim on the signal, for a task that wants it handed back
@@ -129,8 +127,7 @@ impl SignalTask {
         let seen = self.seen.unwrap_or_default();
         let arrived = dispatch::count(signo);
 
-        // Wrapping, since the count is the program's own and runs for
-        // as long as it does
+        // Wrapping
         if arrived != seen {
             self.seen = Some(arrived);
 
@@ -141,11 +138,8 @@ impl SignalTask {
             return Err(RuntimeError::TimedOut);
         }
 
-        // A signal's watch only reports what arrives once it is on,
-        // unlike a socket's. So a delivery landing between the look
-        // above and the watch going on would wake nothing, and the
-        // backstop is what makes that cost latency rather than the
-        // answer
+        // A delivery landing before the watch goes on wakes nothing, so
+        // the backstop bounds the wait
         let backstop = Instant::now() + SIGNAL_POLL;
 
         let deadline = match self.clock.deadline() {

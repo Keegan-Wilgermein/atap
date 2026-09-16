@@ -2,12 +2,8 @@
 //! Every registration on a task's outputs, and the one walk at a
 //! time that hands each output to them
 //!
-//! Anyone can register at any moment, and whoever registers walks
-//! the list straight away, so an output published before the
-//! registration still reaches it. Walks never overlap: a walk that
-//! can't take the lock leaves a request for whoever holds it. Each
-//! registration remembers the last output it was handed, so no
-//! output reaches it twice however the walks and publishes race
+//! An output published before a registration still reaches it, and
+//! no output reaches one twice
 
 use crate::modules::{forward::Forward, task_data::TaskData};
 use std::{
@@ -116,9 +112,8 @@ impl Receivers {
         // looked before this output was readable, which has to look again
         self.flags.fetch_or(REWALK, Ordering::SeqCst);
 
-        // Nothing registered and nobody walking, which is every task until
-        // something registers. A registrant walks for itself once it has
-        // pushed
+        // Nothing registered and nobody walking. A registrant walks for
+        // itself once it has pushed
         if self.head.load(Ordering::SeqCst).is_null()
             && self.flags.load(Ordering::SeqCst) & LOCKED == 0
         {

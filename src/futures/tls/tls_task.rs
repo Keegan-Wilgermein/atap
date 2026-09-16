@@ -1,13 +1,6 @@
 //! # TLS task
 //! The tasks the `Tls` constructors and a `TlsListener` return,
 //! and everything they do once run
-//!
-//! Each is a TCP task with a handshake after it. The TCP part is
-//! the TCP task itself, stepped from inside, and the handshake
-//! parks between its steps the same way
-//!
-//! Sending and receiving on a connection are in `net::stream`,
-//! shared with TCP and Unix
 
 use crate::{
     RuntimeError,
@@ -500,9 +493,7 @@ impl Task for TlsConnectTask {
         self.begin(clock);
     }
 
-    /// Always, since checking a certificate asks macOS, which can go
-    /// to the network for revocation and missing intermediates. It
-    /// still parks between steps
+    /// Always. It still parks between steps
     fn blocking(&self) -> bool {
         true
     }

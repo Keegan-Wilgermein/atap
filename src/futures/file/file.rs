@@ -45,10 +45,8 @@ impl File {
     /// `Vec` rather than an error
     ///
     /// #### Note
-    /// The whole file lands in memory at once, so a very large
-    /// one is a very large allocation. [`File::read_at`] is the
-    /// way round that, and carries the pattern for reading a
-    /// file in pieces
+    /// The whole file lands in memory at once. [`File::read_at`]
+    /// reads a large one in pieces
     pub fn read<P>(path: P) -> ReadTask
     where
         P: AsRef<Path>,
@@ -234,9 +232,7 @@ impl File {
     /// What changed. Several parts of a [`Change`] can be true at
     /// once, since one write can be both a write and a growth
     ///
-    /// A path that isn't there is an error rather than a wait:
-    /// there has to be something to watch. Nothing waits for a
-    /// path to appear
+    /// A path that isn't there is an error rather than a wait
     ///
     /// The watch counts from when the task first runs, the same
     /// as a signal does: a change that happened beforehand is not
@@ -247,7 +243,7 @@ impl File {
     /// path once and holds that descriptor, so a file moved out
     /// from under its name is still watched, and reported as
     /// [`Change::renamed`]. A removal is the last thing a watch
-    /// can report, since nothing can reach the file afterwards
+    /// can report
     ///
     /// A spawned watch holds no thread, unlike every other task
     /// here, so any number of paths can be watched at once

@@ -44,8 +44,6 @@ const IGNORED: libc::c_int = -1;
 
 /// Asks a descriptor not to raise `SIGPIPE` when its reader
 /// goes away
-///
-/// Not in `libc`'s bindings for this platform
 const F_SETNOSIGPIPE: libc::c_int = 73;
 
 /// Where a child's standard input comes from when it isn't
@@ -55,12 +53,10 @@ const DEV_NULL: &CStr = c"/dev/null";
 /// The attributes every child is spawned with
 ///
 /// ## Behaviour
-/// `CLOEXEC_DEFAULT` stops one task's pipe being inherited by
-/// another task's child, which would hold its write end open
+/// `CLOEXEC_DEFAULT` keeps other tasks' pipes out of the child
 ///
 /// `SETSIGDEF` and `SETSIGMASK` put every signal back to its
-/// default, mostly so a child doesn't inherit an ignored
-/// `SIGPIPE`
+/// default
 ///
 /// `SETPGROUP` makes the child the leader of its own group, so
 /// a cancel takes the whole tree
@@ -99,8 +95,6 @@ impl Program {
     }
 
     /// Builds the pointer array `posix_spawn` actually takes
-    ///
-    /// Per run, since a raw pointer isn't `Send`
     ///
     /// ## Returns
     /// The program, and an argument vector with the program's
@@ -239,8 +233,7 @@ impl StatusTask {
     /// Starts the child somewhere else
     ///
     /// ## Behaviour
-    /// The directory has to be **absolute**, since the working
-    /// directory can change underneath the runtime
+    /// The directory has to be **absolute**
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
@@ -339,8 +332,7 @@ impl OutputTask {
     /// Starts the child somewhere else
     ///
     /// ## Behaviour
-    /// The directory has to be **absolute**, since the working
-    /// directory can change underneath the runtime
+    /// The directory has to be **absolute**
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
@@ -643,29 +635,22 @@ fn as_c_arg(arg: impl AsRef<OsStr>) -> Option<CString> {
 }
 
 /// The file action that sets a child's working directory
-///
-/// Looked up rather than declared, so a macOS without it can
-/// still start the program
 type AddChdir =
     unsafe extern "C" fn(*mut libc::posix_spawn_file_actions_t, *const libc::c_char) -> libc::c_int;
 
 /// What `dlsym` is given to search every image in the process
-///
-/// Not in `libc`'s bindings for this platform
 const RTLD_DEFAULT: *mut libc::c_void = -2isize as *mut libc::c_void;
 
-/// The name the call has had since macOS 10.15
+/// The older name of the call
 const ADD_CHDIR_NP: &CStr = c"posix_spawn_file_actions_addchdir_np";
 
-/// The name POSIX.1-2024 gave it, which macOS 26 was the first
-/// release to declare
+/// The name POSIX.1-2024 gave it
 const ADD_CHDIR: &CStr = c"posix_spawn_file_actions_addchdir";
 
 /// Finds the file action that sets a working directory, once
 ///
 /// ## Returns
-/// `None` on a macOS that has neither name, which is every
-/// release before 10.15
+/// `None` on a macOS that has neither name
 fn add_chdir() -> Option<AddChdir> {
     static FOUND: OnceLock<Option<AddChdir>> = OnceLock::new();
 
@@ -696,10 +681,9 @@ fn relative(file: &CStr) -> bool {
 /// Puts a relative program on the end of the directory it will
 /// be run from
 ///
-/// macOS launches a relative program spawned alongside a
-/// directory change and then reports `ENOENT` anyway, which
-/// leaves a child nothing can reap. Joining here means the
-/// platform is never asked
+/// macOS reports `ENOENT` for a relative program spawned
+/// alongside a directory change, and leaves a child nothing
+/// can reap
 fn join(dir: &CStr, file: &CStr) -> Result<CString, RuntimeError> {
     let dir = dir.to_bytes();
     let file = file.to_bytes();
@@ -886,8 +870,7 @@ fn pipe() -> Result<(Fd, Fd), RuntimeError> {
 
 /// Makes the pipe a child's input comes down
 ///
-/// The end kept here is `O_NONBLOCK`, since a write wake only
-/// promises some room
+/// The end kept here is `O_NONBLOCK`
 ///
 /// ## Returns
 /// The read end for the child, and the write end for here
@@ -913,9 +896,6 @@ struct Stdio {
 }
 
 /// Starts a child
-///
-/// `posix_spawn` rather than a `fork` and an `exec`, since
-/// forking a multi threaded process is unsafe
 fn spawn_child(
     program: &Program,
     setup: &Setup,
@@ -1062,8 +1042,7 @@ impl Feed<'_> {
         Ok(())
     }
 
-    /// Gives the child one chunk at most, so a large input never
-    /// holds the loop away from the streams it is also reading
+    /// Gives the child one chunk at most
     fn push(&mut self) -> Result<(), RuntimeError> {
         let Some(fd) = self.end.as_ref().map(|end| end.raw()) else {
             return Ok(());
@@ -1123,9 +1102,6 @@ impl Drop for Reads<'_> {
 
 /// Reads everything a child writes while giving it everything
 /// it was to be given
-///
-/// One loop over up to three descriptors, which is the only
-/// ordering that can't deadlock against the child
 ///
 /// ## Returns
 /// What the child wrote to each stream, in the order they were
@@ -1222,13 +1198,10 @@ fn exchange(
 /// The loop `exchange` runs once everything is watched
 ///
 /// Ends when both streams have reported their last byte and the
-/// input has been taken. A finished stream comes off the queue
-/// at once, or it would read as ready forever
+/// input has been taken
 ///
 /// #### Note
-/// A cancel's wake matches nothing below and falls through to
-/// the cancellation check, so a stale one never cuts an
-/// exchange short
+/// A stale cancel wake never cuts an exchange short
 fn pump(
     queue: i32,
     ends: &[libc::c_int; 2],

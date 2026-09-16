@@ -29,10 +29,8 @@ struct Stream {
 /// An open TCP connection
 ///
 /// ## Behaviour
-/// A value like any other output. It comes back from
-/// [`Tcp::connect`] or [`Listener::accept`] and is handed to the
-/// tasks that use it. Cloning it is cheap and every clone is the
-/// same connection
+/// Comes back from [`Tcp::connect`] or [`Listener::accept`].
+/// Cloning it is cheap and every clone is the same connection
 ///
 /// Every method that sends or receives builds a task, and nothing
 /// happens until that task is run
@@ -50,8 +48,7 @@ struct Stream {
 /// The socket closes when the **last** reference to it goes:
 /// every clone, every task using it, and every task handle whose
 /// output holds one. [`Connection::close`] only lets go of this
-/// one, so nothing still reading is cut off, and the other side
-/// sees the connection end once nothing here can use it
+/// one
 ///
 /// #### Note
 /// Two receives on one connection at once each get part of what

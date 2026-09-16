@@ -22,9 +22,6 @@ use std::sync::{
 pub(crate) type Access<R, S> = Arc<dyn Fn(&mut R) -> &mut S + Send + Sync>;
 
 /// Makes an access from a closure
-///
-/// Taking the closure through a bound is what lets it hand back part
-/// of whatever it is given, for every borrow
 pub(crate) fn access<R, S, F>(pick: F) -> Access<R, S>
 where
     F: Fn(&mut R) -> &mut S + Send + Sync + 'static,

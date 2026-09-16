@@ -57,12 +57,9 @@ fn a_signal_wakes_the_task_waiting_for_it() {
 
     sender.join().unwrap();
 
-    // Two deliveries, one after the other, are both reported, even
-    // though only one run of the repeat may be waiting at the time
-    //
-    // Spaced, for two reasons: the kernel drops a second signal that
-    // arrives while the same one is still pending, and a run's output
-    // has to still be there when the next run starts
+    // Two deliveries, one after the other, are both reported. Spaced,
+    // since the kernel drops a second signal that arrives while the
+    // same one is still pending
     let waiting = Runtime::task(Signal::wait(KIND))
         .repeat()
         .every(Duration::from_millis(10))

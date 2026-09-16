@@ -185,9 +185,8 @@ struct UnixListening {
 ///
 /// ## Closing
 /// The socket closes once the last reference to it goes, and
-/// **its socket file is removed** then too, so the path can be
-/// listened on again. A file somebody else has since put at the
-/// same path is left alone
+/// **its socket file is removed** then too. A file somebody else
+/// has since put at the same path is left alone
 ///
 /// [`Unix::listen`]: crate::Unix::listen
 #[derive(Clone)]
@@ -215,8 +214,7 @@ impl UnixListener {
     /// Waits for one to arrive without holding a thread
     ///
     /// ## Returns
-    /// The connection. A Unix client almost never has a path of its
-    /// own, so there is no address to hand back beside it
+    /// The connection
     pub fn accept(&self) -> UnixAcceptTask {
         UnixAcceptTask::new(self.clone())
     }
@@ -314,9 +312,7 @@ impl UnixDatagram {
     /// `ECONNREFUSED` for a file left behind with nobody on it
     ///
     /// #### Note
-    /// A receiver with no room left is an error rather than a wait,
-    /// since nothing on this socket says when room comes back.
-    /// Sending again later is up to the caller
+    /// A receiver with no room left is an error rather than a wait
     pub fn send_to(&self, path: impl AsRef<Path>, data: impl Into<Arc<[u8]>>) -> UnixSendToTask {
         UnixSendToTask::new(self.clone(), path.as_ref().to_path_buf(), data.into())
     }

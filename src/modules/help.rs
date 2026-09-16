@@ -2,11 +2,8 @@
 //! What a worker does while a task it is running waits on another
 //! task: runs queued work itself, rather than holding its thread
 //!
-//! A task that spawns and joins tasks inside itself would otherwise
-//! hold one worker per level, and a chain deep enough would hold
-//! every worker there is. Helping keeps the chain on the threads it
-//! already has. Past a depth limit the worker waits instead, and a
-//! new worker is started for the queued work it can't take
+//! Past a depth limit the worker waits instead, and a new worker is
+//! started for the queued work it can't take
 
 use crate::{
     constants::{HELP_DEPTH, HELP_POLL, STRANDED_POLL},
@@ -47,8 +44,7 @@ pub(crate) fn enter(worker: &'static Worker) {
 
 /// Lowers how deep a worker may help, zero for not at all
 ///
-/// Never above `HELP_DEPTH`, which is all the room a worker has to
-/// record what it is helping with
+/// Never above `HELP_DEPTH`
 pub(crate) fn limit_depth(depth: usize) {
     LIMIT.store(depth.min(HELP_DEPTH), Ordering::SeqCst);
 }
@@ -84,8 +80,7 @@ pub(crate) fn help_once() -> bool {
     }
 
     // Past half way, only the task in the LIFO slot, which is most likely
-    // the one being waited on. Anything else could be a whole tree of its
-    // own, piled on top of this one
+    // the one being waited on
     let Some(id) = POOL.find_help(worker, depth < unrelated_limit(limit)) else {
         return false;
     };
@@ -98,10 +93,6 @@ pub(crate) fn help_once() -> bool {
 /// Runs the task being waited on right here, if this thread is a worker
 /// with depth left and the task is still sitting in a worker's ring or
 /// LIFO slot
-///
-/// A task that spawns and then waits on what it spawned runs it itself,
-/// so recursion goes down one branch at a time rather than holding a
-/// worker at every level
 ///
 /// ## Returns
 /// Whether it ran
@@ -179,16 +170,12 @@ impl Patience {
     /// takes
     ///
     /// ## Behaviour
-    /// A worker sleeps in short slices that grow to `HELP_POLL`, so it
-    /// keeps looking for work to help with. One too deep to take queued
-    /// work counts as blocked, and once every worker is blocked
-    /// with work still queued, a worker is started to take that work.
-    /// A worker that is only waiting leaves the work to its peers, so
-    /// the pool grows only as far as nothing else can move
+    /// A worker sleeps in short slices that grow to `HELP_POLL`,
+    /// looking for work to help with between them. One too deep to take
+    /// queued work counts as blocked, and once every worker is blocked
+    /// with work still queued, a worker is started to take that work
     ///
-    /// With no manager, nothing sleeps longer than `STRANDED_POLL`, and
-    /// each wake makes sure no dead thread has stranded what is being
-    /// waited on
+    /// With no manager, nothing sleeps longer than `STRANDED_POLL`
     pub(crate) fn slice(&mut self) -> Option<Duration> {
         let mut slice = None;
 

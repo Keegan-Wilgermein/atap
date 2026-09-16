@@ -36,8 +36,7 @@ struct Datagrams {
 /// ## Datagrams
 /// Every send is one datagram and every receive takes one,
 /// whole. Nothing is merged or split. A datagram can be lost,
-/// arrive twice, or arrive out of order, and nothing here
-/// notices: that is what UDP is
+/// arrive twice, or arrive out of order
 ///
 /// ## Closing
 /// The socket closes once the last reference to it goes,

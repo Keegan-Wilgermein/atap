@@ -21,10 +21,7 @@ pub(crate) fn open(domain: libc::c_int, kind: libc::c_int) -> Result<Fd, Runtime
 /// Puts a socket in the state every one here is kept in
 ///
 /// ## Behaviour
-/// Non-blocking, so a step never waits in a syscall. Closed on
-/// exec, so a process task's child doesn't inherit it. And no
-/// `SIGPIPE` when the other side has gone, which would take the
-/// whole program down
+/// Non-blocking, closed on exec, and with no `SIGPIPE`
 pub(crate) fn configure(fd: libc::c_int) -> Result<(), RuntimeError> {
     unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }.check()?;
 
