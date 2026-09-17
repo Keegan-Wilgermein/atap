@@ -1,6 +1,9 @@
 //! # Shutdown
 
-use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    Runtime, RuntimeError,
+    sleep::{Sleep, SleepMode},
+};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -95,7 +98,7 @@ fn shutdown_drains_the_backlog_then_init_starts_it_again() {
         // A handle from before the shutdown still reads what its
         // task ended with
         assert_eq!(
-            kept.maybe_join(),
+            kept.try_join(),
             Err(RuntimeError::TaskFailed),
             "cycle {cycle}: a restart changed what an old handle reads",
         );

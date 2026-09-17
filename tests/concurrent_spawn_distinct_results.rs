@@ -1,4 +1,7 @@
-use atap::{Runtime, Sleep, SleepMode};
+use atap::{
+    Runtime,
+    sleep::{Sleep, SleepMode},
+};
 use std::thread;
 use std::time::Duration;
 

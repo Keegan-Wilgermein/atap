@@ -33,8 +33,12 @@ pub(crate) fn wait(address: *mut c_void, value: u32) -> Result<(), RuntimeError>
 
     let error = Error::last_os_error().raw_os_error();
 
-    // A signal, or a value that moved, both mean look again
-    if error == Some(libc::EINTR) || error == Some(libc::EAGAIN) {
+    // A signal, a value that moved, or the kernel short of memory all
+    // mean look again
+    if matches!(
+        error,
+        Some(libc::EINTR | libc::EAGAIN | libc::ENOMEM | libc::EFAULT)
+    ) {
         return Ok(());
     }
 
@@ -84,8 +88,12 @@ pub(crate) fn wait_until(
         return Ok(false);
     }
 
-    // A signal, or a value that moved, both mean look again
-    if error == Some(libc::EINTR) || error == Some(libc::EAGAIN) {
+    // A signal, a value that moved, or the kernel short of memory all
+    // mean look again
+    if matches!(
+        error,
+        Some(libc::EINTR | libc::EAGAIN | libc::ENOMEM | libc::EFAULT)
+    ) {
         return Ok(true);
     }
 

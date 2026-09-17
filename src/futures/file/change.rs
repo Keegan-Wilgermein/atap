@@ -31,13 +31,15 @@ pub(super) const EVERY_NOTE: u32 = libc::NOTE_WRITE
 /// Also what [`WatchTask::only`] takes, built by naming the parts
 /// wanted:
 ///
-/// ```ignore
-/// File::watch(&path).only(Change::REMOVED | Change::RENAMED)
+/// ```no_run
+/// # use atap::fs::{Change, File};
+/// # let path = "/tmp/watched";
+/// let watch = File::watch(&path).only(Change::REMOVED | Change::RENAMED);
 /// ```
 ///
 /// [`written`]: Change::written
 /// [`extended`]: Change::extended
-/// [`WatchTask::only`]: crate::WatchTask::only
+/// [`WatchTask::only`]: crate::fs::WatchTask::only
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Change(u32);
 

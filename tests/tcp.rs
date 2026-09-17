@@ -4,7 +4,10 @@
 
 mod common;
 
-use atap::{Connection, Listener, Runtime, RuntimeError, Tcp};
+use atap::{
+    Runtime, RuntimeError,
+    tcp::{Connection, Listener, Tcp},
+};
 use common::until_started;
 use std::{
     thread,

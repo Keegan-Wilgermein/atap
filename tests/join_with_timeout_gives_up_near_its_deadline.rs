@@ -1,4 +1,7 @@
-use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    Runtime, RuntimeError,
+    sleep::{Sleep, SleepMode},
+};
 use std::time::Duration;
 use std::time::Instant;
 

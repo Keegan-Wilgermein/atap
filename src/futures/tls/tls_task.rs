@@ -2,6 +2,7 @@
 //! The tasks the `Tls` constructors and a `TlsListener` return,
 //! and everything they do once run
 
+use crate::modules::input::{Token, token};
 use crate::{
     RuntimeError,
     constants::INLINE_PAYLOAD,
@@ -84,6 +85,7 @@ fn host_of(text: &str) -> Option<&str> {
 /// The connection, with its handshake done and the server's
 /// certificate checked
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct TlsConnectTask {
     /// Where to connect, kept for the name it implies
     target: Target,
@@ -204,7 +206,7 @@ impl TlsConnectTask {
     ) -> Result<Step<Result<TlsConnection, RuntimeError>>, RuntimeError> {
         loop {
             match mem::take(&mut self.stage.0) {
-                Connecting::Tcp => match self.connect.step(reactor_id, task_id) {
+                Connecting::Tcp => match self.connect.step(token(), reactor_id, task_id) {
                     Step::Done(Ok(tcp)) => {
                         let session = self.session()?;
                         self.stage.0 = Connecting::Handshaking(tcp, session);
@@ -238,6 +240,7 @@ impl TlsConnectTask {
 /// ## Returns
 /// The listener, with its certificate and key loaded
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct TlsListenTask {
     /// The TCP listen
     listen: ListenTask,
@@ -284,7 +287,7 @@ impl TlsListenTask {
     /// The files first, so a bad one never opens a socket
     fn listen(&self, reactor_id: i32, task_id: usize) -> Result<TlsListener, RuntimeError> {
         let config = config::server(&self.cert, &self.key)?;
-        let tcp = self.listen.execute(reactor_id, task_id)?;
+        let tcp = self.listen.execute(token(), reactor_id, task_id)?;
 
         if self.clock.expired() {
             return Err(RuntimeError::TimedOut);
@@ -300,6 +303,7 @@ impl TlsListenTask {
 /// The connection, with its handshake done, and the address it
 /// came from
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct TlsAcceptTask {
     /// Where the connections come from
     listener: TlsListener,
@@ -360,7 +364,7 @@ impl TlsAcceptTask {
     ) -> Result<Step<Result<(TlsConnection, SocketAddr), RuntimeError>>, RuntimeError> {
         loop {
             match mem::take(&mut self.stage.0) {
-                Accepting::Tcp => match self.accept.step(reactor_id, task_id) {
+                Accepting::Tcp => match self.accept.step(token(), reactor_id, task_id) {
                     Step::Done(Ok((tcp, peer))) => {
                         let session = rustls::ServerConnection::new(self.listener.config())
                             .map_err(tls_error)?;
@@ -398,6 +402,7 @@ impl TlsAcceptTask {
 /// ## Returns
 /// Everything the server sent before it closed the session
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct TlsRequestTask {
     /// How it connects
     connect: TlsConnectTask,
@@ -482,11 +487,11 @@ impl Task for TlsConnectTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         let mut clock = self.clock;
         clock.start();
 
@@ -494,11 +499,11 @@ impl Task for TlsConnectTask {
     }
 
     /// Always. It still parks between steps
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 
-    fn step(&mut self, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
         settle(self.advance(reactor_id, task_id))
     }
 }
@@ -508,16 +513,16 @@ impl Task for TlsListenTask {
     type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         self.listen(reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
     /// It reads files, and may look a name up
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -527,17 +532,17 @@ impl Task for TlsAcceptTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
         self.accept = AcceptTask::new(self.listener.tcp().clone()).timed(self.clock);
         self.stage = Progress::default();
     }
 
-    fn step(&mut self, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
         settle(self.advance(reactor_id, task_id))
     }
 }
@@ -547,22 +552,22 @@ impl Task for TlsRequestTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
         self.connect.begin(self.clock);
         self.stage = Progress::default();
     }
 
     /// Whatever the connect says
-    fn blocking(&self) -> bool {
-        self.connect.blocking()
+    fn blocking(&self, _token: Token) -> bool {
+        self.connect.blocking(token())
     }
 
-    fn step(&mut self, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
         self.advance(reactor_id, task_id)
     }
 }

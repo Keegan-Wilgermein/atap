@@ -7,7 +7,7 @@
 
 mod common;
 
-use atap::{Compute, JoinPolicy, Runtime, RuntimeError, TaskHandle};
+use atap::{JoinPolicy, Runtime, RuntimeError, TaskHandle, compute::Compute};
 use std::{
     sync::{
         Arc,

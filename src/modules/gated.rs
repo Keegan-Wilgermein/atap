@@ -2,6 +2,7 @@
 //! The wrapper a task spawned with `wait_for` runs as, which hands
 //! each run the latest value given
 
+use crate::modules::input::{Token, token};
 use crate::{
     futures::task::{
         Nothing, Task,
@@ -79,27 +80,27 @@ where
 
     /// Runs the task with whatever it was last handed
     #[inline(always)]
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
-        self.inner.execute(reactor_id, task_id)
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
+        self.inner.execute(token(), reactor_id, task_id)
     }
 
     /// Hands the task the latest value, then prepares it
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.mailbox.gate().begin();
 
         <F::Input as Receives<T, M>>::deliver(input::token(), &mut self.inner, &self.mailbox);
 
-        self.inner.prepare();
+        self.inner.prepare(token());
     }
 
     /// Whatever the task inside says
     #[inline(always)]
-    fn blocking(&self) -> bool {
-        self.inner.blocking()
+    fn blocking(&self, _token: Token) -> bool {
+        self.inner.blocking(token())
     }
 
     #[inline(always)]
-    fn step(&mut self, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
-        self.inner.step(reactor_id, task_id)
+    fn step(&mut self, _token: Token, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
+        self.inner.step(token(), reactor_id, task_id)
     }
 }

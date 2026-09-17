@@ -4,7 +4,10 @@
 
 mod common;
 
-use atap::{Runtime, RuntimeError, Udp, UdpSocket};
+use atap::{
+    Runtime, RuntimeError,
+    udp::{Udp, UdpSocket},
+};
 use common::until_started;
 use std::time::{Duration, Instant};
 

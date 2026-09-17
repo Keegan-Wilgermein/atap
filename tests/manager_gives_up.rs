@@ -8,7 +8,10 @@
 
 mod common;
 
-use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    Runtime, RuntimeError,
+    sleep::{Sleep, SleepMode},
+};
 use common::settles;
 use std::{thread, time::Duration};
 
@@ -21,7 +24,7 @@ fn a_manager_that_gives_up_strands_nothing() {
     let quick = || Sleep::sleep(Duration::from_nanos(1));
     let interval = Duration::from_millis(20);
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     let schedule = Runtime::task(quick()).at_rate(interval).spawn();
     let timed = Runtime::task(quick()).repeat().every(interval).spawn();
@@ -31,7 +34,7 @@ fn a_manager_that_gives_up_strands_nothing() {
     thread::sleep(Duration::from_millis(100));
 
     assert!(
-        !schedule.settled() || schedule.maybe_join().is_ok(),
+        !schedule.settled() || schedule.try_join().is_ok(),
         "the schedule settled before the manager was touched",
     );
 
@@ -62,7 +65,7 @@ fn a_manager_that_gives_up_strands_nothing() {
     assert!(
         schedule.settled() && timed.settled(),
         "something was left unsettled with nothing able to run it, pool {:?}",
-        Runtime::workers(),
+        Runtime::pool(),
     );
 
     // The pool outlives its manager
@@ -77,15 +80,15 @@ fn a_manager_that_gives_up_strands_nothing() {
 
     // Every slot back
     assert!(
-        settles(|| Runtime::workers().live() <= before.live()),
+        settles(|| Runtime::pool().live() <= before.live()),
         "the manager gave up holding {} live tasks, up from {}",
-        Runtime::workers().live(),
+        Runtime::pool().live(),
         before.live(),
     );
 
     println!(
         "manager gave up, schedule settled, pool still ran a task in {slept:?}, \
          live back to {}",
-        Runtime::workers().live(),
+        Runtime::pool().live(),
     );
 }

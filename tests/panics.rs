@@ -10,7 +10,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime, RuntimeError};
+use atap::{Runtime, RuntimeError, compute::Compute};
 use common::settles;
 use std::{
     sync::{
@@ -125,7 +125,7 @@ fn a_repeat_that_panics_ends() {
         "a repeat kept going after a run panicked"
     );
 
-    assert_eq!(handle.maybe_join(), Err(RuntimeError::TaskFailed));
+    assert_eq!(handle.try_join(), Err(RuntimeError::TaskFailed));
 
     std::thread::sleep(Duration::from_millis(50));
 

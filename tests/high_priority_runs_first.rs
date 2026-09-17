@@ -1,4 +1,4 @@
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -33,7 +33,7 @@ fn high_priority_runs_first() {
 
     let total = started.elapsed();
 
-    let workers = Runtime::workers().len();
+    let workers = Runtime::pool().len();
 
     println!(
         "urgent task waited {:?}, the {} before it took {:?}",

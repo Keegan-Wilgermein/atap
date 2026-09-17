@@ -45,6 +45,7 @@ dependencies = [
 name = "atap"
 version = "0.1.0"
 dependencies = [
+ "atap",
  "libc",
  "rcgen",
  "rustls",

@@ -30,12 +30,14 @@ static SLEEP_DEATHS: AtomicU32 = AtomicU32::new(0);
 static SPAWN_REFUSALS: AtomicU32 = AtomicU32::new(0);
 
 /// Owes `workers` worker deaths and `sleeps` sleep thread deaths
+#[cfg(feature = "fault-injection")]
 pub(crate) fn owe_thread_deaths(workers: u32, sleeps: u32) {
     WORKER_DEATHS.store(workers, Ordering::SeqCst);
     SLEEP_DEATHS.store(sleeps, Ordering::SeqCst);
 }
 
 /// Owes `count` refused thread starts
+#[cfg(feature = "fault-injection")]
 pub(crate) fn owe_spawn_refusals(count: u32) {
     SPAWN_REFUSALS.store(count, Ordering::SeqCst);
 }

@@ -2,6 +2,7 @@
 //! The tasks the `File` constructors return, and everything
 //! they do once a thread picks them up
 
+use crate::modules::input::Token;
 use crate::{
     RuntimeError,
     constants::{FILE_CHUNK, INLINE_PAYLOAD},
@@ -89,6 +90,7 @@ impl Drop for Dir {
 /// The bytes read. A range that starts past the end of the file
 /// comes back empty rather than as an error
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct ReadTask {
     /// The file to read, already in the form the kernel takes
     ///
@@ -106,6 +108,7 @@ pub struct ReadTask {
 /// The number of bytes written, which is the length of the
 /// input whenever it isn't an error
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct WriteTask {
     /// The file to write to
     path: Option<CString>,
@@ -119,6 +122,7 @@ pub struct WriteTask {
 
 /// Asks what a path is
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct MetadataTask {
     /// The path to ask about
     path: Option<CString>,
@@ -134,6 +138,7 @@ pub struct MetadataTask {
 /// One path per entry, each joined onto the directory that was
 /// asked for. `.` and `..` are left out
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct ReadDirTask {
     /// The directory to list
     path: Option<CString>,
@@ -143,6 +148,7 @@ pub struct ReadDirTask {
 ///
 /// Not cancellable once it has started
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct PathTask {
     /// The path acted on
     path: Option<CString>,
@@ -271,7 +277,7 @@ impl Task for ReadTask {
     type Output = Result<Vec<u8>, RuntimeError>;
     type Input = Nothing;
 
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
         let fd = open_at(path, libc::O_RDONLY, 0)?;
 
@@ -288,7 +294,7 @@ impl Task for ReadTask {
     }
 
     /// Held for its whole duration, so it goes to a sleep thread
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -297,7 +303,7 @@ impl Task for WriteTask {
     type Output = Result<usize, RuntimeError>;
     type Input = Nothing;
 
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
 
         // `O_APPEND` would move a positional write to the end
@@ -317,7 +323,7 @@ impl Task for WriteTask {
         write_all(&fd, &self.data, at)
     }
 
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -326,7 +332,7 @@ impl Task for MetadataTask {
     type Output = Result<Metadata, RuntimeError>;
     type Input = Nothing;
 
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
         let mut raw: libc::stat = unsafe { mem::zeroed() };
 
@@ -338,7 +344,7 @@ impl Task for MetadataTask {
         Ok(Metadata::from_stat(&raw))
     }
 
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -347,7 +353,7 @@ impl Task for ReadDirTask {
     type Output = Result<Vec<PathBuf>, RuntimeError>;
     type Input = Nothing;
 
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
 
         let raw = unsafe { libc::opendir(path.as_ptr()) };
@@ -404,7 +410,7 @@ impl Task for ReadDirTask {
         Ok(found)
     }
 
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -413,7 +419,7 @@ impl Task for PathTask {
     type Output = Result<(), RuntimeError>;
     type Input = Nothing;
 
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
 
         // Resolved first, so a rename with nowhere to go answers
@@ -437,7 +443,7 @@ impl Task for PathTask {
         Ok(())
     }
 
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -644,27 +650,34 @@ fn hint(fd: &Fd) -> Result<usize, RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::input::token;
 
     /// Every file task says it holds its thread
     #[test]
     fn every_file_task_says_it_blocks() {
-        assert!(ReadTask::whole("a").blocking(), "read");
-        assert!(ReadTask::range("a", 0, 1).blocking(), "read_at");
+        assert!(ReadTask::whole("a").blocking(token()), "read");
+        assert!(ReadTask::range("a", 0, 1).blocking(token()), "read_at");
         assert!(
-            WriteTask::truncate("a", b"b".as_slice()).blocking(),
+            WriteTask::truncate("a", b"b".as_slice()).blocking(token()),
             "write"
         );
-        assert!(WriteTask::append("a", b"b".as_slice()).blocking(), "append");
         assert!(
-            WriteTask::at("a", 0, b"b".as_slice()).blocking(),
+            WriteTask::append("a", b"b".as_slice()).blocking(token()),
+            "append"
+        );
+        assert!(
+            WriteTask::at("a", 0, b"b".as_slice()).blocking(token()),
             "write_at"
         );
-        assert!(MetadataTask::following("a").blocking(), "metadata");
-        assert!(MetadataTask::link("a").blocking(), "symlink_metadata");
-        assert!(ReadDirTask::new("a").blocking(), "read_dir");
-        assert!(PathTask::remove("a").blocking(), "remove");
-        assert!(PathTask::remove_dir("a").blocking(), "remove_dir");
-        assert!(PathTask::create_dir("a").blocking(), "create_dir");
-        assert!(PathTask::rename("a", "b").blocking(), "rename");
+        assert!(MetadataTask::following("a").blocking(token()), "metadata");
+        assert!(
+            MetadataTask::link("a").blocking(token()),
+            "symlink_metadata"
+        );
+        assert!(ReadDirTask::new("a").blocking(token()), "read_dir");
+        assert!(PathTask::remove("a").blocking(token()), "remove");
+        assert!(PathTask::remove_dir("a").blocking(token()), "remove_dir");
+        assert!(PathTask::create_dir("a").blocking(token()), "create_dir");
+        assert!(PathTask::rename("a", "b").blocking(token()), "rename");
     }
 }

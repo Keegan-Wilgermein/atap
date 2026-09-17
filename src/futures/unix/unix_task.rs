@@ -2,6 +2,7 @@
 //! The tasks the `Unix` constructors, a `UnixListener` and a
 //! `UnixDatagram` return, and everything they do once run
 
+use crate::modules::input::Token;
 use crate::{
     RuntimeError,
     constants::INLINE_PAYLOAD,
@@ -64,6 +65,7 @@ fn bind_path(path: &Path, kind: libc::c_int) -> Result<(Fd, Bound), RuntimeError
 /// ## Returns
 /// The connection
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct UnixConnectTask {
     /// Where to connect
     path: PathBuf,
@@ -139,6 +141,7 @@ impl UnixConnectTask {
 /// ## Returns
 /// The listener
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct UnixListenTask {
     /// Where to listen
     path: PathBuf,
@@ -183,6 +186,7 @@ impl UnixListenTask {
 /// ## Returns
 /// The connection
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct UnixAcceptTask {
     /// Where the connections come from
     listener: UnixListener,
@@ -250,6 +254,7 @@ impl UnixAcceptTask {
 /// ## Returns
 /// The socket, bound to its path
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct UnixBindTask {
     /// Where to bind
     path: PathBuf,
@@ -292,6 +297,7 @@ impl UnixBindTask {
 /// ## Returns
 /// The number of bytes sent, which is all of them
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct UnixSendToTask {
     /// What to send from
     socket: UnixDatagram,
@@ -351,6 +357,7 @@ impl UnixSendToTask {
 /// The whole datagram, and the path it came from if the sender
 /// has one
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct UnixRecvFromTask {
     /// Where to receive
     socket: UnixDatagram,
@@ -408,16 +415,16 @@ impl Task for UnixConnectTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
         self.trying = Progress::default();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -427,11 +434,11 @@ impl Task for UnixListenTask {
     type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.listen()
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 }
@@ -441,15 +448,15 @@ impl Task for UnixAcceptTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -459,11 +466,11 @@ impl Task for UnixBindTask {
     type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.bind()
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 }
@@ -473,11 +480,11 @@ impl Task for UnixSendToTask {
     type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.send()
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 }
@@ -487,15 +494,15 @@ impl Task for UnixRecvFromTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }

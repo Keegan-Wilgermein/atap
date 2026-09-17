@@ -6,6 +6,7 @@ use crate::futures::task::{
     Task,
     sealed::{Park, Step},
 };
+use crate::modules::input::token;
 
 /// A `Task` with its output type erased
 pub(crate) trait ErasedTask: Send {
@@ -46,10 +47,10 @@ where
     ) -> Option<Park> {
         // Spawned tasks prepare here, on the thread about to run them
         if !resumed {
-            self.prepare();
+            self.prepare(token());
         }
 
-        match self.step(reactor_id, task_id) {
+        match self.step(token(), reactor_id, task_id) {
             Step::Done(out) => {
                 unsafe { payload.cast::<F::Output>().write(out) };
 

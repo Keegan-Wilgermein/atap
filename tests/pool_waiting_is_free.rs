@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use common::{report, take_a_run};
 use std::{thread, time::Duration};
 
@@ -24,7 +24,7 @@ fn waiting_costs_no_thread() {
     // the pool to have grown if it was going to
     thread::sleep(Duration::from_millis(300));
 
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
     report("waiting out an interval");
 
     handle.clone().cancel();

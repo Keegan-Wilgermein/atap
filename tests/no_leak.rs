@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use common::max_rss;
 use std::time::Duration;
 

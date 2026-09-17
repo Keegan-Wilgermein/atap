@@ -3,7 +3,10 @@
 
 mod common;
 
-use atap::{Runtime, Signal, SignalKind};
+use atap::{
+    Runtime,
+    signal::{Signal, SignalKind},
+};
 use common::send_signal;
 use std::{
     thread,
@@ -49,10 +52,10 @@ fn a_repeating_wait_reports_every_delivery() {
         // next run to be waiting again
         let until = Instant::now() + Duration::from_secs(2);
 
-        // `maybe_take` rather than `take`, which would wait for the
+        // `try_take` rather than `take`, which would wait for the
         // next run rather than poll
         while Instant::now() < until {
-            if let Ok(count) = handle.maybe_take() {
+            if let Ok(count) = handle.try_take() {
                 total += count.expect("every run succeeds");
                 break;
             }

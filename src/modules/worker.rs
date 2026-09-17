@@ -424,8 +424,6 @@ impl Worker {
     /// emptied it
     #[inline(always)]
     pub(crate) fn release(&self) {
-        self.head.store(0, Ordering::Release);
-        self.tail.store(0, Ordering::Release);
         self.completed.store(0, Ordering::Relaxed);
         self.watched.store(0, Ordering::Relaxed);
         self.streak.store(0, Ordering::Relaxed);

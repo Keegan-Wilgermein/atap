@@ -18,11 +18,16 @@ use std::sync::Arc;
 /// tasks that send and receive on it. [`Tcp::request`] does the
 /// whole exchange in one task, for when that is all there is
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, tcp::Tcp};
+/// # use std::time::Duration;
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let reply = Runtime::block(
 ///     Tcp::request("example.com:80", b"GET / HTTP/1.0\r\n\r\n".as_slice())
 ///         .timeout(Duration::from_secs(5)),
 /// )?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Waiting
@@ -44,7 +49,7 @@ use std::sync::Arc;
 /// A socket task still waiting on the network when the runtime
 /// shuts down is written off, and reads [`RuntimeError::TaskFailed`]
 ///
-/// [`Listener::accept`]: crate::Listener::accept
+/// [`Listener::accept`]: crate::tcp::Listener::accept
 /// [`Runtime::block`]: crate::Runtime::block
 /// [`RuntimeError::Cancelled`]: crate::RuntimeError::Cancelled
 /// [`RuntimeError::TaskFailed`]: crate::RuntimeError::TaskFailed
@@ -77,7 +82,7 @@ impl Tcp {
     /// ## Returns
     /// The listener
     ///
-    /// [`Listener::local_addr`]: crate::Listener::local_addr
+    /// [`Listener::local_addr`]: crate::tcp::Listener::local_addr
     pub fn listen(addr: impl NetAddress) -> ListenTask {
         ListenTask::new(addr.target())
     }

@@ -45,6 +45,7 @@ pub(crate) fn enter(worker: &'static Worker) {
 /// Lowers how deep a worker may help, zero for not at all
 ///
 /// Never above `HELP_DEPTH`
+#[cfg(feature = "fault-injection")]
 pub(crate) fn limit_depth(depth: usize) {
     LIMIT.store(depth.min(HELP_DEPTH), Ordering::SeqCst);
 }

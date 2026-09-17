@@ -5,7 +5,12 @@
 
 mod common;
 
-use atap::{Compute, File, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    JoinPolicy, Runtime, RuntimeError,
+    compute::Compute,
+    fs::File,
+    sleep::{Sleep, SleepMode},
+};
 use common::{report, take_a_run};
 use std::{
     fs,
@@ -113,7 +118,7 @@ fn join_first_settles_every_loser() {
     let waited = Instant::now();
 
     while waited.elapsed() < Duration::from_secs(30) {
-        let now = Runtime::workers();
+        let now = Runtime::pool();
 
         if !now.has_any_task() && now.live() <= base + 8 {
             break;
@@ -122,7 +127,7 @@ fn join_first_settles_every_loser() {
         thread::sleep(Duration::from_millis(20));
     }
 
-    let after = Runtime::workers().live();
+    let after = Runtime::pool().live();
 
     println!(
         "  {} races of {}, live {} -> {}",
@@ -152,7 +157,7 @@ fn file_outputs_are_dropped_not_leaked() {
 
     // Read once the phase before has wound down
     let base = settled_live();
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     let handles: Vec<_> = (0..reads)
         .map(|_| Runtime::task(File::read(&path)).spawn())
@@ -201,7 +206,7 @@ fn file_outputs_are_dropped_not_leaked() {
     drop(repeated);
 
     let after = settled_live();
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
 
     report("outputs settled");
 
@@ -410,13 +415,13 @@ fn repeating_holds_one_slot() {
     // until its next timer
     settled_live();
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     for _ in 1..runs {
         take_a_run(&handle);
     }
 
-    let after = Runtime::workers();
+    let after = Runtime::pool();
 
     handle.clone().cancel();
 
@@ -458,7 +463,7 @@ fn every_gives_its_run_slots_back() {
     // Read once the phase before has wound down
     settled_live();
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     // Instant runs on a short period, so slots come and go fast
     let handles: Vec<_> = (0..schedules)
@@ -487,7 +492,7 @@ fn every_gives_its_run_slots_back() {
 
     report("schedules running");
 
-    let peak = Runtime::workers();
+    let peak = Runtime::pool();
 
     for handle in handles {
         handle.cancel();
@@ -497,12 +502,11 @@ fn every_gives_its_run_slots_back() {
     // have hundreds of runs outstanding when it is cancelled
     let settling = Instant::now();
 
-    while Runtime::workers().live() > before.live() && settling.elapsed() < Duration::from_secs(10)
-    {
+    while Runtime::pool().live() > before.live() && settling.elapsed() < Duration::from_secs(10) {
         thread::sleep(Duration::from_millis(10));
     }
 
-    let after = Runtime::workers();
+    let after = Runtime::pool();
     report("schedules cancelled");
 
     println!(
@@ -559,12 +563,12 @@ fn every_gives_its_run_slots_back() {
 /// phase here leaves a cancelled repeat on
 fn settled_live() -> usize {
     let waited = Instant::now();
-    let mut last = Runtime::workers().live();
+    let mut last = Runtime::pool().live();
 
     while waited.elapsed() < Duration::from_secs(5) {
         thread::sleep(Duration::from_millis(100));
 
-        let now = Runtime::workers().live();
+        let now = Runtime::pool().live();
 
         if now == last {
             return now;
@@ -816,7 +820,7 @@ fn waiting_holds_one_slot() {
         doubler.give(value).expect("a give was refused");
 
         if value % 1_000 == 0 {
-            peak = peak.max(Runtime::workers().live());
+            peak = peak.max(Runtime::pool().live());
         }
     }
 
@@ -824,7 +828,7 @@ fn waiting_holds_one_slot() {
     let deadline = Instant::now() + Duration::from_secs(10);
 
     let last = loop {
-        match doubler.maybe_join() {
+        match doubler.try_join() {
             Ok(doubled) if doubled == (gives - 1) * 2 => break doubled,
             _ if Instant::now() < deadline => thread::sleep(Duration::from_millis(1)),
             other => panic!("the last give never ran: {:?}", other),
@@ -977,7 +981,7 @@ fn recursion_gives_slots_back() {
     let width = 200_000u64;
 
     let base = settled_live();
-    let before = Runtime::workers();
+    let before = Runtime::pool();
     let started = Instant::now();
 
     let handles: Vec<_> = (0..roots)
@@ -997,7 +1001,7 @@ fn recursion_gives_slots_back() {
 
     let took = started.elapsed();
     let after = settled_live();
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
 
     report("recursion done");
 
@@ -1035,7 +1039,7 @@ fn dead_threads_give_slots_back() {
     // Well under way before anything dies
     thread::sleep(Duration::from_millis(5));
 
-    let workers = Runtime::workers().len() as u32;
+    let workers = Runtime::pool().len() as u32;
 
     Runtime::inject_thread_deaths((workers / 2).max(1), 0);
 
@@ -1063,7 +1067,7 @@ fn dead_threads_give_slots_back() {
 
     let waited = Instant::now();
 
-    while Runtime::workers().recovering() > 0 && waited.elapsed() < Duration::from_secs(10) {
+    while Runtime::pool().recovering() > 0 && waited.elapsed() < Duration::from_secs(10) {
         thread::sleep(Duration::from_millis(10));
     }
 
@@ -1077,13 +1081,13 @@ fn dead_threads_give_slots_back() {
         workers,
         whole,
         failed,
-        Runtime::workers().deaths(),
+        Runtime::pool().deaths(),
         base,
         after,
     );
 
     assert_eq!(
-        Runtime::workers().recovering(),
+        Runtime::pool().recovering(),
         0,
         "killed workers were never recovered"
     );

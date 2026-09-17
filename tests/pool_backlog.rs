@@ -1,9 +1,9 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use std::time::Duration;
 
-/// `Runtime::workers` shows queued work while the pool is busy
+/// `Runtime::pool` shows queued work while the pool is busy
 /// with it
 #[test]
 fn backlog_is_visible_while_running() {
@@ -20,7 +20,7 @@ fn backlog_is_visible_while_running() {
     let mut seen_busy = false;
 
     for _ in 0..1000 {
-        let stats = Runtime::workers();
+        let stats = Runtime::pool();
 
         println!("{:#?}", stats);
 

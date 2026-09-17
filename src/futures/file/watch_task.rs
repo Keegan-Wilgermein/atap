@@ -4,6 +4,7 @@
 //!
 //! The one file task that parks, holding no thread while it waits
 
+use crate::modules::input::Token;
 use crate::{
     RuntimeError,
     constants::{INLINE_PAYLOAD, VNODE_POLL},
@@ -45,6 +46,7 @@ const _: () = assert!(mem::size_of::<Result<Change, RuntimeError>>() <= INLINE_P
 /// runs report the same change over again. Use `.repeat()` for a
 /// stream of changes
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct WatchTask {
     /// The path to watch, already in the form the kernel takes
     ///
@@ -106,8 +108,10 @@ impl WatchTask {
     /// Every change counts without this. Naming a narrower set
     /// leaves the rest to happen without waking the task:
     ///
-    /// ```ignore
-    /// File::watch(&path).only(Change::REMOVED | Change::RENAMED)
+    /// ```no_run
+    /// # use atap::fs::{Change, File};
+    /// # let path = "/tmp/watched";
+    /// let watch = File::watch(&path).only(Change::REMOVED | Change::RENAMED);
     /// ```
     ///
     /// ## Returns
@@ -196,17 +200,17 @@ impl Task for WatchTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
     /// Only the clock starts afresh. What this task has already
     /// seen, and the descriptor it watches, carry across runs
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -225,11 +229,15 @@ fn open_watch(path: &CString) -> Result<Fd, RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::input::token;
 
     /// A watch is the one file task that gives its thread back
     #[test]
     fn a_watch_does_not_block() {
-        assert!(!WatchTask::new("a").blocking(), "a watch parks instead");
+        assert!(
+            !WatchTask::new("a").blocking(token()),
+            "a watch parks instead"
+        );
     }
 
     /// A path with a zero byte in it is reported when it runs,

@@ -12,7 +12,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime, TaskHandle};
+use atap::{Runtime, TaskHandle, compute::Compute};
 use common::{Resources, cores, mebibytes, report};
 use std::{
     thread,
@@ -57,7 +57,7 @@ fn idle_share(when: &str) -> f64 {
     let waited = Instant::now();
 
     while waited.elapsed() < Duration::from_secs(30) {
-        let stats = Runtime::workers();
+        let stats = Runtime::pool();
 
         if !stats.has_any_task() && stats.live() == 0 {
             break;
@@ -150,7 +150,7 @@ fn resource_usage() {
 
             format!(
                 "came back {answer}, peak {} workers",
-                Runtime::workers().peak_workers()
+                Runtime::pool().peak_workers()
             )
         });
 
@@ -230,11 +230,11 @@ fn resource_usage() {
     let live_after_receives = {
         let waited = Instant::now();
 
-        while Runtime::workers().live() > 0 && waited.elapsed() < Duration::from_secs(10) {
+        while Runtime::pool().live() > 0 && waited.elapsed() < Duration::from_secs(10) {
             thread::sleep(Duration::from_millis(20));
         }
 
-        Runtime::workers().live()
+        Runtime::pool().live()
     };
 
     println!("  live after the receives were dropped: {live_after_receives}");
@@ -267,7 +267,7 @@ fn resource_usage() {
 
         format!(
             "peak {} sleep threads",
-            Runtime::workers().peak_sleep_threads()
+            Runtime::pool().peak_sleep_threads()
         )
     });
 
@@ -298,7 +298,7 @@ fn resource_usage() {
 
     // ---- phase 8
     let (before_deaths, _) = measured("phase 8: every worker killed and brought back", || {
-        let workers = Runtime::workers().len() as u32;
+        let workers = Runtime::pool().len() as u32;
 
         Runtime::inject_thread_deaths(workers, 0);
 
@@ -317,7 +317,7 @@ fn resource_usage() {
         format!(
             "{workers} killed, a split afterwards came back {:?}, {} deaths so far",
             answer,
-            Runtime::workers().deaths()
+            Runtime::pool().deaths()
         )
     });
 

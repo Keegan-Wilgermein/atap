@@ -1,6 +1,9 @@
 mod common;
 
-use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    Runtime, RuntimeError,
+    sleep::{Sleep, SleepMode},
+};
 use common::drain;
 use std::time::Duration;
 
@@ -18,7 +21,7 @@ fn finished_and_already_taken_are_different_endings() {
     once.take().expect("the value moves out");
 
     assert_eq!(
-        watcher.maybe_take(),
+        watcher.try_take(),
         Err(RuntimeError::AlreadyTaken),
         "a one shot says somebody was first, not that a series ended",
     );
@@ -35,7 +38,7 @@ fn finished_and_already_taken_are_different_endings() {
     assert_eq!(seen, 3, "saw {seen} of 3 runs");
 
     assert_eq!(
-        bounded.maybe_take(),
+        bounded.try_take(),
         Err(RuntimeError::Finished),
         "a series that ran out says so rather than looking like a lost race",
     );

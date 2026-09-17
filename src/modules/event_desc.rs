@@ -5,22 +5,13 @@ use crate::constants::EV_UDATA_SPECIFIC;
 
 /// A `kevent` description
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct EventDesc {
+pub(crate) struct EventDesc {
     pub(crate) filter: i16,
     pub(crate) flags: u16,
     pub(crate) fflags: u32,
 }
 
 impl EventDesc {
-    /// Creates a new custom `EventDesc`
-    pub fn new(filter: i16, flags: u16, fflags: u32) -> Self {
-        Self {
-            filter,
-            flags,
-            fflags,
-        }
-    }
-
     /// Returns the `kevent` flags
     /// required to make a new timer
     pub(crate) fn new_timer() -> Self {

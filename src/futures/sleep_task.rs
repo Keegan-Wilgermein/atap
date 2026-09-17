@@ -4,8 +4,8 @@
 //! Performs sleep functions defined by the `Sleep`
 //! struct
 
+use crate::modules::input::Token;
 use crate::{
-    EventDesc,
     constants::SLEEP_TOLERANCE,
     executor,
     futures::{
@@ -14,6 +14,7 @@ use crate::{
         task::sealed,
         task::{Nothing, Task},
     },
+    modules::event_desc::EventDesc,
     modules::{
         int_check::IntCheck,
         kevent::KEvent,
@@ -50,6 +51,7 @@ enum Slept {
 /// describing the time it took for the function
 /// to run in it's entirety
 #[derive(Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct SleepTask {
     /// How long to sleep for
     pub(crate) sleep_for: Duration,
@@ -198,7 +200,7 @@ impl Task for SleepTask {
     type Input = Nothing;
 
     #[inline(always)]
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         if !self.precise() || self.sleep_for > SLEEP_TOLERANCE {
             return self.offload(kqueue::id().ok(), reactor_id, task_id);
         }
@@ -211,13 +213,13 @@ impl Task for SleepTask {
 
     /// Times every run from its own beginning
     #[inline(always)]
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.created = Instant::now();
     }
 
     /// Whether this sleep ends up waiting in the kernel
     #[inline(always)]
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         !self.precise() || self.sleep_for > SLEEP_TOLERANCE
     }
 }

@@ -8,7 +8,7 @@ use std::time::Duration;
 ///
 /// Set with [`SleepTask::mode`], and `Precise` without it
 ///
-/// [`SleepTask::mode`]: crate::SleepTask::mode
+/// [`SleepTask::mode`]: crate::sleep::SleepTask::mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SleepMode {
     /// Spins the last stretch of the wait rather than sleeping it
@@ -39,14 +39,16 @@ impl Sleep {
     /// for accuracy. [`SleepTask::mode`] trades that back for a core
     /// that stays idle:
     ///
-    /// ```ignore
-    /// Sleep::sleep(time).mode(SleepMode::Relaxed)
+    /// ```no_run
+    /// # use atap::sleep::{Sleep, SleepMode};
+    /// # let time = std::time::Duration::from_millis(1);
+    /// let task = Sleep::sleep(time).mode(SleepMode::Relaxed);
     /// ```
     ///
     /// ## Returns
     /// How long it actually took, from start to finish
     ///
-    /// [`SleepTask::mode`]: crate::SleepTask::mode
+    /// [`SleepTask::mode`]: crate::sleep::SleepTask::mode
     pub fn sleep(time: Duration) -> SleepTask {
         SleepTask::new(time)
     }

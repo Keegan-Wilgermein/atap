@@ -5,6 +5,7 @@
 //! A wait parks on the signal the same way a socket task parks on
 //! a descriptor, so a spawned one holds no thread
 
+use crate::modules::input::Token;
 use crate::{
     RuntimeError,
     constants::{INLINE_PAYLOAD, SIGNAL_POLL},
@@ -12,7 +13,7 @@ use crate::{
         net::step::{Clock, settle},
         signal::{
             dispatch::{self, Watcher},
-            signal::{SigReleasePolicy, SignalKind},
+            signal::{SignalKind, SignalReleasePolicy},
         },
         task::{
             Nothing, Task,
@@ -46,12 +47,13 @@ const _: () = assert!(mem::size_of::<Result<(), RuntimeError>>() <= INLINE_PAYLO
 /// report the same deliveries over again. Use `.repeat()` for a
 /// stream of signals
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct SignalTask {
     /// Which signal to wait for
     kind: SignalKind,
 
     /// What happens to it once nothing watches it
-    policy: SigReleasePolicy,
+    policy: SignalReleasePolicy,
 
     /// The timeout
     clock: Clock,
@@ -71,7 +73,7 @@ impl SignalTask {
     pub(crate) fn new(kind: SignalKind) -> Self {
         Self {
             kind,
-            policy: SigReleasePolicy::default(),
+            policy: SignalReleasePolicy::default(),
             clock: Clock::default(),
             seen: None,
             watch: None,
@@ -97,9 +99,9 @@ impl SignalTask {
     /// it
     ///
     /// ## Behaviour
-    /// [`SigReleasePolicy::Hold`], the default, keeps the signal
+    /// [`SignalReleasePolicy::Hold`], the default, keeps the signal
     /// taken over for the life of the program.
-    /// [`SigReleasePolicy::OnDrop`] hands it back once this task and
+    /// [`SignalReleasePolicy::OnDrop`] hands it back once this task and
     /// every copy of it are gone
     ///
     /// A signal anything else asked to hold stays held either way
@@ -108,7 +110,7 @@ impl SignalTask {
     /// The task. Calling it twice keeps the last, as long as it is
     /// set before the task runs: the first run is what takes the
     /// signal over
-    pub fn release_policy(mut self, policy: SigReleasePolicy) -> Self {
+    pub fn release_policy(mut self, policy: SignalReleasePolicy) -> Self {
         self.policy = policy;
         self
     }
@@ -161,6 +163,7 @@ impl SignalTask {
 /// ## Returns
 /// Nothing, once the kernel has taken it
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct SendSignalTask {
     /// Who to send it to
     pid: libc::pid_t,
@@ -200,17 +203,17 @@ impl Task for SignalTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
     /// Only the clock starts afresh. What this task has already
     /// counted, and its claim on the signal, carry across runs
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -220,7 +223,7 @@ impl Task for SendSignalTask {
     type Input = Nothing;
 
     /// One syscall, so this is the whole task
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.send()
     }
 }

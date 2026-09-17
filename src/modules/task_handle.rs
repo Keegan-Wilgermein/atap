@@ -202,7 +202,7 @@ where
     /// ## Returns
     /// The output, `NotReady` if the task hasn't settled, or why
     /// it settled without one
-    pub fn maybe_join(&self) -> Result<T, RuntimeError>
+    pub fn try_join(&self) -> Result<T, RuntimeError>
     where
         T: Clone,
     {
@@ -238,7 +238,7 @@ where
     /// ## Returns
     /// The output, `NotReady` if the task hasn't settled, or
     /// `AlreadyTaken` if another listener moved it out first
-    pub fn maybe_take(&self) -> Result<T, RuntimeError> {
+    pub fn try_take(&self) -> Result<T, RuntimeError> {
         Executor::poll_take(self.id)
     }
 
@@ -303,7 +303,7 @@ where
     /// A handle from a plain `spawn` can't give:
     ///
     /// ```compile_fail,E0599
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let handle = Runtime::task(Compute::compute(|()| 1)).spawn();
     /// let _ = handle.give(());

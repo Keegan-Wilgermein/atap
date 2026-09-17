@@ -6,7 +6,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime, RuntimeError};
+use atap::{Runtime, RuntimeError, compute::Compute};
 use common::settles;
 use std::{
     sync::{

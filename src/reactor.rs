@@ -3,8 +3,9 @@
 //! whoever is waiting on them
 
 use crate::{
-    EventDesc, RuntimeError,
+    RuntimeError,
     constants::WAKE_IDENT,
+    modules::event_desc::EventDesc,
     modules::{
         int_check::IntCheck,
         kevent::{KEvent, eventlist},

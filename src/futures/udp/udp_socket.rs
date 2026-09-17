@@ -26,11 +26,15 @@ struct Datagrams {
 /// send names where it goes, and each receive says where it came
 /// from. Cloning it is cheap and every clone is the same socket
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, udp::Udp};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let socket = Runtime::block(Udp::bind("0.0.0.0:0"))?;
 ///
 /// Runtime::block(socket.send_to("10.0.0.5:9000", b"ping".as_slice()))?;
 /// let (reply, from) = Runtime::block(socket.recv_from())?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Datagrams
@@ -47,7 +51,7 @@ struct Datagrams {
 /// slot, so one that isn't taken before the next arrives is lost.
 /// Receive in a loop instead
 ///
-/// [`Udp::bind`]: crate::Udp::bind
+/// [`Udp::bind`]: crate::udp::Udp::bind
 #[derive(Clone)]
 pub struct UdpSocket {
     socket: Arc<Datagrams>,

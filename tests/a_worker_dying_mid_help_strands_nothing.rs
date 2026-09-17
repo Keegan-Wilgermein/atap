@@ -11,7 +11,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime, RuntimeError};
+use atap::{Runtime, RuntimeError, compute::Compute};
 use common::{cores, report, settles};
 use std::{
     thread,
@@ -53,7 +53,7 @@ fn a_worker_dying_mid_help_strands_nothing() {
     let depth = 9;
     let whole = 1u64 << depth;
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
     let mut failed_roots = 0;
     let mut injected = 0usize;
 
@@ -71,7 +71,7 @@ fn a_worker_dying_mid_help_strands_nothing() {
 
         // Half the workers in the early rounds, and every one of them in
         // the later ones
-        let running = Runtime::workers().len();
+        let running = Runtime::pool().len();
         let deaths = match round < 2 {
             true => (running / 2).max(1),
             false => running,
@@ -108,7 +108,7 @@ fn a_worker_dying_mid_help_strands_nothing() {
                     "a root was still waiting {:?} after {} workers died under it, pool {}",
                     PATIENCE,
                     deaths,
-                    Runtime::workers(),
+                    Runtime::pool(),
                 ),
 
                 other => panic!("a root came back with {:?}", other.map(|inner| inner.ok())),
@@ -121,9 +121,9 @@ fn a_worker_dying_mid_help_strands_nothing() {
         Runtime::inject_thread_deaths(0, 0);
 
         assert!(
-            settles(|| Runtime::workers().recovering() == 0),
+            settles(|| Runtime::pool().recovering() == 0),
             "{} dead threads were never recovered",
-            Runtime::workers().recovering(),
+            Runtime::pool().recovering(),
         );
 
         println!(
@@ -139,7 +139,7 @@ fn a_worker_dying_mid_help_strands_nothing() {
         report("after the round");
     }
 
-    let after = Runtime::workers();
+    let after = Runtime::pool();
 
     println!(
         "{} deaths recorded against {} asked for, {} roots failed across every round",
@@ -166,7 +166,7 @@ fn a_worker_dying_mid_help_strands_nothing() {
     assert_eq!(clean.join_with_timeout(PATIENCE), Ok(Ok(whole)));
 
     assert!(
-        settles(|| Runtime::healthy()),
+        settles(Runtime::healthy),
         "the runtime wasn't healthy after its workers died: {:?}",
         Runtime::status(),
     );

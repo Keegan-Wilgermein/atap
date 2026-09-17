@@ -2,7 +2,7 @@
 //! A manager that dies holding wakes doesn't take the tasks
 //! waiting on them with it
 
-use atap::{Runtime, RuntimeError, Sleep, TaskHandle};
+use atap::{Runtime, RuntimeError, TaskHandle, sleep::Sleep};
 use std::{
     thread,
     time::{Duration, Instant},

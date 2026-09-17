@@ -1,6 +1,6 @@
 //! # Taken over
 
-use atap::SignalKind;
+use atap::signal::SignalKind;
 use std::{mem, ptr};
 
 /// Whether anything but the signal's own behaviour is installed

@@ -6,7 +6,10 @@
 
 mod common;
 
-use atap::{Runtime, SigReleasePolicy, Signal, SignalKind};
+use atap::{
+    Runtime,
+    signal::{Signal, SignalKind, SignalReleasePolicy},
+};
 use common::{taken_over, until_started};
 use std::{
     thread,
@@ -31,14 +34,14 @@ fn a_signal_goes_back_when_its_last_watcher_does() {
     // Two watchers, so the first going isn't the last
     let first = Runtime::task(
         Signal::wait(on_drop)
-            .release_policy(SigReleasePolicy::OnDrop)
+            .release_policy(SignalReleasePolicy::OnDrop)
             .timeout(Duration::from_millis(100)),
     )
     .spawn();
 
     let second = Runtime::task(
         Signal::wait(on_drop)
-            .release_policy(SigReleasePolicy::OnDrop)
+            .release_policy(SignalReleasePolicy::OnDrop)
             .timeout(PATIENCE),
     )
     .spawn();

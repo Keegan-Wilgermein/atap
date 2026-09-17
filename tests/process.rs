@@ -2,7 +2,7 @@
 //!
 //! Only programs a stock macOS install has are used
 
-use atap::{Process, Runtime, RuntimeError, TaskHandle};
+use atap::{Runtime, RuntimeError, TaskHandle, process::Process};
 use std::{
     fs, thread,
     time::{Duration, Instant},
@@ -19,7 +19,7 @@ fn settled<T>(handle: &TaskHandle<T>, patience: Duration) -> Option<T> {
     let deadline = Instant::now() + patience;
 
     while Instant::now() < deadline {
-        match handle.maybe_take() {
+        match handle.try_take() {
             Ok(value) => return Some(value),
             Err(RuntimeError::NotReady) => thread::sleep(Duration::from_millis(1)),
             Err(_) => break,

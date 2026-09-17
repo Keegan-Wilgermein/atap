@@ -15,7 +15,7 @@ pub fn next_run<T>(handle: &TaskHandle<T>, patience: Duration) -> Option<T> {
     let deadline = Instant::now() + patience;
 
     while Instant::now() < deadline {
-        match handle.maybe_take() {
+        match handle.try_take() {
             Ok(value) => return Some(value),
 
             // Between runs, or one still going

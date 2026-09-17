@@ -3,7 +3,12 @@
 //! Ordinary work at an ordinary pace for half a minute, to catch
 //! leaks, drift and schedules that quietly stop
 
-use atap::{Compute, DEFAULT_PRIORITY, File, Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    DEFAULT_PRIORITY, Runtime, RuntimeError,
+    compute::Compute,
+    fs::File,
+    sleep::{Sleep, SleepMode},
+};
 use std::{
     collections::HashMap,
     fs,
@@ -200,7 +205,7 @@ fn a_program_that_just_runs() {
         }
 
         // Pick up a config reload if the watch caught one
-        if let Ok(Ok(change)) = watcher.maybe_take() {
+        if let Ok(Ok(change)) = watcher.try_take() {
             assert!(
                 !change.removed(),
                 "the config went away rather than changing",
@@ -366,7 +371,7 @@ fn a_program_that_just_runs() {
         ran, ticks, served, checksums, splits, edits, reloads, sweeps, written, total, applied,
     );
 
-    println!("\n{}", Runtime::workers());
+    println!("\n{}", Runtime::pool());
 
     // ---- what any of that was worth
 

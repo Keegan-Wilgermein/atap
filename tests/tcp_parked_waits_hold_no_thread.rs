@@ -3,7 +3,10 @@
 
 mod common;
 
-use atap::{Connection, Runtime, Tcp};
+use atap::{
+    Runtime,
+    tcp::{Connection, Tcp},
+};
 use common::{cores, raise_descriptor_limit, report};
 use std::{
     thread,
@@ -44,7 +47,7 @@ fn parked_receives_hold_no_thread() {
     // ticks for the pool to have grown if it was going to
     thread::sleep(Duration::from_millis(300));
 
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
     report("receives parked");
 
     let parked = handles.iter().filter(|handle| handle.is_running()).count();

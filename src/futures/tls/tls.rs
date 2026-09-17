@@ -17,7 +17,10 @@ use std::{path::Path, sync::Arc};
 /// certificate checked. A [`TlsConnection`] hands out the same send
 /// and receive tasks as a TCP one
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, tls::Tls};
+/// # use std::time::Duration;
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let reply = Runtime::block(
 ///     Tls::request(
 ///         "www.example.com:443",
@@ -25,6 +28,8 @@ use std::{path::Path, sync::Arc};
 ///     )
 ///     .timeout(Duration::from_secs(10)),
 /// )?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Certificates
@@ -42,8 +47,8 @@ use std::{path::Path, sync::Arc};
 /// same as a TCP one. A connect still asks for a sleep thread for
 /// its steps
 ///
-/// [`Tcp`]: crate::Tcp
-/// [`TlsConnection`]: crate::TlsConnection
+/// [`Tcp`]: crate::tcp::Tcp
+/// [`TlsConnection`]: crate::tls::TlsConnection
 /// [`RuntimeError::BadCertificate`]: crate::RuntimeError::BadCertificate
 /// [`RuntimeError::TlsFailed`]: crate::RuntimeError::TlsFailed
 pub struct Tls;

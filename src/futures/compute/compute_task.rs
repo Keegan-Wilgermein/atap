@@ -2,12 +2,14 @@
 //! The task `Compute::compute` returns, and what it does once run
 
 use crate::futures::task::{Task, sealed};
+use crate::modules::input::Token;
 use std::{fmt, marker::PhantomData};
 
 /// Work of the program's own, waiting to be run
 ///
 /// ## Returns
 /// Whatever the closure returns
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct ComputeTask<F, V, T> {
     /// What each run calls
     work: F,
@@ -90,7 +92,7 @@ where
     type Input = V;
 
     /// Calls the work with a copy of the input
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let input = self
             .input
             .clone()
@@ -100,12 +102,12 @@ where
     }
 
     /// Whatever `blocking` said
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         self.blocking
     }
 
     /// Keeps the input every run is handed a copy of
-    fn give(&mut self, input: Self::Input) {
+    fn give(&mut self, _token: Token, input: Self::Input) {
         self.input = Some(input);
     }
 }

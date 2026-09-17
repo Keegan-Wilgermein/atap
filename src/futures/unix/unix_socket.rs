@@ -35,11 +35,15 @@ struct UnixStream {
 /// [`UnixListener::accept`], and its methods build the same send
 /// and receive tasks
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, unix::Unix};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let conn = Runtime::block(Unix::connect("/tmp/app.sock"))?;
 ///
 /// Runtime::block(conn.send(b"status\n".as_slice()))?;
 /// let line = Runtime::block(conn.recv_until(b"\n", 1024))?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Closing
@@ -51,8 +55,8 @@ struct UnixStream {
 /// Two receives on one connection at once each get part of what
 /// arrives, in no useful order. Run them one after the other
 ///
-/// [`Connection`]: crate::Connection
-/// [`Unix::connect`]: crate::Unix::connect
+/// [`Connection`]: crate::tcp::Connection
+/// [`Unix::connect`]: crate::unix::Unix::connect
 #[derive(Clone)]
 pub struct UnixConnection {
     stream: Arc<UnixStream>,
@@ -188,7 +192,7 @@ struct UnixListening {
 /// **its socket file is removed** then too. A file somebody else
 /// has since put at the same path is left alone
 ///
-/// [`Unix::listen`]: crate::Unix::listen
+/// [`Unix::listen`]: crate::unix::Unix::listen
 #[derive(Clone)]
 pub struct UnixListener {
     socket: Arc<UnixListening>,
@@ -263,11 +267,15 @@ struct UnixDatagrams {
 /// programs on this machine: each send names the path it goes
 /// to, and each receive says which path it came from
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, unix::Unix};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let socket = Runtime::block(Unix::bind("/tmp/me.sock"))?;
 ///
 /// Runtime::block(socket.send_to("/tmp/them.sock", b"ping".as_slice()))?;
 /// let (reply, from) = Runtime::block(socket.recv_from())?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Datagrams
@@ -283,8 +291,8 @@ struct UnixDatagrams {
 /// `net.local.dgram.maxdgram`. A larger one is refused as
 /// `CheckError(Some(EMSGSIZE))`
 ///
-/// [`Unix::bind`]: crate::Unix::bind
-/// [`UdpSocket`]: crate::UdpSocket
+/// [`Unix::bind`]: crate::unix::Unix::bind
+/// [`UdpSocket`]: crate::udp::UdpSocket
 #[derive(Clone)]
 pub struct UnixDatagram {
     socket: Arc<UnixDatagrams>,

@@ -2,7 +2,10 @@
 
 mod common;
 
-use atap::{File, FileKind, Runtime, RuntimeError};
+use atap::{
+    Runtime, RuntimeError,
+    fs::{File, FileKind},
+};
 use common::{TestPath, next_run};
 use std::{
     ffi::OsStr,

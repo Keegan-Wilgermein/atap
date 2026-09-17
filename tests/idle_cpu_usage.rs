@@ -3,7 +3,7 @@
 
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use common::cpu_time;
 use std::{
     thread,

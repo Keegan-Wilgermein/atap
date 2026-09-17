@@ -11,7 +11,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime, RuntimeError, TaskHandle};
+use atap::{Runtime, RuntimeError, TaskHandle, compute::Compute};
 use common::{report, report_full, settles};
 use std::{
     thread,
@@ -24,7 +24,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 
 /// Kills every thread the pool has right now
 fn kill_every_thread() -> (u32, u32) {
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
 
     let workers = stats.len() as u32;
     let sleeps = stats.sleep_threads() as u32;
@@ -60,7 +60,7 @@ fn settle_all(handles: Vec<(u64, TaskHandle<u64>)>, when: &str) -> (usize, usize
             Err(error) => panic!(
                 "a task came back {:?} {when}, so it was stranded, pool {}",
                 error,
-                Runtime::workers(),
+                Runtime::pool(),
             ),
         }
     }
@@ -74,7 +74,7 @@ fn a_mix_of_work(
     count: u64,
 ) -> (
     Vec<(u64, TaskHandle<u64>)>,
-    TaskHandle<u64, atap::Waiting<u64>>,
+    TaskHandle<u64, atap::builder::Waiting<u64>>,
     TaskHandle<u64>,
 ) {
     let mut handles: Vec<(u64, TaskHandle<u64>)> = (0..count)
@@ -137,7 +137,7 @@ fn the_manager_and_every_thread_die_at_once() {
 
 /// The manager and every thread go at the same moment, with work queued
 fn round_one() {
-    let before = Runtime::workers();
+    let before = Runtime::pool();
     let (handles, waiting, received) = a_mix_of_work(20_000);
 
     Runtime::inject_manager_faults(1);
@@ -157,12 +157,12 @@ fn round_one() {
     Runtime::inject_thread_deaths(0, 0);
 
     assert!(
-        settles(|| Runtime::healthy()),
+        settles(Runtime::healthy),
         "the runtime never came back from the manager and every thread dying: {:?}",
         Runtime::status(),
     );
 
-    let after = Runtime::workers();
+    let after = Runtime::pool();
 
     println!(
         "{} workers and {} sleep threads killed with the manager: {} tasks whole, {} failed, \
@@ -214,7 +214,7 @@ fn round_two() {
     assert!(
         settles(|| Runtime::status().pool_alive()),
         "the pool never brought itself back with no manager: {}",
-        Runtime::workers(),
+        Runtime::pool(),
     );
 
     // Work spawned afterwards runs on the pool that came back
@@ -245,7 +245,7 @@ fn round_two() {
 fn round_three() {
     // Every thread held first, so the work behind them is still queued
     // when they die
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
 
     let mut handles: Vec<(u64, TaskHandle<u64>)> = (0..stats.len() * 2)
         .map(|_| {
@@ -332,7 +332,7 @@ fn round_four() {
     assert_eq!(Runtime::init(), Ok(()), "the runtime wouldn't start again");
 
     assert!(
-        settles(|| Runtime::healthy()),
+        settles(Runtime::healthy),
         "the runtime came back unhealthy: {:?}",
         Runtime::status(),
     );

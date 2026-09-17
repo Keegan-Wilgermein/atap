@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{File, Runtime};
+use atap::{Runtime, fs::File};
 use common::{TestPath, next_run};
 use std::fs;
 use std::time::Duration;

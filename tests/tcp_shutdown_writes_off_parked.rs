@@ -1,7 +1,7 @@
 //! Its own binary, since shutting down stops the runtime for
 //! every test in the process
 
-use atap::{Runtime, RuntimeError, Tcp};
+use atap::{Runtime, RuntimeError, tcp::Tcp};
 use std::{
     thread,
     time::{Duration, Instant},

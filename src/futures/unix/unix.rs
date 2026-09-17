@@ -16,10 +16,14 @@ use std::path::Path;
 /// send and receive tasks. [`Unix::bind`] is the datagram kind,
 /// which behaves like UDP
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, unix::Unix};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let listener = Runtime::block(Unix::listen("/tmp/app.sock"))?;
 /// let conn = Runtime::block(Unix::connect("/tmp/app.sock"))?;
 /// let served = Runtime::block(listener.accept())?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Paths

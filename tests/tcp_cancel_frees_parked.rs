@@ -3,7 +3,10 @@
 
 mod common;
 
-use atap::{Connection, Runtime, Tcp};
+use atap::{
+    Runtime,
+    tcp::{Connection, Tcp},
+};
 use common::report;
 use std::{
     thread,
@@ -33,7 +36,7 @@ fn cancelling_parked_receives_frees_them() {
         .map(|_| Runtime::block(listener.accept()).unwrap().0)
         .collect();
 
-    let before = Runtime::workers().live();
+    let before = Runtime::pool().live();
 
     // Each receive holds its own copy of its connection, and the
     // test's copies go, so the receives are the last holders
@@ -50,7 +53,7 @@ fn cancelling_parked_receives_frees_them() {
         "every receive is parked",
     );
 
-    let parked = Runtime::workers().live();
+    let parked = Runtime::pool().live();
 
     assert!(
         parked >= before + WAITING,
@@ -66,14 +69,14 @@ fn cancelling_parked_receives_frees_them() {
 
     let deadline = Instant::now() + PATIENCE;
 
-    while Runtime::workers().live() > before && Instant::now() < deadline {
+    while Runtime::pool().live() > before && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
 
     report("receives cancelled");
 
     assert_eq!(
-        Runtime::workers().live(),
+        Runtime::pool().live(),
         before,
         "cancelled parked receives still hold their slots",
     );

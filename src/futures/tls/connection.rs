@@ -91,11 +91,15 @@ fn drain(tls: &mut rustls::Connection, fd: libc::c_int) {
 /// already done, and its methods build the same send and receive
 /// tasks as a TCP one
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, tls::Tls};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let conn = Runtime::block(Tls::connect("example.com:443"))?;
 ///
 /// Runtime::block(conn.send(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n".as_slice()))?;
 /// let answer = Runtime::block(conn.recv_to_end())?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Closing
@@ -107,8 +111,8 @@ fn drain(tls: &mut rustls::Connection, fd: libc::c_int) {
 /// A connection the other side drops without saying so ends a
 /// receive with [`RuntimeError::Closed`] rather than an answer
 ///
-/// [`Connection`]: crate::Connection
-/// [`Tls::connect`]: crate::Tls::connect
+/// [`Connection`]: crate::tcp::Connection
+/// [`Tls::connect`]: crate::tls::Tls::connect
 /// [`RuntimeError::Closed`]: crate::RuntimeError::Closed
 #[derive(Clone)]
 pub struct TlsConnection {
@@ -350,7 +354,7 @@ impl fmt::Debug for TlsConnection {
 /// takes the next connection and runs its handshake. Cloning it
 /// is cheap and every clone is the same socket
 ///
-/// [`Tls::listen`]: crate::Tls::listen
+/// [`Tls::listen`]: crate::tls::Tls::listen
 #[derive(Clone)]
 pub struct TlsListener {
     /// The socket connections arrive on

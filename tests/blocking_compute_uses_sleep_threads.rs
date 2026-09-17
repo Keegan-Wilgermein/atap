@@ -7,7 +7,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime};
+use atap::{Runtime, compute::Compute};
 use common::{cores, report, settles};
 use std::{
     thread,
@@ -27,7 +27,7 @@ fn blocking_computes_wait_on_sleep_threads() {
     let wait = Duration::from_millis(200);
 
     assert!(
-        settles(|| Runtime::workers().busy() == 0 && Runtime::workers().sleep_busy() == 0),
+        settles(|| Runtime::pool().busy() == 0 && Runtime::pool().sleep_busy() == 0),
         "the pool was already busy before the test began"
     );
 
@@ -51,7 +51,7 @@ fn blocking_computes_wait_on_sleep_threads() {
     // Given long enough for every blocking compute to have found a thread
     thread::sleep(wait / 4);
 
-    let during = Runtime::workers();
+    let during = Runtime::pool();
 
     report("blocking computes waiting");
 

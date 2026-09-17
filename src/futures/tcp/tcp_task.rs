@@ -2,6 +2,7 @@
 //! The tasks the `Tcp` constructors and a `Listener` return,
 //! and everything they do once run
 
+use crate::modules::input::{Token, token};
 use crate::{
     RuntimeError,
     constants::INLINE_PAYLOAD,
@@ -35,6 +36,7 @@ const _: () =
 /// turn, and the error from the last one comes back if none of
 /// them take
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct ConnectTask {
     /// Where to connect
     target: Target,
@@ -183,6 +185,7 @@ fn connected(fd: Fd, peer: SocketAddr) -> Result<Connection, RuntimeError> {
 /// ## Returns
 /// The listener, bound to the first address that takes
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct ListenTask {
     /// Where to listen
     target: Target,
@@ -269,6 +272,7 @@ fn bind_listen(addr: &SocketAddr) -> Result<Listener, RuntimeError> {
 /// ## Returns
 /// The connection, and the address it came from
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct AcceptTask {
     /// Where the connections come from
     listener: Listener,
@@ -367,6 +371,7 @@ fn adopt(
 /// Everything the other side sent before it closed the
 /// connection
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct RequestTask {
     /// How it connects
     connect: ConnectTask,
@@ -430,22 +435,22 @@ impl Task for ConnectTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
         self.progress = Progress::default();
     }
 
     /// A name lookup blocks, so only a literal address keeps it on
     /// a worker
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         self.target.needs_lookup()
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -455,17 +460,17 @@ impl Task for ListenTask {
     type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.listen()
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
     /// A name lookup blocks, so only a literal address keeps it on
     /// a worker
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         self.target.needs_lookup()
     }
 }
@@ -475,15 +480,15 @@ impl Task for AcceptTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -493,11 +498,11 @@ impl Task for RequestTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
         self.connect.clock = self.clock;
         self.connect.progress = Progress::default();
@@ -505,11 +510,11 @@ impl Task for RequestTask {
     }
 
     /// Whatever the connect says
-    fn blocking(&self) -> bool {
-        self.connect.blocking()
+    fn blocking(&self, _token: Token) -> bool {
+        self.connect.blocking(token())
     }
 
-    fn step(&mut self, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
         self.advance(reactor_id, task_id)
     }
 }
@@ -518,16 +523,17 @@ impl Task for RequestTask {
 mod tests {
     use super::*;
     use crate::futures::net::address::sealed::Sealed;
+    use crate::modules::input::token;
 
     /// Only a task that has to look a name up asks for a sleep
     /// thread. The rest step on a worker and park
     #[test]
     fn only_a_name_lookup_blocks() {
-        assert!(!ConnectTask::new("127.0.0.1:80".target()).blocking());
-        assert!(ConnectTask::new("localhost:80".target()).blocking());
-        assert!(!ListenTask::new("127.0.0.1:0".target()).blocking());
-        assert!(ListenTask::new("localhost:0".target()).blocking());
-        assert!(!RequestTask::new("[::1]:80".target(), Arc::from(&b""[..])).blocking());
-        assert!(RequestTask::new("localhost:80".target(), Arc::from(&b""[..])).blocking());
+        assert!(!ConnectTask::new("127.0.0.1:80".target()).blocking(token()));
+        assert!(ConnectTask::new("localhost:80".target()).blocking(token()));
+        assert!(!ListenTask::new("127.0.0.1:0".target()).blocking(token()));
+        assert!(ListenTask::new("localhost:0".target()).blocking(token()));
+        assert!(!RequestTask::new("[::1]:80".target(), Arc::from(&b""[..])).blocking(token()));
+        assert!(RequestTask::new("localhost:80".target(), Arc::from(&b""[..])).blocking(token()));
     }
 }

@@ -3,7 +3,7 @@
 //! signals the runtime has taken over
 
 use crate::{
-    RuntimeError, futures::signal::signal::SigReleasePolicy, modules::int_check::IntCheck,
+    RuntimeError, futures::signal::signal::SignalReleasePolicy, modules::int_check::IntCheck,
 };
 use std::{
     fmt, mem, ptr,
@@ -48,19 +48,19 @@ extern "C" fn count_one(signo: libc::c_int) {
 /// will never hand over
 pub(crate) fn catch(
     signo: libc::c_int,
-    policy: SigReleasePolicy,
+    policy: SignalReleasePolicy,
 ) -> Result<Option<Watcher>, RuntimeError> {
     let slot = catchable(signo)?;
 
     // Before the handler, so nothing can hand the signal back
     // between installing it and this being known
-    if policy == SigReleasePolicy::Hold {
+    if policy == SignalReleasePolicy::Hold {
         HELD[slot].store(true, Ordering::Release);
     }
 
     let watch = match policy {
-        SigReleasePolicy::Hold => None,
-        SigReleasePolicy::OnDrop => Some(Watcher::new(signo, slot)),
+        SignalReleasePolicy::Hold => None,
+        SignalReleasePolicy::OnDrop => Some(Watcher::new(signo, slot)),
     };
 
     install(signo, slot)?;

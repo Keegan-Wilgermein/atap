@@ -1,6 +1,9 @@
 mod common;
 
-use atap::{Runtime, Sleep, SleepMode};
+use atap::{
+    Runtime,
+    sleep::{Sleep, SleepMode},
+};
 use common::cores;
 use std::time::Duration;
 use std::time::Instant;

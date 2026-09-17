@@ -368,12 +368,11 @@ impl Injector {
 
         while cursor != 0 {
             // Can't happen: a queued id always has a mapped slot
-            let Some(data) = executor::slot(cursor - 1) else {
+            let Some(next) = executor::queue_link(cursor - 1) else {
                 break;
             };
 
-            let next = data.queue_next();
-            data.set_queue_next(reversed);
+            executor::set_queue_link(cursor - 1, reversed);
 
             reversed = cursor;
             cursor = next;

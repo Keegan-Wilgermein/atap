@@ -4,7 +4,10 @@
 
 mod common;
 
-use atap::{Runtime, Signal, SignalKind};
+use atap::{
+    Runtime,
+    signal::{Signal, SignalKind},
+};
 use common::{send_signal, until_started};
 use std::{
     thread,
@@ -77,10 +80,10 @@ fn a_signal_wakes_the_task_waiting_for_it() {
 
         let until = Instant::now() + PATIENCE;
 
-        // `maybe_take` rather than `take`, which would wait for the
+        // `try_take` rather than `take`, which would wait for the
         // next run rather than poll
         while Instant::now() < until {
-            if let Ok(count) = waiting.maybe_take() {
+            if let Ok(count) = waiting.try_take() {
                 total += count.expect("every run succeeds");
                 break;
             }

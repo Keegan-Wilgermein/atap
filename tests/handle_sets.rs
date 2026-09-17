@@ -7,7 +7,11 @@
 
 mod common;
 
-use atap::{Compute, Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
+use atap::{
+    Runtime, RuntimeError, TaskHandle,
+    compute::Compute,
+    sleep::{Sleep, SleepMode},
+};
 use common::settles;
 use std::{
     sync::{

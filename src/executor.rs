@@ -2,6 +2,7 @@
 //! Owns every task slot in the process and manages the pool of
 //! workers that run them
 
+use crate::modules::input::token;
 use crate::{
     Runtime, RuntimeError,
     constants::{
@@ -243,6 +244,7 @@ static INJECTED_FAULTS: AtomicU32 = AtomicU32::new(0);
 ///
 /// Past `RESTART_LIMIT` in one window, the supervisor gives up
 /// until the runtime is shut down and started again
+#[cfg(feature = "fault-injection")]
 pub(crate) fn inject_manager_faults(count: u32) {
     INJECTED_FAULTS.store(count, Ordering::SeqCst);
 }
@@ -863,7 +865,7 @@ where
 {
     // Asked while the concrete type is still here, since a re-arm
     // can't ask
-    let setup = setup.blocking(task.blocking());
+    let setup = setup.blocking(task.blocking(token()));
 
     let boxed: Box<dyn ErasedTask> = Box::new(task);
     let erased = Box::into_raw(Box::new(boxed)).cast::<c_void>();
@@ -991,6 +993,14 @@ pub(crate) fn slot(id: usize) -> Option<&'static TaskData> {
 #[inline(always)]
 pub(crate) fn queue_link(id: usize) -> Option<usize> {
     Some(DATA.slot(id)?.queue_next())
+}
+
+/// Sets the queue link in a slot, whether or not a task is in it
+#[inline(always)]
+pub(crate) fn set_queue_link(id: usize, next: usize) {
+    if let Some(data) = DATA.slot(id) {
+        data.set_queue_next(next);
+    }
 }
 
 /// Whether the manager still has a queue to work from
@@ -2075,40 +2085,30 @@ fn start_waiting(id: usize, data: &TaskData, gate: &Gate) -> bool {
 fn rewait(id: usize, data: &TaskData, task: Box<Box<dyn ErasedTask>>) {
     data.rearm(Box::into_raw(task).cast::<c_void>());
 
-    let Some(gate) = data.gate() else {
-        finish_waiting(id, data);
-        return;
-    };
-
-    match gate.after_run() {
-        AfterRun::Wait => {}
-
-        AfterRun::Again => {
-            let _ = start_waiting(id, data, gate);
-        }
-
-        AfterRun::Finish => finish_waiting(id, data),
-    }
+    rewait_series(id, data);
 }
 
 /// Puts a waiting schedule back once its series is over
 ///
-/// Its prototype stays in the slot for the next series
+/// Its prototype stays in the slot for the next series. The slot is
+/// held throughout, since the last giver can let the task go as soon
+/// as the gate reads waiting
 fn rewait_series(id: usize, data: &TaskData) {
-    let Some(gate) = data.gate() else {
-        finish_waiting(id, data);
-        return;
-    };
+    data.add_listener();
 
-    match gate.after_run() {
-        AfterRun::Wait => {}
+    match data.gate().map(Gate::after_run) {
+        Some(AfterRun::Wait) => {}
 
-        AfterRun::Again => {
-            let _ = start_waiting(id, data, gate);
+        Some(AfterRun::Again) => {
+            if let Some(gate) = data.gate() {
+                let _ = start_waiting(id, data, gate);
+            }
         }
 
-        AfterRun::Finish => finish_waiting(id, data),
+        Some(AfterRun::Finish) | None => finish_waiting(id, data),
     }
+
+    Executor::drop_listener(id);
 }
 
 /// Lets go of a waiting task that takes no more gives
@@ -2541,7 +2541,8 @@ pub(crate) fn write_off_pool() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Nothing, Sleep, futures::task::sealed};
+    use crate::modules::input::Token;
+    use crate::{Nothing, futures::task::sealed, sleep::Sleep};
     use std::time::Duration;
 
     /// A task that panics
@@ -2553,7 +2554,7 @@ mod tests {
         type Output = usize;
         type Input = Nothing;
 
-        fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+        fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
             panic!("this task is meant to go down");
         }
     }
@@ -2568,7 +2569,7 @@ mod tests {
         type Output = usize;
         type Input = Nothing;
 
-        fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+        fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
             thread::sleep(Duration::from_millis(200));
 
             0
@@ -2593,7 +2594,7 @@ mod tests {
         // tasks ending
         thread::sleep(Duration::from_millis(150));
 
-        let grown = crate::Runtime::workers().workers().len();
+        let grown = crate::Runtime::pool().workers().len();
 
         for handle in handles {
             handle.join().expect("every task finishes");

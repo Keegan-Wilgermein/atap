@@ -1,6 +1,9 @@
 mod common;
 
-use atap::{Runtime, Sleep, SleepMode};
+use atap::{
+    Runtime,
+    sleep::{Sleep, SleepMode},
+};
 use common::cores;
 use std::{thread, time::Duration};
 
@@ -16,7 +19,7 @@ fn pool_reaps_idle_sleep_threads() {
         .collect();
 
     // Read while they are all still in flight
-    let peak = Runtime::workers().sleep_threads();
+    let peak = Runtime::pool().sleep_threads();
 
     for handle in handles {
         handle.join().expect("every task finishes");
@@ -25,7 +28,7 @@ fn pool_reaps_idle_sleep_threads() {
     // Long enough for the idle window to pass
     thread::sleep(Duration::from_millis(1500));
 
-    let settled = Runtime::workers().sleep_threads();
+    let settled = Runtime::pool().sleep_threads();
 
     println!("{} sleep threads at peak, {} once idle", peak, settled);
 

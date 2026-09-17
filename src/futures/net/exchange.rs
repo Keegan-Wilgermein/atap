@@ -5,6 +5,7 @@
 //! TCP and TLS both make requests this way. The only difference
 //! is how they connect, which is the connect task they step
 
+use crate::modules::input::token;
 use crate::{
     RuntimeError,
     futures::{
@@ -56,7 +57,7 @@ where
 {
     loop {
         match &mut *stage {
-            Stage::Connecting => match connect.step(reactor_id, task_id) {
+            Stage::Connecting => match connect.step(token(), reactor_id, task_id) {
                 Step::Done(Ok(conn)) => {
                     *stage = Stage::Sending(conn.send_all(Arc::clone(data)).timed(clock));
                 }
@@ -65,7 +66,7 @@ where
                 Step::Park(park) => return Step::Park(park),
             },
 
-            Stage::Sending(send) => match send.step(reactor_id, task_id) {
+            Stage::Sending(send) => match send.step(token(), reactor_id, task_id) {
                 Step::Done(Ok(_)) => {
                     let read = RecvTask::to_end(send.source().clone()).timed(clock);
 
@@ -76,7 +77,7 @@ where
                 Step::Park(park) => return Step::Park(park),
             },
 
-            Stage::Reading(read) => return read.step(reactor_id, task_id),
+            Stage::Reading(read) => return read.step(token(), reactor_id, task_id),
         }
     }
 }

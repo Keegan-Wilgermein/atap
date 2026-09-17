@@ -2,7 +2,7 @@
 
 mod common;
 
-use atap::{File, JoinPolicy, Runtime, RuntimeError, TaskHandle, TaskState};
+use atap::{JoinPolicy, Runtime, RuntimeError, TaskHandle, TaskState, fs::File};
 use common::sleeping;
 use std::{
     fs,
@@ -56,7 +56,7 @@ fn cancel_stops_the_losers() {
 
     // Cloned before the race, so they can still be looked at
     let slow: Vec<_> = (0..3).map(|_| sleeping(4000)).collect();
-    let watching: Vec<_> = slow.iter().cloned().collect();
+    let watching: Vec<_> = slow.to_vec();
 
     let (first, rest) = Runtime::join_first(std::iter::once(quick).chain(slow), JoinPolicy::Cancel);
 
@@ -81,7 +81,7 @@ fn drop_leaves_the_losers_running() {
 
     let quick = sleeping(5);
     let slow: Vec<_> = (0..3).map(|_| sleeping(200)).collect();
-    let watching: Vec<_> = slow.iter().cloned().collect();
+    let watching: Vec<_> = slow.to_vec();
 
     let (first, rest) = Runtime::join_first(std::iter::once(quick).chain(slow), JoinPolicy::Drop);
 
@@ -110,7 +110,7 @@ fn an_empty_set_gives_back_a_dead_handle() {
     assert!(rest.is_none(), "Cancel should not hand anything back");
 
     assert_eq!(
-        first.maybe_join(),
+        first.try_join(),
         Err(RuntimeError::NoSuchTask),
         "a dead handle should refuse rather than wait",
     );
@@ -186,7 +186,7 @@ fn a_race_from_several_threads_at_once() {
 
     let crews: Vec<_> = (0..2)
         .map(|_| {
-            let mine: Vec<_> = shared.iter().cloned().collect();
+            let mine: Vec<_> = shared.to_vec();
 
             thread::spawn(move || {
                 let (first, rest) = Runtime::join_first(mine, JoinPolicy::PassBack);

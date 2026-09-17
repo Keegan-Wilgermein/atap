@@ -2,7 +2,10 @@
 
 mod common;
 
-use atap::{Change, File, Runtime, RuntimeError, TaskHandle};
+use atap::{
+    Runtime, RuntimeError, TaskHandle,
+    fs::{Change, File},
+};
 use common::{TestPath, next_run, until_started};
 use std::{
     fs,
@@ -220,7 +223,7 @@ fn a_repeating_watch_reports_a_removal_once() {
     thread::sleep(Duration::from_millis(400));
 
     assert_eq!(
-        handle.maybe_take(),
+        handle.try_take(),
         Err(RuntimeError::NotReady),
         "a file that is still gone has not changed again",
     );
@@ -387,7 +390,7 @@ fn a_cancelled_watch_settles() {
 
     assert!(watching.is_cancelled(), "a cancelled watch has to settle");
     assert_eq!(
-        watching.maybe_take(),
+        watching.try_take(),
         Err(RuntimeError::Cancelled),
         "a cancelled watch reports the cancel",
     );

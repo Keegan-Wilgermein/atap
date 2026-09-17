@@ -12,11 +12,16 @@ use crate::futures::{net::address::NetAddress, udp::udp_task::BindTask};
 /// [`Udp::bind`] hands back a [`UdpSocket`], and its methods build
 /// the tasks that send and receive on it
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, udp::Udp};
+/// # use std::time::Duration;
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let socket = Runtime::block(Udp::bind("127.0.0.1:0"))?;
 ///
 /// Runtime::block(socket.send_to("127.0.0.1:9000", b"ping".as_slice()))?;
 /// let (reply, from) = Runtime::block(socket.recv_from().timeout(Duration::from_secs(1)))?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Waiting
@@ -28,7 +33,7 @@ use crate::futures::{net::address::NetAddress, udp::udp_task::BindTask};
 /// A socket task still waiting on the network when the runtime
 /// shuts down is written off, and reads [`RuntimeError::TaskFailed`]
 ///
-/// [`UdpSocket`]: crate::UdpSocket
+/// [`UdpSocket`]: crate::udp::UdpSocket
 /// [`RuntimeError::TaskFailed`]: crate::RuntimeError::TaskFailed
 pub struct Udp;
 
@@ -44,7 +49,7 @@ impl Udp {
     /// The socket. It can only send to addresses in its own
     /// family, so one bound to an IPv4 address sends to IPv4 ones
     ///
-    /// [`UdpSocket::local_addr`]: crate::UdpSocket::local_addr
+    /// [`UdpSocket::local_addr`]: crate::udp::UdpSocket::local_addr
     pub fn bind(addr: impl NetAddress) -> BindTask {
         BindTask::new(addr.target())
     }

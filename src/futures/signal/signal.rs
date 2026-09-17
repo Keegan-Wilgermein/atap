@@ -46,12 +46,12 @@ pub enum SignalKind {
     WindowChange,
 
     /// Any other signal, by number
-    Other(libc::c_int),
+    Other(i32),
 }
 
 impl SignalKind {
     /// The number the kernel knows this signal by
-    pub fn number(self) -> libc::c_int {
+    pub fn number(self) -> i32 {
         match self {
             Self::Interrupt => libc::SIGINT,
             Self::Terminate => libc::SIGTERM,
@@ -68,7 +68,7 @@ impl SignalKind {
     /// Which signal a number is
     ///
     /// One this list doesn't name comes back as `Other`
-    pub fn from_number(signo: libc::c_int) -> Self {
+    pub fn from_number(signo: i32) -> Self {
         match signo {
             libc::SIGINT => Self::Interrupt,
             libc::SIGTERM => Self::Terminate,
@@ -87,9 +87,9 @@ impl SignalKind {
 ///
 /// Set with [`SignalTask::release_policy`], and `Hold` without it
 ///
-/// [`SignalTask::release_policy`]: crate::SignalTask::release_policy
+/// [`SignalTask::release_policy`]: crate::signal::SignalTask::release_policy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SigReleasePolicy {
+pub enum SignalReleasePolicy {
     /// Keeps the signal for the life of the program
     ///
     /// Nothing hands it back except [`Signal::release`]
@@ -114,12 +114,16 @@ pub enum SigReleasePolicy {
 /// how many arrived. A `.repeat()` of one is a handler: it reports
 /// every delivery, including any that land between runs
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, signal::{Signal, SignalKind}};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// // Ctrl-C, once
 /// Runtime::block(Signal::wait(SignalKind::Interrupt))?;
 ///
 /// // every reload request, for as long as the program runs
 /// let reloads = Runtime::task(Signal::wait(SignalKind::Hangup)).repeat().spawn();
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Taking a signal over
@@ -127,7 +131,7 @@ pub enum SigReleasePolicy {
 /// for most of them is to end the program. So **watching one takes
 /// it over**: Ctrl-C stops killing the program, and starts waking
 /// tasks instead. That lasts for the life of the program, unless
-/// the task asked for [`SigReleasePolicy::OnDrop`] or something
+/// the task asked for [`SignalReleasePolicy::OnDrop`] or something
 /// calls [`Signal::release`]
 ///
 /// `SIGKILL` and `SIGSTOP` can't be taken over at all, and say so
@@ -179,7 +183,7 @@ impl Signal {
     /// `Runtime::block(Signal::send(..))` is usually the better call
     ///
     /// [`RuntimeError::BadArgument`]: crate::RuntimeError::BadArgument
-    pub fn send(pid: libc::pid_t, kind: SignalKind) -> SendSignalTask {
+    pub fn send(pid: i32, kind: SignalKind) -> SendSignalTask {
         SendSignalTask::new(pid, kind)
     }
 

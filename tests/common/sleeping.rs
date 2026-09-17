@@ -1,6 +1,9 @@
 //! # Sleeping
 
-use atap::{Runtime, Sleep, SleepMode, TaskHandle};
+use atap::{
+    Runtime, TaskHandle,
+    sleep::{Sleep, SleepMode},
+};
 use std::time::Duration;
 
 /// A sleep of a given length, spawned

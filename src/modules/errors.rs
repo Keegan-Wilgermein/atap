@@ -4,7 +4,7 @@
 use std::{error::Error, fmt, io};
 
 /// A collection of all the errors
-/// that can occur, that the user can see
+/// that can occur
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum RuntimeError {
@@ -145,7 +145,10 @@ impl fmt::Display for RuntimeError {
             Self::StillInUse => write!(formatter, "too much of the task table is in use to trim"),
             Self::BadPath => write!(formatter, "the path can't be handed to the kernel"),
             Self::BadArgument => {
-                write!(formatter, "an argument cannot be handed to the kernel as written")
+                write!(
+                    formatter,
+                    "an argument cannot be handed to the kernel as written"
+                )
             }
             Self::BadVariable => {
                 write!(
@@ -219,7 +222,9 @@ mod tests {
         let other = io::Error::from(RuntimeError::Closed);
         assert_eq!(other.kind(), io::ErrorKind::Other);
         assert_eq!(
-            other.get_ref().and_then(|inner| inner.downcast_ref::<RuntimeError>()),
+            other
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<RuntimeError>()),
             Some(&RuntimeError::Closed)
         );
     }

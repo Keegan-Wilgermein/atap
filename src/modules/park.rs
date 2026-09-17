@@ -2,13 +2,14 @@
 //! Runs a task that parks to its end on the calling thread,
 //! for the callers that can't give their thread back
 
+use crate::modules::input::token;
 use crate::{
-    EventDesc,
     constants::READY_POLL,
     futures::task::{
         Task,
         sealed::{Park, Step},
     },
+    modules::event_desc::EventDesc,
     modules::{
         int_check::IntCheck,
         kevent::{KEvent, eventlist},
@@ -29,7 +30,7 @@ where
     F: Task,
 {
     loop {
-        match task.step(reactor_id, task_id) {
+        match task.step(token(), reactor_id, task_id) {
             Step::Done(out) => return out,
             Step::Park(park) => wait_ready(park),
         }

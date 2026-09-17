@@ -1332,6 +1332,7 @@ impl WorkerPool {
 
     /// Wakes every parked thread, so deaths a test asked for land
     /// together
+    #[cfg(feature = "fault-injection")]
     pub(crate) fn wake_everyone(&'static self) {
         let highest = self.highest.load(Ordering::Acquire);
 

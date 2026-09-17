@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use common::{max_rss, report_full};
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ fn holds_a_peak_of_live_tasks() {
         .collect();
 
     let peak = max_rss();
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
 
     report_full("all live, none read");
 

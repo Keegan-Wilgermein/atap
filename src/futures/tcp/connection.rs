@@ -35,13 +35,17 @@ struct Stream {
 /// Every method that sends or receives builds a task, and nothing
 /// happens until that task is run
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, tcp::Tcp};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let conn = Runtime::block(Tcp::connect("127.0.0.1:6379"))?;
 ///
 /// Runtime::block(conn.send(b"PING\r\n".as_slice()))?;
 /// let line = Runtime::block(conn.recv_until(b"\r\n", 512))?;
 ///
 /// conn.close();
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// ## Closing
@@ -54,7 +58,7 @@ struct Stream {
 /// Two receives on one connection at once each get part of what
 /// arrives, in no useful order. Run them one after the other
 ///
-/// [`Tcp::connect`]: crate::Tcp::connect
+/// [`Tcp::connect`]: crate::tcp::Tcp::connect
 #[derive(Clone)]
 pub struct Connection {
     stream: Arc<Stream>,
@@ -138,8 +142,13 @@ impl Connection {
     /// and [`RuntimeError::Closed`] if the connection ends first.
     /// Either way what was read is put back
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, tcp::Tcp};
+    /// # fn main() -> Result<(), atap::RuntimeError> {
+    /// # let conn = Runtime::block(Tcp::connect("127.0.0.1:6379"))?;
     /// let line = Runtime::block(conn.recv_until(b"\n", 1024))?;
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// [`RuntimeError::TooLong`]: crate::RuntimeError::TooLong
@@ -206,7 +215,9 @@ struct Listening {
 /// takes the next connection. Cloning it is cheap and every
 /// clone is the same socket
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, tcp::Tcp};
+/// # fn main() -> Result<(), atap::RuntimeError> {
 /// let listener = Runtime::block(Tcp::listen("127.0.0.1:0"))?;
 ///
 /// loop {
@@ -214,6 +225,7 @@ struct Listening {
 ///     let line = Runtime::block(conn.recv_until(b"\n", 1024))?;
 ///     Runtime::block(conn.send(line))?;
 /// }
+/// # }
 /// ```
 ///
 /// ## Closing
@@ -225,7 +237,7 @@ struct Listening {
 /// its slot, so one that isn't taken before the next arrives is
 /// dropped and closed. Accept in a loop instead
 ///
-/// [`Tcp::listen`]: crate::Tcp::listen
+/// [`Tcp::listen`]: crate::tcp::Tcp::listen
 #[derive(Clone)]
 pub struct Listener {
     socket: Arc<Listening>,

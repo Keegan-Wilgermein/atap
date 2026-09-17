@@ -5,7 +5,7 @@
 //! The panics printed as the manager unwinds are the test
 //! working
 
-use atap::{Runtime, Tcp};
+use atap::{Runtime, tcp::Tcp};
 use std::{thread, time::Duration};
 
 /// A receive parked across manager restarts still wakes, both

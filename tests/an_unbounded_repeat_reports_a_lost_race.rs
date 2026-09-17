@@ -1,4 +1,7 @@
-use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    Runtime, RuntimeError,
+    sleep::{Sleep, SleepMode},
+};
 use std::time::Duration;
 
 /// A second read of an unbounded repeat reports `AlreadyTaken`
@@ -13,9 +16,9 @@ fn an_unbounded_repeat_reports_a_lost_race() {
         .spawn();
 
     handle.wait().expect("a run publishes");
-    handle.maybe_take().expect("and the first reader gets it");
+    handle.try_take().expect("and the first reader gets it");
 
-    let second = handle.maybe_take();
+    let second = handle.try_take();
 
     handle.cancel();
 

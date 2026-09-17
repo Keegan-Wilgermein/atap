@@ -2,6 +2,7 @@
 //! Sending and receiving on a byte stream, which a TCP
 //! connection and a Unix one share
 
+use crate::modules::input::Token;
 use crate::{
     RuntimeError,
     constants::{FILE_CHUNK, INLINE_PAYLOAD, STEP_BUDGET},
@@ -217,6 +218,7 @@ fn write_raw(fd: libc::c_int, data: &[u8]) -> Result<Io, RuntimeError> {
 /// ## Returns
 /// The number of bytes sent, which is always all of them
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct SendTask {
     /// Where to send
     source: Source,
@@ -352,6 +354,7 @@ struct Reading {
 /// ## Returns
 /// The bytes, shaped by which method built it
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct RecvTask {
     /// Where to receive from
     source: Source,
@@ -633,16 +636,16 @@ impl Task for SendTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
         self.sent = Progress::default();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -652,11 +655,11 @@ impl Task for RecvTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         // Nothing should be left from the last run, but if it is it
         // belongs to the connection
         self.put_back();
@@ -665,7 +668,7 @@ impl Task for RecvTask {
         self.progress = Progress::default();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle_recv(self)
     }
 }

@@ -1,6 +1,9 @@
 mod common;
 
-use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskState};
+use atap::{
+    Runtime, RuntimeError, TaskState,
+    sleep::{Sleep, SleepMode},
+};
 use common::{drain, report, take_a_run};
 use std::{
     thread,
@@ -136,9 +139,9 @@ fn cancelled_task_is_unreadable() {
     );
 }
 
-/// `maybe_join` says why there is nothing to read
+/// `try_join` says why there is nothing to read
 #[test]
-fn maybe_join_says_why_rather_than_just_nothing() {
+fn try_join_says_why_rather_than_just_nothing() {
     let _ = Runtime::init();
 
     let handle =
@@ -146,7 +149,7 @@ fn maybe_join_says_why_rather_than_just_nothing() {
     let watcher = handle.clone();
 
     assert_eq!(
-        watcher.maybe_join(),
+        watcher.try_join(),
         Err(RuntimeError::NotReady),
         "a task still running hasn't failed, it just isn't finished",
     );
@@ -154,7 +157,7 @@ fn maybe_join_says_why_rather_than_just_nothing() {
     handle.cancel();
 
     assert_eq!(
-        watcher.maybe_join(),
+        watcher.try_join(),
         Err(RuntimeError::Cancelled),
         "a cancelled task says so rather than looking unfinished",
     );
@@ -459,28 +462,28 @@ fn survives_losing_its_manager() {
     );
 }
 
-/// `maybe_take` polls a task whose output can't be cloned
+/// `try_take` polls a task whose output can't be cloned
 /// without committing to waiting for it
 #[test]
-fn maybe_take_polls_without_committing() {
+fn try_take_polls_without_committing() {
     let _ = Runtime::init();
 
     let handle =
         Runtime::task(Sleep::sleep(Duration::from_millis(200)).mode(SleepMode::Relaxed)).spawn();
 
     assert_eq!(
-        handle.maybe_take(),
+        handle.try_take(),
         Err(RuntimeError::NotReady),
         "a task still running hasn't failed, it just isn't finished",
     );
 
     handle.wait().expect("the task settles");
 
-    let taken = handle.maybe_take().expect("the value moves out once");
+    let taken = handle.try_take().expect("the value moves out once");
     println!("took {taken:?}");
 
     assert_eq!(
-        handle.maybe_take(),
+        handle.try_take(),
         Err(RuntimeError::AlreadyTaken),
         "only one caller ever gets the output, however it is asked for",
     );
@@ -689,7 +692,7 @@ fn after_waits_before_it_runs() {
     // Sitting on a timer rather than anywhere in the pool
     assert!(!handle.settled(), "nowhere near the delay being up");
     assert_eq!(
-        handle.maybe_join(),
+        handle.try_join(),
         Err(RuntimeError::NotReady),
         "a task waiting out a delay hasn't failed, it just hasn't started",
     );

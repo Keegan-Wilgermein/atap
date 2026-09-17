@@ -5,7 +5,7 @@
 //! The panics printed as the manager unwinds are the test
 //! working
 
-use atap::{Runtime, RuntimeError, Tcp};
+use atap::{Runtime, RuntimeError, tcp::Tcp};
 use std::{thread, time::Duration};
 
 /// A manager that gives up for good writes off every receive
@@ -19,7 +19,7 @@ fn a_manager_that_gives_up_writes_off_parked_receives() {
     let client = Runtime::block(Tcp::connect(listener.local_addr())).unwrap();
     let (server, _) = Runtime::block(listener.accept()).unwrap();
 
-    let before = Runtime::workers().live();
+    let before = Runtime::pool().live();
 
     let reading = Runtime::task(server.recv(16)).spawn();
     thread::sleep(Duration::from_millis(50));
@@ -39,7 +39,7 @@ fn a_manager_that_gives_up_writes_off_parked_receives() {
     drop(reading);
 
     assert!(
-        Runtime::workers().live() <= before,
+        Runtime::pool().live() <= before,
         "the written off receive still holds its slot",
     );
 

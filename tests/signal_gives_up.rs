@@ -6,7 +6,10 @@
 
 mod common;
 
-use atap::{Runtime, RuntimeError, Signal, SignalKind};
+use atap::{
+    Runtime, RuntimeError,
+    signal::{Signal, SignalKind},
+};
 use common::until_started;
 use std::{
     process,
@@ -72,7 +75,7 @@ fn a_wait_gives_up_when_asked_to() {
     until_started(&first, PATIENCE);
     until_started(&second, PATIENCE);
 
-    Runtime::block(Signal::send(process::id() as libc::pid_t, shared)).expect("the signal must go");
+    Runtime::block(Signal::send(process::id() as i32, shared)).expect("the signal must go");
 
     assert!(
         first

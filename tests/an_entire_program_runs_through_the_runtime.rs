@@ -9,7 +9,7 @@
 
 mod common;
 
-use atap::{Compute, File, Runtime, TaskHandle, Waiting};
+use atap::{Runtime, TaskHandle, builder::Waiting, compute::Compute, fs::File};
 use common::{report, settles};
 use std::{
     collections::HashMap,
@@ -652,7 +652,7 @@ fn files() -> PathBuf {
 fn an_entire_program_runs_through_the_runtime() {
     let _ = Runtime::init();
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     report("before");
 
@@ -904,9 +904,9 @@ fn an_entire_program_runs_through_the_runtime() {
     drop(logger);
 
     assert!(
-        settles(|| Runtime::workers().live() <= before.live()),
+        settles(|| Runtime::pool().live() <= before.live()),
         "{} tasks still live after the programs ended, against {} before",
-        Runtime::workers().live(),
+        Runtime::pool().live(),
         before.live(),
     );
 

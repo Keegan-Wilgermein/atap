@@ -4,7 +4,7 @@ use atap::Runtime;
 
 /// A line of what the pool is doing at this moment
 pub fn report(at: &str) {
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
 
     println!(
         "  [{}] {} workers ({} busy), {} sleep threads ({} busy), \

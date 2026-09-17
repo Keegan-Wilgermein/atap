@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use common::report;
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ fn recycles_ids_forever() {
 
     // The first wave grows the table, so it is the baseline
     wave();
-    let settled = Runtime::workers().peak_slots();
+    let settled = Runtime::pool().peak_slots();
     report("one wave in");
 
     for _ in 1..waves {
@@ -34,7 +34,7 @@ fn recycles_ids_forever() {
 
     report("all waves through");
 
-    let after = Runtime::workers().peak_slots();
+    let after = Runtime::pool().peak_slots();
 
     println!(
         "{} waves of {}: table settled at {} slots, ended at {}",

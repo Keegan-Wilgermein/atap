@@ -6,7 +6,12 @@
 
 mod common;
 
-use atap::{Compute, JoinPolicy, Runtime, RuntimeError, Sleep, SleepMode, TaskHandle, Waiting};
+use atap::{
+    JoinPolicy, Runtime, RuntimeError, TaskHandle,
+    builder::Waiting,
+    compute::Compute,
+    sleep::{Sleep, SleepMode},
+};
 use common::settles;
 use std::{
     sync::{

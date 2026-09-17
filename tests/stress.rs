@@ -15,8 +15,12 @@
 mod common;
 
 use atap::{
-    Compute, File, JoinPolicy, Process, Runtime, RuntimeError, Sleep, SleepMode, SleepTask,
-    TaskHandle, Waiting,
+    JoinPolicy, Runtime, RuntimeError, TaskHandle,
+    builder::Waiting,
+    compute::Compute,
+    fs::File,
+    process::Process,
+    sleep::{Sleep, SleepMode, SleepTask},
 };
 use common::{Resources, cores, cpu_time, mebibytes, raise_descriptor_limit};
 use std::{
@@ -437,12 +441,12 @@ fn chain(depth: u64) -> Result<u64, RuntimeError> {
 /// count to stop moving
 fn settle() -> Duration {
     let waited = Instant::now();
-    let mut last = Runtime::workers().live();
+    let mut last = Runtime::pool().live();
 
     while waited.elapsed() < QUIET {
         thread::sleep(Duration::from_millis(100));
 
-        let now = Runtime::workers();
+        let now = Runtime::pool();
 
         if now.live() == last && !now.has_any_task() {
             break;
@@ -523,7 +527,7 @@ fn everything_at_once() {
     let identities: Arc<Vec<(PathBuf, Vec<u8>)>> =
         Arc::new((0..IDENTITIES).map(identity).collect());
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     println!("starting with {} slots handed out", before.peak_slots());
 
@@ -540,7 +544,7 @@ fn everything_at_once() {
             while !stop.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_millis(50));
 
-                let stats = Runtime::workers();
+                let stats = Runtime::pool();
                 let resources = Resources::now();
 
                 Peaks::raise(&peaks.threads, resources.threads as usize);
@@ -634,7 +638,7 @@ fn everything_at_once() {
                     }
 
                     // The join above only cloned, so this gets the same value
-                    match copy.maybe_take() {
+                    match copy.try_take() {
                         Ok(Ok(bytes)) => {
                             Tally::bump(&tally.taken);
                             tally.check_bytes(&bytes, wanted, "a fixture read taken after a join");
@@ -756,13 +760,13 @@ fn everything_at_once() {
                 thread::sleep(Duration::from_millis(10 + crew * 5));
 
                 for _ in 0..3 {
-                    if let Ok(slept) = repeat.maybe_take() {
+                    if let Ok(slept) = repeat.try_take() {
                         Tally::bump(&tally.taken);
                         tally.check_slept(slept, Duration::from_nanos(1), "a repeat run");
                     }
                 }
 
-                if let Ok(slept) = rate.maybe_take() {
+                if let Ok(slept) = rate.try_take() {
                     Tally::bump(&tally.taken);
                     tally.check_slept(slept, Duration::from_nanos(500), "a scheduled run");
                 }
@@ -1128,7 +1132,7 @@ fn everything_at_once() {
                     })
                     .collect();
 
-                let shadow: Vec<_> = racers.iter().cloned().collect();
+                let shadow: Vec<_> = racers.to_vec();
 
                 let policy = match round % 3 {
                     0 => JoinPolicy::Cancel,
@@ -1152,7 +1156,7 @@ fn everything_at_once() {
                     // Read as often as not, and when it is read it has to be the
                     // sleep that handle was spawned for
                     if round % 2 == 0 {
-                        if let Ok(slept) = first.maybe_take() {
+                        if let Ok(slept) = first.try_take() {
                             Tally::bump(&tally.taken);
 
                             let wanted = asked.get(&first.id()).copied().unwrap_or(u64::MAX);
@@ -1192,7 +1196,7 @@ fn everything_at_once() {
 
                 assert!(won.settled(), "a file race produced an unsettled winner");
 
-                if let Ok(Ok(bytes)) = won.maybe_take() {
+                if let Ok(Ok(bytes)) = won.try_take() {
                     tally.check_bytes(&bytes, &small_body, "a file race winner");
                 }
             }
@@ -1863,7 +1867,7 @@ fn everything_at_once() {
 
     // Everything abandoned mid flight gets its chance to end
     let took = settle();
-    let after = Runtime::workers();
+    let after = Runtime::pool();
 
     println!("\nsettled in {:?} at:\n{}", took, after);
 

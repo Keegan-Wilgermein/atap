@@ -9,7 +9,11 @@
 
 mod common;
 
-use atap::{Runtime, RuntimeError, Tcp, Tls, TlsConnectTask, TlsConnection, TlsListener};
+use atap::{
+    Runtime, RuntimeError,
+    tcp::Tcp,
+    tls::{Tls, TlsConnectTask, TlsConnection, TlsListener},
+};
 use common::until_started;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,

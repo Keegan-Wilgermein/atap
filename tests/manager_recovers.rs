@@ -4,7 +4,10 @@
 //! #### Note
 //! The panics printed as it unwinds are the test working
 
-use atap::{Runtime, RuntimeError, Sleep, SleepMode, TaskHandle};
+use atap::{
+    Runtime, RuntimeError, TaskHandle,
+    sleep::{Sleep, SleepMode},
+};
 use std::time::Duration;
 
 /// The pool keeps working while the manager is down, and the

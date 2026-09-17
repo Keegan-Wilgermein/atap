@@ -5,6 +5,7 @@
 //! Runs of a schedule can overlap, so each gets its own slot
 //! and publishes back into the series slot
 
+use crate::modules::input::{Token, token};
 use crate::{
     executor::{self, Executor},
     futures::task::{
@@ -80,26 +81,29 @@ where
 
     /// Runs this copy and publishes the result into the series
     #[inline(always)]
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
-        executor::publish(self.series, self.inner.execute(reactor_id, task_id));
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
+        executor::publish(
+            self.series,
+            self.inner.execute(token(), reactor_id, task_id),
+        );
     }
 
     #[inline(always)]
-    fn prepare(&mut self) {
-        self.inner.prepare();
+    fn prepare(&mut self, _token: Token) {
+        self.inner.prepare(token());
     }
 
     /// Whatever the task inside says
     #[inline(always)]
-    fn blocking(&self) -> bool {
-        self.inner.blocking()
+    fn blocking(&self, _token: Token) -> bool {
+        self.inner.blocking(token())
     }
 
     /// Steps this copy, so a run that waits on a socket parks like
     /// any other, and publishes once it is done
     #[inline(always)]
-    fn step(&mut self, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
-        match self.inner.step(reactor_id, task_id) {
+    fn step(&mut self, _token: Token, reactor_id: i32, task_id: usize) -> Step<Self::Output> {
+        match self.inner.step(token(), reactor_id, task_id) {
             Step::Done(out) => {
                 executor::publish(self.series, out);
 

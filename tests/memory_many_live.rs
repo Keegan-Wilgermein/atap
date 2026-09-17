@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use common::max_rss;
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ fn many_concurrent_tasks() {
 
     // Read while every task is still live and holding its slot
     let peak = max_rss();
-    let slots = Runtime::workers().peak_slots();
+    let slots = Runtime::pool().peak_slots();
 
     for handle in handle_list {
         if let Ok(time) = handle.join() {

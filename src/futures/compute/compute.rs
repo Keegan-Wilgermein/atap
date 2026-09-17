@@ -26,18 +26,22 @@ impl Compute {
     /// ## Returns
     /// The task, ready for `Runtime::task` or `Runtime::block`
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, compute::Compute};
+    /// # fn main() -> Result<(), atap::RuntimeError> {
     /// let answer = Runtime::task(Compute::compute(|()| 6 * 7)).spawn();
     /// assert_eq!(answer.join()?, 42);
     ///
     /// let doubled = Runtime::block(Compute::compute(|()| 21 * 2));
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// A task that takes input can't be spawned with nothing to
     /// give it:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let _ = Runtime::task(Compute::compute(|value: i32| value * 2)).spawn();
     /// ```
@@ -45,7 +49,7 @@ impl Compute {
     /// Or blocked on:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let _ = Runtime::block(Compute::compute(|value: i32| value * 2));
     /// ```

@@ -216,12 +216,17 @@ impl File {
     /// what. A `.repeat()` of one is a watcher: it reports every
     /// change, including any that land between runs
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, fs::File};
+    /// # fn main() -> Result<(), atap::RuntimeError> {
+    /// # let path = "/tmp/watched";
     /// // the next change, once
     /// let change = Runtime::block(File::watch(&path))?;
     ///
     /// // every change, for as long as the program runs
     /// let changes = Runtime::task(File::watch(&path)).repeat().spawn();
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// A directory works as readily as a file, and reports a
@@ -248,10 +253,10 @@ impl File {
     /// A spawned watch holds no thread, unlike every other task
     /// here, so any number of paths can be watched at once
     ///
-    /// [`WatchTask::only`]: crate::WatchTask::only
-    /// [`WatchTask::timeout`]: crate::WatchTask::timeout
-    /// [`Change`]: crate::Change
-    /// [`Change::renamed`]: crate::Change::renamed
+    /// [`WatchTask::only`]: crate::fs::WatchTask::only
+    /// [`WatchTask::timeout`]: crate::fs::WatchTask::timeout
+    /// [`Change`]: crate::fs::Change
+    /// [`Change::renamed`]: crate::fs::Change::renamed
     pub fn watch<P>(path: P) -> WatchTask
     where
         P: AsRef<Path>,

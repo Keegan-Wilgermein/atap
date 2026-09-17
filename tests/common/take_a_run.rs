@@ -22,7 +22,7 @@ pub fn take_a_run(handle: &TaskHandle<Duration>) -> Duration {
                 "a repeating task came back with {:?} after {} polls, pool {:?}",
                 error,
                 polls,
-                Runtime::workers(),
+                Runtime::pool(),
             ),
         }
 
@@ -33,7 +33,7 @@ pub fn take_a_run(handle: &TaskHandle<Duration>) -> Duration {
             waited.elapsed() < Duration::from_secs(30),
             "a repeating task stopped producing runs after {} polls, pool {:?}",
             polls,
-            Runtime::workers(),
+            Runtime::pool(),
         );
 
         thread::sleep(Duration::from_micros(100));

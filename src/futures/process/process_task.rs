@@ -2,8 +2,9 @@
 //! The tasks the `Process` constructors return, and everything
 //! they do once a thread picks them up
 
+use crate::modules::input::Token;
 use crate::{
-    EventDesc, RuntimeError,
+    RuntimeError,
     constants::{FILE_CHUNK, INLINE_PAYLOAD, PROCESS_POLL},
     executor,
     futures::{
@@ -11,6 +12,7 @@ use crate::{
         task::sealed,
         task::{Nothing, Task},
     },
+    modules::event_desc::EventDesc,
     modules::{
         fd::Fd,
         int_check::IntCheck,
@@ -176,6 +178,7 @@ enum Env {
 /// that ran and failed is an [`ExitStatus`] saying so rather
 /// than an error
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct StatusTask {
     /// What to run
     program: Program,
@@ -189,6 +192,7 @@ pub struct StatusTask {
 /// ## Returns
 /// Both streams and how the child ended
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct OutputTask {
     /// What to run
     program: Program,
@@ -398,7 +402,7 @@ impl Task for StatusTask {
     type Output = Result<ExitStatus, RuntimeError>;
     type Input = Nothing;
 
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         // Checked before the spawn, so a cancelled task never runs
         // the program at all
         if executor::cancelled() {
@@ -454,7 +458,7 @@ impl Task for StatusTask {
     }
 
     /// Held for as long as the child runs
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -463,7 +467,7 @@ impl Task for OutputTask {
     type Output = Result<ProcessOutput, RuntimeError>;
     type Input = Nothing;
 
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         if executor::cancelled() {
             return Err(RuntimeError::Cancelled);
         }
@@ -523,7 +527,7 @@ impl Task for OutputTask {
         Ok(ProcessOutput::new(stdout, stderr, status))
     }
 
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         true
     }
 }
@@ -1631,20 +1635,21 @@ fn unwatch_proc(queue: i32, pid: libc::pid_t) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::input::token;
     use std::time::{Duration, Instant};
 
     /// Both process tasks say they hold their thread
     #[test]
     fn every_process_task_says_it_blocks() {
-        assert!(StatusTask::new("a", [""; 0]).blocking(), "run");
-        assert!(OutputTask::new("a", [""; 0]).blocking(), "output");
+        assert!(StatusTask::new("a", [""; 0]).blocking(token()), "run");
+        assert!(OutputTask::new("a", [""; 0]).blocking(token()), "output");
 
         assert!(
             StatusTask::new("a", [""; 0])
                 .input(b"x".as_slice())
                 .in_dir("/usr")
                 .env([("A", "b")])
-                .blocking(),
+                .blocking(token()),
             "a configured run"
         );
 
@@ -1653,7 +1658,7 @@ mod tests {
                 .input(b"x".as_slice())
                 .in_dir("/usr")
                 .env_only([("A", "b")])
-                .blocking(),
+                .blocking(token()),
             "a configured output"
         );
     }

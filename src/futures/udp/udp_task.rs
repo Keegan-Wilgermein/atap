@@ -2,6 +2,7 @@
 //! The tasks `Udp::bind` and a `UdpSocket` return, and
 //! everything they do once run
 
+use crate::modules::input::Token;
 use crate::{
     RuntimeError,
     constants::INLINE_PAYLOAD,
@@ -32,6 +33,7 @@ const _: () =
 /// ## Returns
 /// The socket, bound to the first address that takes
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct BindTask {
     /// Where to bind
     target: Target,
@@ -111,6 +113,7 @@ fn bind_one(addr: &SocketAddr) -> Result<UdpSocket, RuntimeError> {
 /// ## Returns
 /// The number of bytes sent, which is all of them
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct SendToTask {
     /// What to send from
     socket: UdpSocket,
@@ -203,6 +206,7 @@ fn pick(target: &Target, local: SocketAddr) -> Result<SocketAddr, RuntimeError> 
 /// ## Returns
 /// The whole datagram, and the address it came from
 #[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
 pub struct RecvFromTask {
     /// Where to receive
     socket: UdpSocket,
@@ -262,17 +266,17 @@ impl Task for BindTask {
     type Input = Nothing;
 
     /// Never waits on the socket, so this is the whole task
-    fn execute(&self, _reactor_id: i32, _task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.bind()
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
     /// A name lookup blocks, so only a literal address keeps it on
     /// a worker
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         self.target.needs_lookup()
     }
 }
@@ -282,22 +286,22 @@ impl Task for SendToTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
         self.dest = Progress::default();
     }
 
     /// A name lookup blocks, so only a literal address keeps it on
     /// a worker
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         self.target.needs_lookup()
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }
@@ -307,15 +311,15 @@ impl Task for RecvFromTask {
     type Input = Nothing;
 
     /// Waits on this thread, for `Runtime::block`
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output {
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self) {
+    fn prepare(&mut self, _token: Token) {
         self.clock.start();
     }
 
-    fn step(&mut self, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
     }
 }

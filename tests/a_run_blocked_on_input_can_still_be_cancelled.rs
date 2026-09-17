@@ -1,4 +1,4 @@
-use atap::{Process, Runtime};
+use atap::{Runtime, process::Process};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;

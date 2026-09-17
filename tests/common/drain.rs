@@ -12,7 +12,7 @@ pub fn drain(handle: &TaskHandle<Duration>, patience: Duration) -> usize {
     let mut seen = 0;
 
     while Instant::now() < deadline {
-        match handle.maybe_take() {
+        match handle.try_take() {
             Ok(_) => seen += 1,
 
             // Between runs, or one still going

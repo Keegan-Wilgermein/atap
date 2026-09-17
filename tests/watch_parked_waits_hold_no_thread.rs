@@ -3,7 +3,7 @@
 
 mod common;
 
-use atap::{File, Runtime};
+use atap::{Runtime, fs::File};
 use common::{cores, raise_descriptor_limit, report};
 use std::{
     fs,
@@ -68,7 +68,7 @@ fn parked_watches_hold_no_thread() {
     // ticks for the pool to have grown if it was going to
     thread::sleep(Duration::from_millis(300));
 
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
     report("watches parked");
 
     let parked = handles.iter().filter(|handle| handle.is_running()).count();

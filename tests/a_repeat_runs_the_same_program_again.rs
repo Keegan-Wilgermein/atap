@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Process, Runtime};
+use atap::{Runtime, process::Process};
 use common::next_run;
 use std::time::Duration;
 

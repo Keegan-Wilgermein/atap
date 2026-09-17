@@ -7,7 +7,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime};
+use atap::{Runtime, compute::Compute};
 use common::{cores, report, settles};
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,7 @@ fn chain(depth: usize) -> usize {
 fn deep_recursion_replaces_blocked_workers() {
     let _ = Runtime::init();
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     report("before");
 
@@ -60,7 +60,7 @@ fn deep_recursion_replaces_blocked_workers() {
             );
         }
 
-        let stats = Runtime::workers();
+        let stats = Runtime::pool();
 
         println!(
             "{} chains {} deep, help depth {}: {:?}, {} workers now, peak {}, target {}, ceiling {}",
@@ -75,7 +75,7 @@ fn deep_recursion_replaces_blocked_workers() {
         );
     }
 
-    let after = Runtime::workers();
+    let after = Runtime::pool();
 
     report("every chain back");
 
@@ -97,16 +97,16 @@ fn deep_recursion_replaces_blocked_workers() {
     // Every worker started to stand in for a blocked one is reaped
     // once nothing is blocked
     assert!(
-        settles_long(|| Runtime::workers().len() <= Runtime::workers().target()),
+        settles_long(|| Runtime::pool().len() <= Runtime::pool().target()),
         "{} workers still running, past the target of {}, long after the chains finished",
-        Runtime::workers().len(),
-        Runtime::workers().target(),
+        Runtime::pool().len(),
+        Runtime::pool().target(),
     );
 
     report("reaped");
 
     assert!(
-        settles(|| Runtime::healthy()),
+        settles(Runtime::healthy),
         "the runtime wasn't healthy after deep recursion: {:?}",
         Runtime::status(),
     );

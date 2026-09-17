@@ -5,7 +5,10 @@
 
 mod common;
 
-use atap::{Runtime, RuntimeError, Unix, UnixConnection, UnixListener};
+use atap::{
+    Runtime, RuntimeError,
+    unix::{Unix, UnixConnection, UnixListener},
+};
 use common::until_started;
 use std::{fs, path::PathBuf, process, time::Duration};
 

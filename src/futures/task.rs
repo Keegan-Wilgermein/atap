@@ -2,6 +2,8 @@
 //! The trait every task implements, and the input of a task that
 //! takes none
 
+use crate::modules::input::Token;
+
 /// Stops `Task` being implemented outside the crate
 pub(crate) mod sealed {
     use std::time::Instant;
@@ -41,18 +43,11 @@ pub(crate) mod sealed {
     }
 }
 
-/// The input of a task that takes none
-///
-/// No value of it can be made outside the crate, so a task that
-/// takes nothing can wait on a handle of any type
+/// The input of a task that takes nothing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Nothing(pub(crate) ());
 
 /// Implemented by everything the runtime can run
-///
-/// ## Behaviour
-/// `execute` is called once, on one thread, and runs to
-/// completion. What it returns is the output
 #[allow(private_bounds, private_interfaces)]
 pub trait Task: sealed::Sealed + Send + 'static {
     /// The final output type
@@ -65,20 +60,23 @@ pub trait Task: sealed::Sealed + Send + 'static {
     type Input: Send + 'static;
 
     /// Runs the task and returns its output
-    fn execute(&self, reactor_id: i32, task_id: usize) -> Self::Output;
+    #[doc(hidden)]
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output;
 
     /// Resets any state before a run
     ///
     /// Called before every `execute`, including every run of a
     /// repeat, which reuses the same task
-    fn prepare(&mut self) {}
+    #[doc(hidden)]
+    fn prepare(&mut self, _token: Token) {}
 
     /// Whether this task holds its thread long enough to be run on
     /// a sleep thread instead of a worker
     ///
     /// Asked once, at spawn. `Runtime::block` ignores it
+    #[doc(hidden)]
     #[inline(always)]
-    fn blocking(&self) -> bool {
+    fn blocking(&self, _token: Token) -> bool {
         false
     }
 
@@ -87,7 +85,7 @@ pub trait Task: sealed::Sealed + Send + 'static {
     /// Only a task that takes input keeps it
     #[doc(hidden)]
     #[inline(always)]
-    fn give(&mut self, _input: Self::Input) {}
+    fn give(&mut self, _token: Token, _input: Self::Input) {}
 
     /// Runs as much of the task as can be done without waiting
     ///
@@ -98,7 +96,12 @@ pub trait Task: sealed::Sealed + Send + 'static {
     /// else finishes in one step
     #[doc(hidden)]
     #[inline(always)]
-    fn step(&mut self, reactor_id: i32, task_id: usize) -> sealed::Step<Self::Output> {
-        sealed::Step::Done(self.execute(reactor_id, task_id))
+    fn step(
+        &mut self,
+        token: Token,
+        reactor_id: i32,
+        task_id: usize,
+    ) -> sealed::Step<Self::Output> {
+        sealed::Step::Done(self.execute(token, reactor_id, task_id))
     }
 }

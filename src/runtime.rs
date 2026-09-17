@@ -4,15 +4,14 @@
 //! their results as they finish
 
 use crate::{
-    RuntimeError, Sleep,
+    RuntimeError,
     constants::{DEAD_KQUEUE_ID, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW},
     executor::{self, Executor},
+    futures::sleep::Sleep,
     futures::task::Task,
     modules::{
         builder::TaskBuilder,
-        faults,
         handle_kind::HandleKind,
-        help,
         input::{self, Standalone},
         int_check::IntCheck,
         join_policy::JoinPolicy,
@@ -106,12 +105,12 @@ impl Runtime {
         F: Task,
         F::Input: Standalone,
     {
-        task.give(input::standalone());
-        task.prepare();
+        task.give(input::token(), input::standalone());
+        task.prepare(input::token());
         let reactor_id = REACTOR_KQUEUE_ID.load(Ordering::Relaxed);
 
         // IDs are per thread, so 0 can't overlap
-        task.execute(reactor_id, 0)
+        task.execute(input::token(), reactor_id, 0)
     }
 
     /// Builds a task up before spawning it
@@ -128,7 +127,11 @@ impl Runtime {
     ///
     /// Nothing happens until `spawn` is called
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, compute::Compute};
+    /// # use std::time::Duration;
+    /// # let work = Compute::compute(|()| ());
+    /// # let gap = Duration::from_secs(1);
     /// Runtime::task(work).priority(200).repeat().every(gap).spawn();
     /// ```
     ///
@@ -187,9 +190,14 @@ impl Runtime {
     /// handle to no task, and every read on it answers
     /// `NoSuchTask`
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{JoinPolicy, Runtime, compute::Compute};
+    /// # fn main() -> Result<(), atap::RuntimeError> {
+    /// # let handles = vec![Runtime::task(Compute::compute(|()| 1)).spawn()];
     /// let (first, rest) = Runtime::join_first(handles, JoinPolicy::Cancel);
     /// let answer = first.take()?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn join_first<T, W, I>(
         handles: I,
@@ -333,6 +341,7 @@ impl Runtime {
     ///
     /// #### Note
     /// Only here for the crate's own tests
+    #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fn inject_manager_faults(count: u32) {
         executor::inject_manager_faults(count);
@@ -348,9 +357,10 @@ impl Runtime {
     ///
     /// #### Note
     /// Only here for the crate's own tests
+    #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fn inject_thread_deaths(workers: u32, sleep_threads: u32) {
-        faults::owe_thread_deaths(workers, sleep_threads);
+        crate::modules::faults::owe_thread_deaths(workers, sleep_threads);
         POOL.wake_everyone();
     }
 
@@ -359,9 +369,10 @@ impl Runtime {
     ///
     /// #### Note
     /// Only here for the crate's own tests
+    #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fn inject_spawn_refusals(count: u32) {
-        faults::owe_spawn_refusals(count);
+        crate::modules::faults::owe_spawn_refusals(count);
     }
 
     /// Limits how many runs deep a worker helps while a task it runs
@@ -369,9 +380,10 @@ impl Runtime {
     ///
     /// #### Note
     /// Only here for the crate's own tests
+    #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fn inject_help_depth(depth: usize) {
-        help::limit_depth(depth);
+        crate::modules::help::limit_depth(depth);
     }
 
     /// What the worker pool looks like right now
@@ -379,7 +391,7 @@ impl Runtime {
     /// #### Note
     /// A snapshot rather than a lock. Every number in it was
     /// true when it was read
-    pub fn workers() -> PoolStats {
+    pub fn pool() -> PoolStats {
         POOL.stats()
     }
 

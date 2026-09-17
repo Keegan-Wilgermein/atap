@@ -4,7 +4,7 @@
 use libc::c_void;
 use std::{mem, ptr, time::Duration};
 
-use crate::{EventDesc, constants::KEVENT_COUNT};
+use crate::{constants::KEVENT_COUNT, modules::event_desc::EventDesc};
 
 /// Generates kevent syscalls and passes back their ID
 pub(crate) struct KEvent;

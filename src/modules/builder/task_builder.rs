@@ -6,17 +6,23 @@
 //! methods and moving on closes them, and entering a state never
 //! clears anything already set
 //!
-//! ```ignore
-//! Runtime::task(t).repeat().every(gap).until(when).spawn();
-//! Runtime::task(t).repeat().count(10).after(delay).spawn();
-//! Runtime::task(t).at_rate(period).for_duration(span).spawn();
-//! Runtime::task(t).wait_for::<i32>().count(3).repeat().count(5).spawn();
-//! Runtime::task(t).receive((a, b, c)).count(1).spawn();
+//! ```no_run
+//! # use atap::{Runtime, compute::Compute, sleep::Sleep};
+//! # use std::time::{Duration, Instant};
+//! # let t = || Sleep::sleep(Duration::from_millis(1));
+//! # let (gap, delay, period, span) = (Duration::from_millis(5), Duration::from_millis(5), Duration::from_millis(5), Duration::from_secs(1));
+//! # let when = Instant::now() + span;
+//! # let [a, b, c] = [(); 3].map(|()| Runtime::task(Compute::compute(|()| 1)).spawn());
+//! Runtime::task(t()).repeat().every(gap).until(when).spawn();
+//! Runtime::task(t()).repeat().count(10).after(delay).spawn();
+//! Runtime::task(t()).at_rate(period).for_duration(span).spawn();
+//! Runtime::task(t()).wait_for::<i32>().count(3).repeat().count(5).spawn();
+//! Runtime::task(t()).receive((a, b, c)).count(1).spawn();
 //! ```
 //!
 //! And ones that don't build:
 //!
-//! ```ignore
+//! ```text
 //! Runtime::task(t).repeat().at_rate(period);      // a kind is already chosen
 //! Runtime::task(t).at_rate(period).every(gap);    // `every` belongs to `Repeat`
 //! Runtime::task(t).repeat().for_duration(s).until(t);  // one deadline
@@ -26,8 +32,8 @@
 //! ```
 
 use super::builder_markers::{
-    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, Unset, WaitFor, Waits,
-    Wiring,
+    NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, Unset, WaitFor,
+    Waits, Wiring,
 };
 use crate::{
     executor::Executor,
@@ -61,6 +67,7 @@ type Forwards = Vec<Box<dyn FnOnce(usize)>>;
 /// - `C`: whether the open state's count has been set
 /// - `W`: what starts each run, `NoWait`, `WaitFor<T>`,
 ///   `ReceiveAll<H>` or `ReceiveAny<H>`
+#[must_use = "a builder does nothing until `spawn` is called"]
 pub struct TaskBuilder<F, K = Once, D = Open, C = Open, W = NoWait>
 where
     F: Task,
@@ -138,7 +145,8 @@ where
     /// The link counts as a way to give to `target` until this task
     /// publishes nothing more
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, compute::Compute};
     /// let printer = Runtime::task(Compute::compute(|n: u64| println!("{n}")))
     ///     .wait_for::<u64>()
     ///     .spawn();
@@ -149,7 +157,7 @@ where
     /// Only to a task waiting for this task's output:
     ///
     /// ```compile_fail,E0308
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let words = Runtime::task(Compute::compute(|word: String| word))
     ///     .wait_for::<String>()
@@ -260,9 +268,13 @@ where
     /// [`Nothing`](crate::Nothing) can wait for any `T`, and drops
     /// the value
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, compute::Compute};
+    /// # fn main() -> Result<(), atap::RuntimeError> {
     /// let doubler = Runtime::task(Compute::compute(|v: i32| v * 2)).wait_for::<i32>().spawn();
     /// doubler.give(7)?;
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// #### Note
@@ -272,7 +284,7 @@ where
     /// A task can only wait for what it takes:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let _ = Runtime::task(Compute::compute(|value: i32| value))
     ///     .wait_for::<String>()
@@ -282,7 +294,7 @@ where
     /// And a wait comes before the kind, never after:
     ///
     /// ```compile_fail,E0599
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let _ = Runtime::task(Compute::compute(|value: i32| value))
     ///     .wait_for::<i32>()
@@ -315,7 +327,11 @@ where
     /// A task that takes [`Nothing`](crate::Nothing) only waits for
     /// the set
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, compute::Compute};
+    /// # let counter = Runtime::task(Compute::compute(|()| 2u64)).spawn();
+    /// # let word = |w: &'static str| Runtime::task(Compute::compute(move |()| w.to_string())).spawn();
+    /// # let (first, second) = (word("hello"), word("there"));
     /// let total = Runtime::task(Compute::compute(|(count, words): (u64, Vec<String>)| {
     ///     format!("{count}: {}", words.join(" "))
     /// }))
@@ -327,7 +343,7 @@ where
     /// What the set hands over has to be what the task takes:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let words = Runtime::task(Compute::compute(|()| String::from("x"))).spawn();
     /// let _ = Runtime::task(Compute::compute(|value: i32| value)).receive(words).spawn();
@@ -336,7 +352,7 @@ where
     /// A tuple holds at most twelve sets, so a bigger one nests:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let h = || Runtime::task(Compute::compute(|()| 1u8)).spawn();
     ///
@@ -347,7 +363,7 @@ where
     /// And nothing else can give to a task that receives:
     ///
     /// ```compile_fail,E0599
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let source = Runtime::task(Compute::compute(|()| 1)).spawn();
     /// let receiver = Runtime::task(Compute::compute(|value: i32| value)).receive(source).spawn();
@@ -376,7 +392,10 @@ where
     ///
     /// A task that takes [`Nothing`](crate::Nothing) is only started
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use atap::{Runtime, compute::Compute};
+    /// # let line = |w: &'static str| Runtime::task(Compute::compute(move |()| w.to_string())).spawn();
+    /// # let (errors, warnings) = (line("error"), line("warning"));
     /// let log = Runtime::task(Compute::compute(|line: String| println!("{line}")))
     ///     .receive_any((errors, warnings))
     ///     .spawn();
@@ -385,7 +404,7 @@ where
     /// Every output has to turn into what the task takes:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let text = Runtime::task(Compute::compute(|()| String::from("x"))).spawn();
     /// let _ = Runtime::task(Compute::compute(|value: u64| value)).receive_any((text,)).spawn();
@@ -394,7 +413,7 @@ where
     /// One thing starts each run, so a wait and a receive don't mix:
     ///
     /// ```compile_fail,E0599
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let source = Runtime::task(Compute::compute(|()| 1)).spawn();
     ///
@@ -428,7 +447,7 @@ where
     /// Set once:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let _ = Runtime::task(Compute::compute(|value: i32| value))
     ///     .wait_for::<i32>()
@@ -439,7 +458,7 @@ where
     /// And only on a task that waits:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     ///
     /// let _ = Runtime::task(Compute::compute(|()| 1)).count(3);
     /// ```
@@ -528,7 +547,7 @@ where
     /// Set once, and before `after`:
     ///
     /// ```compile_fail,E0277
-    /// use atap::{Compute, Runtime};
+    /// use atap::{Runtime, compute::Compute};
     /// use std::time::Duration;
     ///
     /// let _ = Runtime::task(Compute::compute(|()| 1))
@@ -569,7 +588,7 @@ where
             ..
         } = self;
 
-        task.give(input::standalone());
+        task.give(input::token(), input::standalone());
 
         let handle = Executor::new_task(task, setup);
         link_forwards(forwards, handle.id());
@@ -596,7 +615,7 @@ where
             ..
         } = self;
 
-        task.give(input::standalone());
+        task.give(input::token(), input::standalone());
 
         let handle = Executor::new_task(task, setup);
         link_forwards(forwards, handle.id());
@@ -622,7 +641,7 @@ where
             ..
         } = self;
 
-        task.give(input::standalone());
+        task.give(input::token(), input::standalone());
 
         let handle = Executor::new_series(task, setup);
         link_forwards(forwards, handle.id());
@@ -880,7 +899,11 @@ mod type_checks {
     //! Chains that must build, checked by compiling them
 
     use super::*;
-    use crate::{Compute, Runtime, Sleep, SleepMode, SleepTask};
+    use crate::{
+        Runtime,
+        compute::Compute,
+        sleep::{Sleep, SleepMode, SleepTask},
+    };
 
     fn task() -> SleepTask {
         Sleep::sleep(Duration::from_millis(1)).mode(SleepMode::Relaxed)

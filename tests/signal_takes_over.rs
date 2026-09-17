@@ -3,7 +3,10 @@
 
 mod common;
 
-use atap::{Runtime, RuntimeError, Signal, SignalKind};
+use atap::{
+    Runtime, RuntimeError,
+    signal::{Signal, SignalKind},
+};
 use common::taken_over;
 use std::{
     process, thread,
@@ -38,7 +41,7 @@ fn watching_an_interrupt_takes_it_over() {
 
     // The whole point: this would end the program if the signal were
     // still doing what it normally does
-    Runtime::block(Signal::send(process::id() as libc::pid_t, KIND)).expect("the signal must go");
+    Runtime::block(Signal::send(process::id() as i32, KIND)).expect("the signal must go");
 
     let count = waiting
         .take_with_timeout(PATIENCE)

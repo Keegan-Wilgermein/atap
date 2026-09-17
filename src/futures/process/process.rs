@@ -20,7 +20,8 @@ use std::ffi::OsStr;
 /// somewhere else, and `env` or `env_only` decide what
 /// environment it gets. Each keeps the last value it was given
 ///
-/// ```ignore
+/// ```no_run
+/// # use atap::{Runtime, process::Process};
 /// Runtime::task(
 ///     Process::output("/bin/sh", ["-c", "cat; pwd"])
 ///         .input(b"fed\n".as_slice())
@@ -49,8 +50,9 @@ pub struct Process;
 impl Process {
     /// An empty argument list, for a program that takes none
     ///
-    /// ```ignore
-    /// Process::run("/bin/date", Process::NO_ARGS)
+    /// ```no_run
+    /// # use atap::process::Process;
+    /// let task = Process::run("/bin/date", Process::NO_ARGS);
     /// ```
     pub const NO_ARGS: [&'static str; 0] = [];
 
@@ -77,7 +79,7 @@ impl Process {
     /// automatically. Pass only the arguments that come after it,
     /// or it arrives twice
     ///
-    /// [`ExitStatus`]: crate::ExitStatus
+    /// [`ExitStatus`]: crate::process::ExitStatus
     pub fn run<S, A, I>(program: S, args: A) -> StatusTask
     where
         S: AsRef<OsStr>,

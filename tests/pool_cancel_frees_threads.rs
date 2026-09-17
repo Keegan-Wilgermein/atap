@@ -1,6 +1,9 @@
 mod common;
 
-use atap::{Runtime, RuntimeError, Sleep, SleepMode};
+use atap::{
+    Runtime, RuntimeError,
+    sleep::{Sleep, SleepMode},
+};
 use common::report;
 use std::{
     thread,
@@ -16,7 +19,7 @@ fn cancelling_hands_the_thread_back() {
     let patience = Duration::from_secs(5);
 
     // Counted from whatever the pool was already doing
-    let before = Runtime::workers().sleep_busy();
+    let before = Runtime::pool().sleep_busy();
 
     // Too long for any of them to finish by itself
     let handles: Vec<_> = (0..sleeps)
@@ -27,11 +30,11 @@ fn cancelling_hands_the_thread_back() {
 
     let waiting = Instant::now();
 
-    while Runtime::workers().sleep_busy() < before + sleeps && waiting.elapsed() < patience {
+    while Runtime::pool().sleep_busy() < before + sleeps && waiting.elapsed() < patience {
         thread::sleep(Duration::from_micros(200));
     }
 
-    let sleeping = Runtime::workers().sleep_busy().saturating_sub(before);
+    let sleeping = Runtime::pool().sleep_busy().saturating_sub(before);
     report("all sleeping");
 
     assert_eq!(
@@ -46,12 +49,12 @@ fn cancelling_hands_the_thread_back() {
         handle.clone().cancel();
     }
 
-    while Runtime::workers().sleep_busy() > before && started.elapsed() < patience {
+    while Runtime::pool().sleep_busy() > before && started.elapsed() < patience {
         thread::sleep(Duration::from_micros(200));
     }
 
     let freed = started.elapsed();
-    let left = Runtime::workers().sleep_busy().saturating_sub(before);
+    let left = Runtime::pool().sleep_busy().saturating_sub(before);
 
     report("all cancelled");
 

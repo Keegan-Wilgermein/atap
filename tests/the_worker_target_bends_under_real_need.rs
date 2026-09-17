@@ -9,7 +9,7 @@
 
 mod common;
 
-use atap::{Compute, Runtime};
+use atap::{Runtime, compute::Compute};
 use common::{cores, report};
 use std::{
     thread,
@@ -42,7 +42,7 @@ fn within(cap: Duration, mut condition: impl FnMut() -> bool) -> Option<Duration
 fn the_worker_target_bends_under_real_need() {
     let _ = Runtime::init();
 
-    let start = Runtime::workers();
+    let start = Runtime::pool();
     let floor = start.len();
 
     println!(
@@ -73,7 +73,7 @@ fn the_worker_target_bends_under_real_need() {
         );
     }
 
-    let moving = Runtime::workers();
+    let moving = Runtime::pool();
 
     println!(
         "{} quick computes in {:?}, peak {} workers against a target of {}",
@@ -121,7 +121,7 @@ fn the_worker_target_bends_under_real_need() {
         answered_after = started.elapsed();
     }
 
-    let grown = Runtime::workers();
+    let grown = Runtime::pool();
 
     report("held and grown");
 
@@ -175,9 +175,7 @@ fn the_worker_target_bends_under_real_need() {
     // ---- phase 4: the extra workers go quickly
     println!("\n== phase 4: workers past the target are reaped quickly ==");
 
-    let reaped_to_target = within(Duration::from_secs(10), || {
-        Runtime::workers().len() <= target
-    });
+    let reaped_to_target = within(Duration::from_secs(10), || Runtime::pool().len() <= target);
 
     report("back to target");
 
@@ -186,15 +184,13 @@ fn the_worker_target_bends_under_real_need() {
     assert!(
         reaped_to_target.is_some_and(|took| took < Duration::from_secs(3)),
         "workers past the target outstayed the work that earned them: {} still running",
-        Runtime::workers().len(),
+        Runtime::pool().len(),
     );
 
     // ---- phase 5: below the target, idle workers go at the normal pace
     println!("\n== phase 5: idle workers below the target are reaped to where it started ==");
 
-    let reaped_to_floor = within(Duration::from_secs(30), || {
-        Runtime::workers().len() <= floor
-    });
+    let reaped_to_floor = within(Duration::from_secs(30), || Runtime::pool().len() <= floor);
 
     report("back where it started");
 
@@ -204,13 +200,13 @@ fn the_worker_target_bends_under_real_need() {
         reaped_to_floor.is_some(),
         "the pool never came back to its {} workers: {}",
         floor,
-        Runtime::workers().len(),
+        Runtime::pool().len(),
     );
 
     // ---- phase 6: blocking computes grow the sleep threads, not workers
     println!("\n== phase 6: blocking computes bend the sleep thread target instead ==");
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
     let sleep_target = before.sleep_target();
     let waits = sleep_target * 2;
     let wait = Duration::from_millis(400);
@@ -234,7 +230,7 @@ fn the_worker_target_bends_under_real_need() {
         assert_eq!(handle.join_with_timeout(PATIENCE), Ok(index));
     }
 
-    let blocked = Runtime::workers();
+    let blocked = Runtime::pool();
 
     report("blocking computes done");
 
@@ -272,7 +268,7 @@ fn the_worker_target_bends_under_real_need() {
     println!("\n== phase 7: sleep threads past their target are reaped ==");
 
     let reaped_sleeps = within(Duration::from_secs(10), || {
-        Runtime::workers().sleep_threads() <= sleep_target
+        Runtime::pool().sleep_threads() <= sleep_target
     });
 
     report("finished");
@@ -285,7 +281,7 @@ fn the_worker_target_bends_under_real_need() {
     assert!(
         reaped_sleeps.is_some(),
         "{} sleep threads still running past the target of {}",
-        Runtime::workers().sleep_threads(),
+        Runtime::pool().sleep_threads(),
         sleep_target,
     );
 

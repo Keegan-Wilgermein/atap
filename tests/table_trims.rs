@@ -1,6 +1,6 @@
 mod common;
 
-use atap::{Runtime, Sleep};
+use atap::{Runtime, sleep::Sleep};
 use common::report;
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ fn gives_the_table_back() {
 
     report("peak built and released");
 
-    let before = Runtime::workers();
+    let before = Runtime::pool();
 
     assert!(
         before.live() <= before.peak_slots(),
@@ -50,7 +50,7 @@ fn gives_the_table_back() {
         }
     }
 
-    let after = Runtime::workers();
+    let after = Runtime::pool();
 
     println!(
         "{} passes gave back {} bytes, table {} -> {} slots (peak {} -> {}), {} live",

@@ -2,9 +2,23 @@
 name = "atap"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/Keegan-Wilgermein/atap"
+readme = "README.md"
+keywords = ["async", "runtime", "kqueue", "macos", "tasks"]
+categories = ["asynchronous", "concurrency", "network-programming", "os::macos-apis"]
+
+[package.metadata.docs.rs]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+features = ["tls"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 tls = ["dep:rustls", "dep:rustls-platform-verifier"]
+
+# Lets the crate's own tests break the runtime on purpose
+fault-injection = []
 
 [dependencies]
 libc = "0.2.186"
@@ -19,8 +33,7 @@ rustls = { version = "0.23.44", optional = true, default-features = false, featu
 rustls-platform-verifier = { version = "0.7", optional = true }
 
 [dev-dependencies]
-libc = "0.2.186"
-
+atap = { path = ".", features = ["fault-injection"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 
 time = "0.3"

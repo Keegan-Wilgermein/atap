@@ -20,6 +20,8 @@ pub(crate) mod sealed {
     pub struct Token(pub(crate) ());
 }
 
+pub(crate) use sealed::Token;
+
 /// An input a task can run with when nothing gives it one
 ///
 /// `()` for a compute whose closure takes nothing, and
@@ -87,12 +89,12 @@ where
     V: Clone,
 {
     #[inline(always)]
-    fn deliver<F>(_token: sealed::Token, task: &mut F, mailbox: &Mailbox<V>)
+    fn deliver<F>(token: sealed::Token, task: &mut F, mailbox: &Mailbox<V>)
     where
         F: Task<Input = Self>,
     {
         if let Some(value) = mailbox.latest() {
-            task.give(value);
+            task.give(token, value);
         }
     }
 }

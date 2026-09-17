@@ -5,7 +5,7 @@
 use crate::modules::worker_stats::WorkerStats;
 use std::fmt;
 
-/// A snapshot of the pool
+/// A snapshot of the worker pool
 ///
 /// #### Note
 /// A snapshot, not a lock. The pool carries on while this is

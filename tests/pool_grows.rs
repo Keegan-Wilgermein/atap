@@ -1,6 +1,9 @@
 mod common;
 
-use atap::{Runtime, Sleep, SleepMode};
+use atap::{
+    Runtime,
+    sleep::{Sleep, SleepMode},
+};
 use common::cores;
 use std::{
     thread,
@@ -25,7 +28,7 @@ fn pool_grows_under_blocking_load() {
     // far short of the sleeps finishing
     thread::sleep(Duration::from_millis(100));
 
-    let stats = Runtime::workers();
+    let stats = Runtime::pool();
 
     println!(
         "{} blocking tasks got {} sleep threads, {} busy, {} still queued",

@@ -142,14 +142,19 @@ impl ThreadSlot {
     ///
     /// A task already running finishes normally
     pub(crate) fn stop(&self) {
-        if !self.alive() {
-            return;
+        let stopping = self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                match WorkerState::from_u32(state).alive() {
+                    true => Some(WorkerState::Stopping as u32),
+                    false => None,
+                }
+            })
+            .is_ok();
+
+        if stopping {
+            address_lock::wake(address_lock::address(&self.state));
         }
-
-        self.state
-            .store(WorkerState::Stopping as u32, Ordering::Release);
-
-        let _ = self.wake();
     }
 
     /// Wakes the thread if it is asleep
