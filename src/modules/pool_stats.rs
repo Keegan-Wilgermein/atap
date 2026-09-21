@@ -248,7 +248,7 @@ impl fmt::Display for PoolStats {
 
         write!(
             formatter,
-            "{} live, {} slots in the table, {} at its peak",
+            "{} live, {} table slots, {} at its peak",
             self.live, self.slots, self.peak_slots,
         )
     }

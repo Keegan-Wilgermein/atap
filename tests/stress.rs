@@ -870,7 +870,19 @@ fn everything_at_once() {
                 match Runtime::task(child.wait()).spawn().join_with_timeout(STALL) {
                     Ok(Ok(_)) => Tally::bump(&tally.joined),
                     Ok(Err(error)) => tally.failed(error, "a child ending"),
-                    Err(error) => tally.refusal(error, "a child ending"),
+
+                    // The wait holds the child too, so dropping this
+                    // copy would leave it running and the wait behind
+                    // it on a thread
+                    Err(error) => {
+                        let alive = unsafe { libc::kill(child.id() as libc::pid_t, 0) } == 0;
+
+                        eprintln!("  CHILD {} still alive: {}", child.id(), alive);
+
+                        let _ = Runtime::block(child.kill());
+
+                        tally.refusal(error, "a child ending");
+                    }
                 }
 
                 thread::sleep(Duration::from_millis(5));

@@ -2,6 +2,7 @@
 name = "atap"
 version = "0.1.0"
 edition = "2024"
+description = "Threadsafe futureless async runtime for macOS"
 rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/Keegan-Wilgermein/atap"
@@ -17,7 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 tls = ["dep:rustls", "dep:rustls-platform-verifier"]
 
-# Lets the crate's own tests break the runtime on purpose
+# For internally testing runtime recovery
 fault-injection = []
 
 [dependencies]
@@ -35,5 +36,4 @@ rustls-platform-verifier = { version = "0.7", optional = true }
 [dev-dependencies]
 atap = { path = ".", features = ["fault-injection"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
-
 time = "0.3"

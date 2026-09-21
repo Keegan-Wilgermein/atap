@@ -87,10 +87,28 @@ pub(crate) fn wait_any(queue: i32, timeout: Duration) {
 /// `WAKE_IDENT` can be left over from an earlier task's cancel.
 /// It only counts as `Cancelled` if the current task is
 pub(crate) fn wait_for(queue: i32, ident: usize, filter: i16) -> Waited {
+    wait_for_within(queue, ident, filter, None)
+}
+
+/// The same wait, with a bound on how long one lap of it blocks
+///
+/// ## Returns
+/// `Arrived` when `within` runs out, so the caller asks whatever it
+/// is waiting on again rather than trusting the wake
+pub(crate) fn wait_for_upto(queue: i32, ident: usize, filter: i16, within: Duration) -> Waited {
+    wait_for_within(queue, ident, filter, Some(within))
+}
+
+fn wait_for_within(queue: i32, ident: usize, filter: i16, within: Option<Duration>) -> Waited {
     let mut events = eventlist();
 
     loop {
-        let count = match unsafe { KEvent::listen(queue, &mut events) }.check() {
+        let listened = match within {
+            Some(within) => unsafe { KEvent::listen_for(queue, &mut events, within) },
+            None => unsafe { KEvent::listen(queue, &mut events) },
+        };
+
+        let count = match listened.check() {
             Ok(count) => count as usize,
             Err(RuntimeError::CheckError(Some(libc::EINTR))) => continue,
             Err(_) => return Waited::Failed,
@@ -114,6 +132,12 @@ pub(crate) fn wait_for(queue: i32, ident: usize, filter: i16) -> Waited {
 
                 continue;
             }
+        }
+
+        // Nothing of this task's arrived, so a bounded wait hands
+        // back to whoever asked rather than blocking again
+        if within.is_some() {
+            return Waited::Arrived;
         }
     }
 }

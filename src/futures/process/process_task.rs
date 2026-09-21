@@ -1470,7 +1470,9 @@ pub(crate) fn wait_exit(child: &mut Child, queue: Option<i32>) -> Result<ExitSta
     let mut outcome = None;
 
     loop {
-        let waited = kqueue::wait_for(queue, pid as usize, libc::EVFILT_PROC);
+        // Bounded, so an exit this queue never hears about costs a
+        // lap rather than the whole wait
+        let waited = kqueue::wait_for_upto(queue, pid as usize, libc::EVFILT_PROC, PROCESS_POLL);
 
         match try_reap(pid) {
             Ok(Some(status)) => {

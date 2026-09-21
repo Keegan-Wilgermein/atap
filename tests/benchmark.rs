@@ -11,8 +11,8 @@
 mod common;
 
 use atap::{
-    Runtime, TaskHandle,
-    builder::HandleKind,
+    Runtime, Task, TaskHandle,
+    builder::{HandleKind, Standalone},
     channel::Channel,
     compute::Compute,
     fs::File,
@@ -23,8 +23,11 @@ use atap::{
     udp::Udp,
     unix::Unix,
 };
-use common::{Resources, TestPath, footprint, mebibytes, raise_descriptor_limit, send_signal};
+use common::{
+    Resources, TestPath, cpu_time, footprint, mebibytes, raise_descriptor_limit, send_signal,
+};
 use std::{
+    hint::black_box,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -82,7 +85,15 @@ fn benchmark() {
 
 /// Closures run on a worker
 fn computes() {
-    table("Compute", 100_000, "", |count| {
+    table(
+        "Compute",
+        100_000,
+        "",
+        20_000,
+        || {
+            black_box(blocked(Compute::compute(|()| black_box(1u64))));
+        },
+        |count| {
         let handles: Vec<_> = (0..count)
             .map(|value| Runtime::task(Compute::compute(move |()| value * 2)).spawn())
             .collect();
@@ -96,7 +107,15 @@ fn computes() {
 /// Waits of both kinds: one long enough to be handed to a sleep
 /// thread, and one short enough to be spun on a worker
 fn sleeps() {
-    table("Sleep 1ms", 100_000, "", |count| {
+    table(
+        "Sleep 1ms",
+        100_000,
+        "",
+        200,
+        || {
+            black_box(blocked(Sleep::sleep(Duration::from_millis(1))));
+        },
+        |count| {
         let handles: Vec<_> = (0..count)
             .map(|_| Runtime::task(Sleep::sleep(Duration::from_millis(1))).spawn())
             .collect();
@@ -106,7 +125,15 @@ fn sleeps() {
         }
     });
 
-    table("Sleep 400us", 100_000, "", |count| {
+    table(
+        "Sleep 400us",
+        100_000,
+        "",
+        500,
+        || {
+            black_box(blocked(Sleep::sleep(Duration::from_micros(400))));
+        },
+        |count| {
         let handles: Vec<_> = (0..count)
             .map(|_| Runtime::task(Sleep::sleep(Duration::from_micros(400))).spawn())
             .collect();
@@ -119,7 +146,18 @@ fn sleeps() {
 
 /// Receives parked on one channel, woken by a value each
 fn channels() {
-    table("Channel recv", 100_000, "", |count| {
+    let (ready, taking) = Channel::new::<u64>().open().expect("a channel opens");
+
+    table(
+        "Channel recv",
+        100_000,
+        "",
+        20_000,
+        || {
+            ready.send(1).expect("the send lands");
+            black_box(blocked(taking.recv())).expect("the value is there");
+        },
+        |count| {
         let (tx, rx) = Channel::new::<u64>().open().expect("a channel opens");
 
         let handles: Vec<_> = (0..count)
@@ -145,7 +183,15 @@ fn files() {
 
     Runtime::block(File::write(path.path(), vec![b'x'; 4 * 1024])).expect("the write works");
 
-    table("File read 4KiB", 100_000, "", |count| {
+    table(
+        "File read 4KiB",
+        100_000,
+        "",
+        2_000,
+        || {
+            black_box(blocked(File::read(path.path()))).expect("the read works");
+        },
+        |count| {
         let handles: Vec<_> = (0..count)
             .map(|_| Runtime::task(File::read(path.path())).spawn())
             .collect();
@@ -167,6 +213,8 @@ fn signals() {
         "Signal wait",
         10_000,
         "every wait puts its own filter on the one delivery",
+        0,
+        || {},
         |count| {
         let handles: Vec<_> = (0..count)
             .map(|_| Runtime::task(Signal::wait(KIND)).spawn())
@@ -199,6 +247,8 @@ fn watches() {
         "File watch",
         10_000,
         "every watch puts its own filter on the one change",
+        0,
+        || {},
         |count| {
         let handles: Vec<_> = (0..count)
             .map(|_| Runtime::task(File::watch(path.path())).spawn())
@@ -226,7 +276,15 @@ fn datagrams() {
     let to = Runtime::block(Udp::bind("127.0.0.1:0")).expect("a socket binds");
     let address = to.local_addr();
 
-    table("Udp send", 100_000, "", |count| {
+    table(
+        "Udp send",
+        100_000,
+        "",
+        20_000,
+        || {
+            black_box(blocked(socket.send_to(address, b"hello".as_slice()))).expect("the send works");
+        },
+        |count| {
         let handles: Vec<_> = (0..count)
             .map(|_| Runtime::task(socket.send_to(address, b"hello".as_slice())).spawn())
             .collect();
@@ -248,6 +306,12 @@ fn pipes() {
         "Unix send",
         10_000,
         "the pair's buffer bounds it, not the runtime",
+        // Kept well under the pair's buffer, since nothing drains
+        // the far end while this runs
+        200,
+        || {
+            black_box(blocked(near.send(b"hello".as_slice()))).expect("the send works");
+        },
         |count| {
         let reading = far.clone();
 
@@ -256,7 +320,9 @@ fn pipes() {
 
             while left > 0 {
                 match Runtime::block(reading.recv(64 * 1024)) {
-                    Ok(bytes) if !bytes.is_empty() => left -= bytes.len(),
+                    Ok(bytes) if !bytes.is_empty() => {
+                        left = left.saturating_sub(bytes.len())
+                    }
                     _ => break,
                 }
             }
@@ -286,6 +352,11 @@ fn connections() {
         "Tcp connect",
         100,
         "the kernel's listen backlog is 128, and the rest are reset",
+        100,
+        || {
+            // The backlog holds these, so no accept has to be posted
+            black_box(blocked(Tcp::connect(address))).expect("the connect works");
+        },
         |count| {
         let accepting: Vec<_> = (0..count)
             .map(|_| Runtime::task(listener.accept()).spawn())
@@ -325,6 +396,10 @@ fn streams() {
         "Tcp send",
         10_000,
         "the socket's buffer bounds it, not the runtime",
+        2_000,
+        || {
+            black_box(blocked(near.send(b"hello".as_slice()))).expect("the send works");
+        },
         |count| {
             let reading = far.clone();
 
@@ -333,7 +408,9 @@ fn streams() {
 
                 while left > 0 {
                     match Runtime::block(reading.recv(64 * 1024)) {
-                        Ok(bytes) if !bytes.is_empty() => left -= bytes.len(),
+                        Ok(bytes) if !bytes.is_empty() => {
+                            left = left.saturating_sub(bytes.len())
+                        }
                         _ => break,
                     }
                 }
@@ -369,6 +446,8 @@ fn tls() {
         "Tls connect",
         100,
         "the kernel's listen backlog is 128, and the rest are reset",
+        0,
+        || {},
         |count| {
         let accepting: Vec<_> = (0..count)
             .map(|_| Runtime::task(listener.accept()).spawn())
@@ -414,6 +493,10 @@ fn children() {
         "Process run",
         100,
         "each one is a program of its own",
+        100,
+        || {
+            black_box(blocked(Process::run("/usr/bin/true", Process::NO_ARGS))).expect("true runs");
+        },
         |count| {
         let handles: Vec<_> = (0..count)
             .map(|_| Runtime::task(Process::run("/usr/bin/true", Process::NO_ARGS)).spawn())
@@ -433,12 +516,46 @@ fn children() {
 /// `run` spawns that many tasks and waits for every one of them.
 /// Counts past `most` are left out, and `why` says what stops
 /// them
-fn table(kind: &str, most: usize, why: &str, run: impl Fn(usize)) {
+fn table(
+    kind: &str,
+    most: usize,
+    why: &str,
+    blocked_runs: usize,
+    blocking: impl Fn(),
+    run: impl Fn(usize),
+) {
     println!("\nTask: {kind}");
     println!(
         "  {:>7} | {:>9} | {:>11} | {:>12} | {:>11}",
         "count", "cpu", "memory", "time", "each",
     );
+
+    // The same work on the calling thread, with none of the
+    // scheduling around it
+    if blocked_runs > 0 {
+        thread::sleep(SETTLE);
+
+        blocking();
+
+        let before = cpu_time();
+        let started = Instant::now();
+
+        for _ in 0..blocked_runs {
+            blocking();
+        }
+
+        let time = started.elapsed();
+        let cpu = cpu_time().saturating_sub(before);
+
+        println!(
+            "  {:>7} | {:>9} | {:>11} | {:>12} | {:>11}",
+            "blocked",
+            share(blocked_runs, cpu, time),
+            "-",
+            format!("{time:.2?}"),
+            each(blocked_runs, time),
+        );
+    }
 
     for count in COUNTS {
         if count > most {
@@ -514,6 +631,19 @@ fn share(count: usize, cpu: Duration, time: Duration) -> String {
     }
 
     format!("{:.0} %", cpu.as_secs_f64() / time.as_secs_f64() * 100.0)
+}
+
+/// Runs one task on the calling thread
+///
+/// Kept out of line, since a task the compiler can fold into its
+/// caller leaves nothing of the call to measure
+#[inline(never)]
+fn blocked<F>(task: F) -> F::Output
+where
+    F: Task,
+    F::Input: Standalone,
+{
+    Runtime::block(task)
 }
 
 /// How long one task took, as text
