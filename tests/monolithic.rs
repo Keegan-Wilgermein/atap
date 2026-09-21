@@ -7,8 +7,10 @@ mod common;
 
 use atap::{
     JoinPolicy, Runtime, RuntimeError,
+    channel::Channel,
     compute::Compute,
     fs::File,
+    process::Process,
     sleep::{Sleep, SleepMode},
 };
 use common::{report, take_a_run};
@@ -66,6 +68,18 @@ fn monolithic() {
 
     println!("\n== threads killed mid recursion give every slot back ==");
     dead_threads_give_slots_back();
+
+    println!("\n== runs that time out give their slots back ==");
+    timeouts_give_slots_back();
+
+    println!("\n== a channel's receives give their slots back ==");
+    channel_receives_give_slots_back();
+
+    println!("\n== an open file's reads give their slots back ==");
+    open_file_reads_give_slots_back();
+
+    println!("\n== children are waited for and reaped ==");
+    children_are_reaped();
 
     println!();
     report("finished");
@@ -1095,6 +1109,205 @@ fn dead_threads_give_slots_back() {
     assert!(
         after <= base + 8,
         "threads killed mid recursion left the live count at {} against {}",
+        after,
+        base,
+    );
+}
+
+/// Runs cut short by a timeout settle and give their slots back
+fn timeouts_give_slots_back() {
+    let tasks = 200;
+    let base = settled_live();
+
+    let handles: Vec<_> = (0..tasks)
+        .map(|_| {
+            Runtime::task(Sleep::sleep(Duration::from_millis(50)).mode(SleepMode::Relaxed))
+                .timeout(Duration::from_millis(5))
+                .spawn()
+        })
+        .collect();
+
+    let mut timed_out = 0;
+    let mut finished = 0;
+
+    for handle in handles {
+        match handle.join() {
+            Err(RuntimeError::TimedOut) => timed_out += 1,
+            Ok(_) => finished += 1,
+            other => panic!("a timed out sleep ended as {:?}", other),
+        }
+    }
+
+    let after = settled_live();
+
+    report("timeouts done");
+
+    println!(
+        "  {} sleeps of 50ms cut at 5ms: {} timed out, {} beat it, live {} -> {}",
+        tasks, timed_out, finished, base, after,
+    );
+
+    assert!(
+        timed_out > tasks / 2,
+        "only {} of {} sleeps were cut short",
+        timed_out,
+        tasks,
+    );
+
+    assert!(
+        after <= base + 8,
+        "{} timeouts left the live count at {} against {}",
+        tasks,
+        after,
+        base,
+    );
+}
+
+/// Receives that park on a channel settle on their value and give
+/// their slots back
+fn channel_receives_give_slots_back() {
+    let values = 2_000u64;
+    let base = settled_live();
+
+    let (tx, rx) = Channel::new::<u64>().open().expect("a channel opens");
+
+    let handles: Vec<_> = (0..values)
+        .map(|_| Runtime::task(rx.recv()).spawn())
+        .collect();
+
+    let peak = Runtime::pool().live();
+
+    for value in 0..values {
+        tx.send(value).expect("the send lands");
+    }
+
+    let mut sum = 0;
+
+    for handle in handles {
+        sum += handle
+            .join()
+            .expect("every receive settles")
+            .expect("every receive gets a value");
+    }
+
+    drop((tx, rx));
+
+    let after = settled_live();
+
+    report("channel done");
+
+    println!(
+        "  {} values through one channel, sum {}, live {} -> peak {} -> {}",
+        values, sum, base, peak, after,
+    );
+
+    assert_eq!(
+        sum,
+        (0..values).sum::<u64>(),
+        "the receives and the sends disagree on what went through",
+    );
+
+    assert!(
+        after <= base + 8,
+        "{} receives left the live count at {} against {}",
+        values,
+        after,
+        base,
+    );
+}
+
+/// One open file handle serves many reads, which give their slots
+/// back
+fn open_file_reads_give_slots_back() {
+    let reads = 2_000;
+    let base = settled_live();
+
+    let path = fixture("monolithic-open", 4 * 1024);
+    let file = Runtime::block(File::open(&path)).expect("the file opens");
+
+    let handles: Vec<_> = (0..reads)
+        .map(|index| Runtime::task(file.read_at((index % 1024) as u64, 64)).spawn())
+        .collect();
+
+    let mut bytes = 0;
+
+    for handle in handles {
+        bytes += handle
+            .join()
+            .expect("every read settles")
+            .expect("every read works")
+            .len();
+    }
+
+    drop(file);
+
+    let after = settled_live();
+
+    let _ = fs::remove_file(&path);
+
+    report("open file done");
+
+    println!(
+        "  {} reads through one open file, {} bytes, live {} -> {}",
+        reads, bytes, base, after,
+    );
+
+    assert_eq!(
+        bytes,
+        reads * 64,
+        "{} reads of 64 bytes came back with {} bytes",
+        reads,
+        bytes,
+    );
+
+    assert!(
+        after <= base + 8,
+        "{} reads left the live count at {} against {}",
+        reads,
+        after,
+        base,
+    );
+}
+
+/// Children spawned and waited for leave nothing behind
+fn children_are_reaped() {
+    let children = 50;
+    let base = settled_live();
+
+    let handles: Vec<_> = (0..children)
+        .map(|_| {
+            Runtime::task(Process::spawn("/usr/bin/true", Process::NO_ARGS)).spawn()
+        })
+        .collect();
+
+    let mut ended = 0;
+
+    for handle in handles {
+        let child = handle
+            .join()
+            .expect("every spawn settles")
+            .expect("every child starts");
+
+        let status = Runtime::block(child.wait()).expect("every child ends");
+
+        ended += status.success() as usize;
+    }
+
+    let after = settled_live();
+
+    report("children done");
+
+    println!(
+        "  {} children spawned and waited for, {} ended well, live {} -> {}",
+        children, ended, base, after,
+    );
+
+    assert_eq!(ended, children, "only {} of {} children ended well", ended, children);
+
+    assert!(
+        after <= base + 8,
+        "{} children left the live count at {} against {}",
+        children,
         after,
         base,
     );

@@ -4,8 +4,6 @@
 //! 
 //! For testing the api, not functionality
 
-use std::time::Instant;
-
 use atap::{Runtime, prelude::Compute};
 
 #[test]
@@ -15,20 +13,20 @@ fn api() {
         .workers_per_core(12)
         .init();
 
-    let now = Instant::now();
-    let task1 = Runtime::task(
-        Compute::compute(|(data1, data2)| {
-            data1 + data2
-        })
+    let outer = Runtime::task(
+        Compute::compute(|i: i32| i)
     )
-    .wait_for::<(u8, u8)>()
+    .wait_for::<i32>()
     .spawn();
 
-    let _ = task1.give((3, 2));
+    let outer2 = outer.clone();
+    let inner = Runtime::task(
+        Compute::compute(move |i: i32| {
+            let _ = outer.clone().give(i);
+        })
+    )
+    .receive(outer2)
+    .spawn();
 
-    let result = task1.join().unwrap();
-
-    println!("Took: {:?}", now.elapsed());
-    println!("Result: {}", result);
-    println!("{}", Runtime::pool());
+    let _ = inner.join();
 }

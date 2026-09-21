@@ -1341,6 +1341,17 @@ fn timed_out(id: usize, word: u64) {
         return;
     }
 
+    // Read and claimed before the run is settled. Settling it drops
+    // the run's own claim on its series, and the slot behind either
+    // can be reused the moment the last claim goes
+    let parent = data.extras().map_or(NO_TASK, Extras::parent);
+
+    let held = slot(parent).is_some_and(|series| {
+        series.add_listener();
+
+        true
+    });
+
     // A parked run is taken down before anyone hears it timed out, so
     // whatever it gives back on the way is there for the next reader
     if let Some(parked) = data.claim_parked() {
@@ -1358,17 +1369,25 @@ fn timed_out(id: usize, word: u64) {
         }
 
         release(id);
-    } else if data.try_state(TaskState::Running, TaskState::TimedOut) {
-        stopped(id, data);
-    } else {
+    } else if !data.try_state(TaskState::Running, TaskState::TimedOut) {
+        if held {
+            Executor::drop_listener(parent);
+        }
+
         return;
+    } else {
+        stopped(id, data);
     }
 
-    let parent = data.extras().map_or(NO_TASK, Extras::parent);
+    if !held {
+        return;
+    }
 
     if let Some(series) = slot(parent) {
         stop(parent, series, TaskState::TimedOut);
     }
+
+    Executor::drop_listener(parent);
 }
 
 /// Hands a task to whichever half of the pool should have it

@@ -5,8 +5,10 @@
 
 use atap::{
     DEFAULT_PRIORITY, Runtime, RuntimeError,
+    channel::Channel,
     compute::Compute,
-    fs::File,
+    fs::{File, FileKind},
+    process::Process,
     sleep::{Sleep, SleepMode},
 };
 use std::{
@@ -85,6 +87,27 @@ fn a_program_that_just_runs() {
         .after(Duration::from_millis(250))
         .spawn();
 
+    // The log a program keeps open rather than reopening every time
+    let journal = Runtime::block(File::open(&log).write(true).append(true).create(true))
+        .expect("could not open the journal");
+
+    // Counts handed to a reader that does nothing but keep the total
+    let (counts, taking) = Channel::new::<u64>().open().expect("a channel opens");
+
+    let tally = {
+        let taking = taking.clone();
+
+        std::thread::spawn(move || {
+            let mut total = 0;
+
+            while let Ok(count) = Runtime::block(taking.recv()) {
+                total += count;
+            }
+
+            total
+        })
+    };
+
     // Settings the parser below hands every parse of the config to
     let settings = Arc::new(Mutex::new(HashMap::<String, String>::new()));
 
@@ -155,6 +178,7 @@ fn a_program_that_just_runs() {
 
                 Runtime::task(Sleep::sleep(Duration::from_micros(index * 200 + 50)))
                     .priority(priority)
+                    .timeout(Duration::from_secs(5))
                     .spawn()
             })
             .collect();
@@ -192,6 +216,12 @@ fn a_program_that_just_runs() {
 
             checksums += 1;
         }
+
+        // A line in the journal every tick, through the handle it
+        // was opened with
+        Runtime::block(journal.append(Arc::clone(&line))).expect("could not write the journal");
+
+        counts.send(1).expect("the tally stopped taking counts");
 
         // The config is edited now and then, the way a running
         // program's is
@@ -234,6 +264,13 @@ fn a_program_that_just_runs() {
             let listing = Runtime::block(File::read_dir(&root)).expect("could not list the files");
 
             assert!(!listing.is_empty(), "the directory came back empty");
+
+            assert!(
+                listing
+                    .iter()
+                    .any(|entry| entry.kind() == FileKind::File && entry.path() == log),
+                "the log wasn't in the listing as a file",
+            );
 
             // A snapshot rather than a history
             let snapshot = format!(
@@ -283,6 +320,23 @@ fn a_program_that_just_runs() {
             splits += 1;
         }
 
+        // Something shelled out to, now and then
+        if ticks % 100 == 0 {
+            let child = Runtime::block(Process::spawn("/bin/echo", ["tick"]))
+                .expect("could not start echo");
+
+            let said = Runtime::block(child.stdout().recv_to_end()).expect("echo said nothing");
+
+            assert_eq!(said, b"tick\n", "echo said something else: {:?}", said);
+
+            assert!(
+                Runtime::block(child.wait())
+                    .expect("echo never ended")
+                    .success(),
+                "echo ended badly",
+            );
+        }
+
         // A bounded retry job, now and then
         if ticks % 200 == 0 {
             let retries =
@@ -310,9 +364,11 @@ fn a_program_that_just_runs() {
             );
         }
 
-        // Wait out the rest of the tick
-        if let Some(left) = TICK.checked_sub(tick_began.elapsed()) {
-            Runtime::sleep(left);
+        // Waited out against the tick's own deadline
+        let next = tick_began + TICK;
+
+        if Instant::now() < next {
+            let _ = Runtime::block(Sleep::until(next));
         }
     }
 
@@ -320,6 +376,29 @@ fn a_program_that_just_runs() {
 
     watcher.cancel();
     heartbeat.cancel();
+
+    // Every sender gone closes the channel, which ends the reader
+    drop(counts);
+    drop(taking);
+
+    let tallied = tally.join().expect("the tally thread stopped badly");
+
+    assert_eq!(
+        tallied, ticks,
+        "the tally counted {} of {} ticks",
+        tallied, ticks,
+    );
+
+    let journalled = Runtime::block(File::metadata(&log))
+        .expect("could not stat the journal")
+        .len();
+
+    assert!(
+        journalled >= ticks * line.len() as u64,
+        "the journal holds {} bytes against {} ticks",
+        journalled,
+        ticks,
+    );
 
     // Started before the loop and long since done
     let warmed = warmup.join();

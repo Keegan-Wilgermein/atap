@@ -17,6 +17,7 @@ mod common;
 use atap::{
     JoinPolicy, Runtime, RuntimeError, TaskHandle,
     builder::Waiting,
+    channel::Channel,
     compute::Compute,
     fs::File,
     process::Process,
@@ -132,6 +133,15 @@ struct Tally {
     /// Tasks lost with a thread killed on purpose
     lost: AtomicU64,
 
+    /// Runs cut short by a timeout of their own
+    timed_out: AtomicU64,
+
+    /// Values that went through a channel and came out the far end
+    piped: AtomicU64,
+
+    /// Reads and writes through a file held open
+    held: AtomicU64,
+
     /// When threads were last killed, in `millis`
     last_kill: AtomicU64,
 }
@@ -168,6 +178,13 @@ impl Tally {
             Self::get(&self.crossed),
             Self::get(&self.early),
             Self::get(&self.stalled),
+        );
+
+        println!(
+            "  timed out {}, piped {}, held {}",
+            Self::get(&self.timed_out),
+            Self::get(&self.piped),
+            Self::get(&self.held),
         );
 
         println!(
@@ -647,6 +664,216 @@ fn everything_at_once() {
                         Err(error) => tally.refusal(error, "a fixture take"),
                     }
                 }
+            }
+        }));
+    }
+
+    // ---- runs cut short by a timeout of their own, which the
+    // manager has to arm and fire while it is being killed
+    for crew in 0..2u64 {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            let mut dice = Dice::new(seed, 300 + crew);
+
+            while !stop.load(Ordering::Relaxed) {
+                let handles: Vec<_> = (0..8)
+                    .map(|index| {
+                        Tally::bump(&tally.spawned);
+
+                        // Half of them ask for far longer than they are
+                        // given, and half finish well inside it
+                        let asked = match index % 2 {
+                            0 => Duration::from_millis(50),
+                            _ => Duration::from_micros(200),
+                        };
+
+                        Runtime::task(kernel_sleep(asked))
+                            .timeout(Duration::from_millis(5))
+                            .spawn()
+                    })
+                    .collect();
+
+                for handle in handles {
+                    match handle.join_with_timeout(STALL) {
+                        Ok(_) => Tally::bump(&tally.joined),
+                        Err(RuntimeError::TimedOut) => Tally::bump(&tally.timed_out),
+                        Err(error) => tally.refusal(error, "a sleep under a timeout"),
+                    }
+                }
+
+                thread::sleep(Duration::from_millis(dice.below(5)));
+            }
+        }));
+    }
+
+    // ---- values through a channel, received by tasks that park
+    // on it and send by hand
+    for crew in 0..2u64 {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let Ok((tx, rx)) = Channel::new::<u64>().open() else {
+                    Tally::bump(&tally.errors);
+                    return;
+                };
+
+                let waiting: Vec<_> = (0..8u64)
+                    .map(|_| {
+                        Tally::bump(&tally.spawned);
+
+                        Runtime::task(rx.recv()).spawn()
+                    })
+                    .collect();
+
+                for value in 0..8u64 {
+                    if tx.send(value + crew).is_err() {
+                        Tally::bump(&tally.errors);
+                    }
+                }
+
+                let mut seen = Vec::new();
+
+                for handle in waiting {
+                    match handle.join_with_timeout(STALL) {
+                        Ok(Ok(value)) => {
+                            Tally::bump(&tally.joined);
+                            Tally::bump(&tally.piped);
+                            seen.push(value);
+                        }
+                        Ok(Err(error)) => tally.failed(error, "a channel receive"),
+                        Err(error) => tally.refusal(error, "a channel receive"),
+                    }
+                }
+
+                // Only this crew sends here, so every value has to be
+                // one of its own and no value twice. A receive lost
+                // with a killed thread takes its value with it, so
+                // fewer than were sent is fair
+                seen.sort_unstable();
+
+                let crossed = seen.windows(2).any(|pair| pair[0] == pair[1])
+                    || seen.iter().any(|value| !(crew..crew + 8).contains(value));
+
+                if crossed {
+                    Tally::bump(&tally.crossed);
+
+                    eprintln!("  CROSSED: a channel handed over {:?} to crew {}", seen, crew);
+                }
+            }
+        }));
+    }
+
+    // ---- one open file serving reads and appends at once
+    for crew in 0..2u64 {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+        let scratch = Arc::clone(&scratch);
+
+        crews.push(thread::spawn(move || {
+            let path = scratch.join(format!("stress-open-{}-{}.txt", std::process::id(), crew));
+
+            let _ = std::fs::write(&path, vec![b'o'; 4 * 1024]);
+
+            while !stop.load(Ordering::Relaxed) {
+                let Ok(file) = Runtime::block(File::open(&path).write(true).append(true)) else {
+                    Tally::bump(&tally.errors);
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+
+                let reads: Vec<_> = (0..4)
+                    .map(|index| {
+                        Tally::bump(&tally.spawned);
+
+                        Runtime::task(file.read_at(index * 64, 64)).spawn()
+                    })
+                    .collect();
+
+                for handle in reads {
+                    match handle.join_with_timeout(STALL) {
+                        Ok(Ok(bytes)) => {
+                            Tally::bump(&tally.joined);
+                            Tally::bump(&tally.held);
+
+                            if bytes.iter().any(|byte| *byte != b'o') {
+                                Tally::bump(&tally.crossed);
+
+                                eprintln!("  CROSSED: an open file read came back wrong");
+                            }
+                        }
+                        Ok(Err(error)) => tally.failed(error, "an open file read"),
+                        Err(error) => tally.refusal(error, "an open file read"),
+                    }
+                }
+
+                // Dropped every round, so the descriptor has to come
+                // back with it
+                drop(file);
+            }
+
+            let _ = std::fs::remove_file(&path);
+        }));
+    }
+
+    // ---- children held open, written to and waited for
+    {
+        let stop = Arc::clone(&stop);
+        let tally = Arc::clone(&tally);
+
+        crews.push(thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                Tally::bump(&tally.spawned);
+
+                let Ok(child) = Runtime::block(Process::spawn("/bin/cat", Process::NO_ARGS)) else {
+                    Tally::bump(&tally.errors);
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+
+                // Held only for the send, since the child reads the
+                // end of its input once every handle to it is gone
+                let said = {
+                    let Some(input) = child.stdin() else {
+                        Tally::bump(&tally.errors);
+                        continue;
+                    };
+
+                    if Runtime::block(input.send(b"hello\n".as_slice())).is_err() {
+                        Tally::bump(&tally.errors);
+                    }
+
+                    Runtime::task(child.stdout().recv_until(b"\n", 64))
+                        .spawn()
+                        .join_with_timeout(STALL)
+                };
+
+                match said {
+                    Ok(Ok(bytes)) => {
+                        Tally::bump(&tally.children);
+
+                        if bytes != b"hello\n" {
+                            Tally::bump(&tally.crossed);
+
+                            eprintln!("  CROSSED: cat said {:?}", bytes);
+                        }
+                    }
+                    Ok(Err(error)) => tally.failed(error, "a child's answer"),
+                    Err(error) => tally.refusal(error, "a child's answer"),
+                }
+
+                child.close_stdin();
+
+                match Runtime::task(child.wait()).spawn().join_with_timeout(STALL) {
+                    Ok(Ok(_)) => Tally::bump(&tally.joined),
+                    Ok(Err(error)) => tally.failed(error, "a child ending"),
+                    Err(error) => tally.refusal(error, "a child ending"),
+                }
+
+                thread::sleep(Duration::from_millis(5));
             }
         }));
     }
