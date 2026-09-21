@@ -3,15 +3,35 @@
 //! tasks each of them starts
 
 use crate::{
+    RuntimeError,
     futures::{
-        net::stream::{Pipe, RecvTask, SendTask, Source},
+        net::stream::{FinishTask, Pipe, RecvTask, SendTask, Source},
         unix::{
             path::Bound,
             unix_task::{UnixAcceptTask, UnixRecvFromTask, UnixSendToTask},
         },
     },
-    modules::fd::Fd,
+    modules::{fd::Fd, int_check::IntCheck},
 };
+
+/// Who is at the other end of a Unix connection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Credentials {
+    uid: u32,
+    gid: u32,
+}
+
+impl Credentials {
+    /// The user id
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
+
+    /// The group id
+    pub fn gid(&self) -> u32 {
+        self.gid
+    }
+}
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -146,6 +166,28 @@ impl UnixConnection {
     #[inline(always)]
     pub fn path(&self) -> &Path {
         &self.stream.path
+    }
+
+    /// Who is at the other end
+    ///
+    /// ## Returns
+    /// The user and group of the process that made the other end
+    pub fn peer_credentials(&self) -> Result<Credentials, RuntimeError> {
+        let (mut uid, mut gid) = (0, 0);
+
+        unsafe { libc::getpeereid(self.pipe().fd(), &mut uid, &mut gid) }.check()?;
+
+        Ok(Credentials { uid, gid })
+    }
+
+    /// Tells the other side this one will send no more
+    ///
+    /// ## Behaviour
+    /// Ends the sending half of the connection. This side can
+    /// still receive, and the other side's reads end once it has
+    /// everything
+    pub fn finish(&self) -> FinishTask {
+        FinishTask::new(self.source())
     }
 
     /// Lets go of this handle on the connection

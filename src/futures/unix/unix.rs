@@ -1,7 +1,9 @@
 //! # Unix
 //! The constructors every Unix socket task is started from
 
-use crate::futures::unix::unix_task::{UnixBindTask, UnixConnectTask, UnixListenTask};
+use crate::futures::unix::unix_task::{
+    UnixBindTask, UnixConnectTask, UnixListenTask, UnixPairTask,
+};
 use std::path::Path;
 
 /// Talks to other programs on this machine over Unix sockets
@@ -77,5 +79,33 @@ impl Unix {
     /// `CheckError(Some(EADDRINUSE))`
     pub fn bind(path: impl AsRef<Path>) -> UnixBindTask {
         UnixBindTask::new(path.as_ref().to_path_buf())
+    }
+
+    /// Opens a datagram socket bound to no path
+    ///
+    /// ## Behaviour
+    /// It can send, but nothing can reply, since a reply needs a
+    /// path to go to. Nothing is made on disk
+    ///
+    /// ## Returns
+    /// The socket, whose [`UnixDatagram::path`] is empty
+    ///
+    /// [`UnixDatagram::path`]: crate::unix::UnixDatagram::path
+    pub fn unbound() -> UnixBindTask {
+        UnixBindTask::unbound()
+    }
+
+    /// Opens both ends of one connection, with nothing on disk
+    ///
+    /// ## Behaviour
+    /// For talking between tasks, or to a child that inherits one
+    /// end. Each end's [`UnixConnection::path`] is empty
+    ///
+    /// ## Returns
+    /// The two ends, which behave like any other connection
+    ///
+    /// [`UnixConnection::path`]: crate::unix::UnixConnection::path
+    pub fn pair() -> UnixPairTask {
+        UnixPairTask
     }
 }

@@ -17,6 +17,12 @@ pub enum RuntimeError {
     /// Runtime has already been previously initialised
     AlreadyInit,
 
+    /// The runtime hasn't been initialised, so nothing can run
+    ///
+    /// A task spawned before `Runtime::init` settles with this
+    /// rather than waiting for something that isn't there
+    NotInitialised,
+
     /// The output was already moved out by `take()`
     ///
     /// On a repeat, the next run may still publish another.
@@ -78,7 +84,7 @@ pub enum RuntimeError {
     /// One that doesn't exist is reported as `ENOENT` instead
     BadDirectory,
 
-    /// A socket task's timeout ran out before it finished
+    /// A run went past the timeout its task was spawned with
     ///
     /// A receive that times out puts back what it had read, so the
     /// connection can still be read from
@@ -136,6 +142,7 @@ impl fmt::Display for RuntimeError {
             Self::CheckError(None) => write!(formatter, "system call failed"),
             Self::AddressLock => write!(formatter, "the kernel refused a wait on an address"),
             Self::AlreadyInit => write!(formatter, "the runtime is already initialised"),
+            Self::NotInitialised => write!(formatter, "the runtime has not been initialised"),
             Self::AlreadyTaken => write!(formatter, "the output was already taken"),
             Self::Finished => write!(formatter, "the series ran out and its output was taken"),
             Self::Cancelled => write!(formatter, "the task was cancelled"),

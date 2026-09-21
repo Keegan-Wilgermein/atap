@@ -117,7 +117,7 @@ impl Metadata {
 
 impl FileKind {
     /// Reads the type bits out of a mode word
-    fn from_mode(mode: libc::mode_t) -> Self {
+    pub(crate) fn from_mode(mode: libc::mode_t) -> Self {
         match mode & libc::S_IFMT {
             libc::S_IFREG => Self::File,
             libc::S_IFDIR => Self::Dir,

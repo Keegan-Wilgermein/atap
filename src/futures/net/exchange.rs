@@ -9,10 +9,7 @@ use crate::modules::input::token;
 use crate::{
     RuntimeError,
     futures::{
-        net::{
-            step::Clock,
-            stream::{RecvTask, SendTask},
-        },
+        net::stream::{RecvTask, SendTask},
         task::{Task, sealed::Step},
     },
 };
@@ -40,14 +37,10 @@ pub(crate) trait Sends {
 }
 
 /// Takes a request as far as it can go without waiting
-///
-/// `clock` covers the whole exchange, so the send and the read
-/// run to the one the connect started
 pub(crate) fn advance<C, S>(
     connect: &mut C,
     stage: &mut Stage,
     data: &Arc<[u8]>,
-    clock: Clock,
     reactor_id: i32,
     task_id: usize,
 ) -> Step<Result<Vec<u8>, RuntimeError>>
@@ -59,7 +52,7 @@ where
         match &mut *stage {
             Stage::Connecting => match connect.step(token(), reactor_id, task_id) {
                 Step::Done(Ok(conn)) => {
-                    *stage = Stage::Sending(conn.send_all(Arc::clone(data)).timed(clock));
+                    *stage = Stage::Sending(conn.send_all(Arc::clone(data)));
                 }
 
                 Step::Done(Err(error)) => return Step::Done(Err(error)),
@@ -68,7 +61,7 @@ where
 
             Stage::Sending(send) => match send.step(token(), reactor_id, task_id) {
                 Step::Done(Ok(_)) => {
-                    let read = RecvTask::to_end(send.source().clone()).timed(clock);
+                    let read = RecvTask::to_end(send.source().clone());
 
                     *stage = Stage::Reading(read);
                 }

@@ -1,7 +1,10 @@
 //! # Process
 //! Tasks that run other programs
 
-use crate::futures::process::process_task::{OutputTask, StatusTask};
+use crate::futures::process::{
+    process_task::{OutputTask, StatusTask},
+    running::SpawnTask,
+};
 use std::ffi::OsStr;
 
 /// Runs other programs
@@ -34,16 +37,27 @@ use std::ffi::OsStr;
 /// ## Cancellation
 /// A cancelled task kills its child's whole process group with
 /// `SIGKILL`, reaps it, and gives back
-/// [`RuntimeError::Cancelled`]
+/// [`RuntimeError::Cancelled`]. A task spawned with a timeout does
+/// the same once its run is out of time, and reads
+/// [`RuntimeError::TimedOut`]
 ///
-/// [`Runtime::block`] cannot be cancelled, so a blocking call
-/// on a child that never ends holds the calling thread for as
-/// long as the child lives
+/// ```no_run
+/// # use atap::{Runtime, process::Process};
+/// # use std::time::Duration;
+/// let handle = Runtime::task(Process::run("/bin/sleep", ["60"]))
+///     .timeout(Duration::from_secs(5))
+///     .spawn();
+/// ```
+///
+/// [`Runtime::block`] can't be cancelled or timed out, so a
+/// blocking call on a child that never ends holds the calling
+/// thread for as long as the child lives
 ///
 /// #### Note
 /// An error after the child started kills the child
 ///
 /// [`RuntimeError::Cancelled`]: crate::RuntimeError::Cancelled
+/// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
 /// [`Runtime::block`]: crate::Runtime::block
 pub struct Process;
 
@@ -111,5 +125,29 @@ impl Process {
         I: AsRef<OsStr>,
     {
         OutputTask::new(program, args)
+    }
+
+    /// Starts a program and keeps talking to it
+    ///
+    /// ## Behaviour
+    /// All three standard streams are piped here, and the task
+    /// finishes as soon as the program has started. The
+    /// [`RunningChild`] it hands back waits for the child, signals
+    /// it, and reads and writes its streams
+    ///
+    /// ## Returns
+    /// The running child
+    ///
+    /// #### Note
+    /// Dropping the last handle on the child kills it
+    ///
+    /// [`RunningChild`]: crate::process::RunningChild
+    pub fn spawn<S, A, I>(program: S, args: A) -> SpawnTask
+    where
+        S: AsRef<OsStr>,
+        A: IntoIterator<Item = I>,
+        I: AsRef<OsStr>,
+    {
+        SpawnTask::new(program, args)
     }
 }

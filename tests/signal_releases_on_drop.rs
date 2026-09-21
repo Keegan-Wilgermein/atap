@@ -32,19 +32,13 @@ fn a_signal_goes_back_when_its_last_watcher_does() {
     assert!(!taken_over(held), "nor this one");
 
     // Two watchers, so the first going isn't the last
-    let first = Runtime::task(
-        Signal::wait(on_drop)
-            .release_policy(SignalReleasePolicy::OnDrop)
-            .timeout(Duration::from_millis(100)),
-    )
-    .spawn();
+    let first = Runtime::task(Signal::wait(on_drop).release_policy(SignalReleasePolicy::OnDrop))
+        .timeout(Duration::from_millis(100))
+        .spawn();
 
-    let second = Runtime::task(
-        Signal::wait(on_drop)
-            .release_policy(SignalReleasePolicy::OnDrop)
-            .timeout(PATIENCE),
-    )
-    .spawn();
+    let second = Runtime::task(Signal::wait(on_drop).release_policy(SignalReleasePolicy::OnDrop))
+        .timeout(PATIENCE)
+        .spawn();
 
     until_started(&first, PATIENCE);
     until_started(&second, PATIENCE);
@@ -78,7 +72,9 @@ fn a_signal_goes_back_when_its_last_watcher_does() {
     );
 
     // Held is the default, and outlives its task
-    let keeper = Runtime::task(Signal::wait(held).timeout(Duration::from_millis(100))).spawn();
+    let keeper = Runtime::task(Signal::wait(held))
+        .timeout(Duration::from_millis(100))
+        .spawn();
     until_started(&keeper, PATIENCE);
 
     let _ = keeper.take_with_timeout(PATIENCE);

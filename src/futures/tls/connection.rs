@@ -7,7 +7,7 @@ use crate::{
     futures::{
         net::{
             exchange::Sends,
-            stream::{Io, Pipe, RecvTask, SendTask, Source},
+            stream::{FinishTask, Io, Pipe, RecvTask, SendTask, Source},
         },
         tcp::{Connection, Listener},
         tls::{
@@ -23,6 +23,7 @@ use std::{
     io::{self, Read, Write},
     net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
 /// What every copy of one TLS connection shares
@@ -243,6 +244,11 @@ impl TlsConnection {
         }
     }
 
+    /// Tells the session this side will send no more
+    pub(crate) fn say_goodbye(&self) {
+        self.session().send_close_notify();
+    }
+
     /// Sends everything the session is still holding
     ///
     /// ## Returns
@@ -327,6 +333,54 @@ impl TlsConnection {
         self.stream.tcp.peer_addr()
     }
 
+    /// Sends small writes at once rather than waiting to batch
+    /// them, or goes back to batching
+    pub fn set_nodelay(&self, nodelay: bool) -> Result<(), RuntimeError> {
+        self.stream.tcp.set_nodelay(nodelay)
+    }
+
+    /// Whether small writes go at once
+    pub fn nodelay(&self) -> Result<bool, RuntimeError> {
+        self.stream.tcp.nodelay()
+    }
+
+    /// Probes the connection after `idle` without traffic, or stops
+    /// probing with `None`
+    pub fn set_keepalive(&self, idle: Option<Duration>) -> Result<(), RuntimeError> {
+        self.stream.tcp.set_keepalive(idle)
+    }
+
+    /// The protocol agreed through ALPN, if one was
+    pub fn alpn(&self) -> Option<Vec<u8>> {
+        self.session().alpn_protocol().map(<[u8]>::to_vec)
+    }
+
+    /// The certificate chain the other side showed, leaf first, as
+    /// DER
+    ///
+    /// ## Returns
+    /// Empty for a client that showed none
+    pub fn peer_certificates(&self) -> Vec<Vec<u8>> {
+        self.session()
+            .peer_certificates()
+            .map(|chain| chain.iter().map(|cert| cert.as_ref().to_vec()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Tells the other side this one will send no more
+    ///
+    /// ## Behaviour
+    /// Says goodbye in the session, then ends the sending half of
+    /// the connection. This side can still receive, and the other
+    /// side's reads end once it has everything
+    ///
+    /// #### Note
+    /// Some servers take a goodbye as the end of the whole session,
+    /// and stop answering
+    pub fn finish(&self) -> FinishTask {
+        FinishTask::new(self.source())
+    }
+
     /// Lets go of this handle on the connection
     ///
     /// ## Behaviour
@@ -393,6 +447,20 @@ impl TlsListener {
     /// again for the next one
     pub fn accept(&self) -> TlsAcceptTask {
         TlsAcceptTask::new(self.clone())
+    }
+
+    /// Starts TLS on a TCP connection that is already open, as the
+    /// server, with this listener's certificate and settings
+    ///
+    /// ## Behaviour
+    /// For a protocol that begins in the clear and switches, such
+    /// as SMTP's `STARTTLS`. The connection doesn't have to have
+    /// come from this listener
+    ///
+    /// ## Returns
+    /// The TLS connection and the peer's address
+    pub fn upgrade(&self, conn: Connection) -> TlsAcceptTask {
+        TlsAcceptTask::over(self.clone(), conn)
     }
 
     /// The address it is bound to

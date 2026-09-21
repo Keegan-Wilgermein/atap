@@ -927,3 +927,37 @@ fn an_unbounded_repeat_is_never_finished() {
         "but there is another run coming, so it isn't over"
     );
 }
+
+/// A sleep until a moment ends no earlier than that moment
+#[test]
+fn sleeping_until_a_moment_waits_for_it() {
+    let _ = Runtime::init();
+
+    let when = Instant::now() + Duration::from_millis(80);
+
+    let slept = Runtime::block(Sleep::until(when));
+    assert!(Instant::now() >= when, "woke before the moment");
+    assert!(slept >= Duration::from_millis(70), "slept only {slept:?}");
+
+    let when = Instant::now() + Duration::from_millis(80);
+    let handle = Runtime::task(Sleep::until(when).mode(SleepMode::Relaxed)).spawn();
+
+    assert!(handle.join().is_ok());
+    assert!(
+        Instant::now() >= when,
+        "a spawned sleep woke before the moment"
+    );
+}
+
+/// A sleep until a moment already past returns at once
+#[test]
+fn sleeping_until_the_past_returns_at_once() {
+    let _ = Runtime::init();
+
+    let slept = Runtime::block(Sleep::until(Instant::now() - Duration::from_millis(5)));
+
+    assert!(
+        slept < Duration::from_secs(1),
+        "slept {slept:?} for a moment already gone"
+    );
+}

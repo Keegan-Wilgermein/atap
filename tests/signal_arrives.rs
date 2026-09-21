@@ -8,7 +8,7 @@ use atap::{
     Runtime,
     signal::{Signal, SignalKind},
 };
-use common::{send_signal, until_started};
+use common::{send_signal, until_started, within};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -55,7 +55,7 @@ fn a_signal_wakes_the_task_waiting_for_it() {
         send_signal(KIND);
     });
 
-    let count = Runtime::block(Signal::wait(KIND).timeout(PATIENCE)).expect("the blocking wait");
+    let count = within(Signal::wait(KIND), PATIENCE).expect("the blocking wait");
     assert!(count >= 1, "the blocking wait saw {count} deliveries");
 
     sender.join().unwrap();

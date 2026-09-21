@@ -1,7 +1,10 @@
 //! # Task Setup
 //! Everything decided about a task before it runs
 
-use crate::{constants::DEFAULT_PRIORITY, modules::task_kind::TaskKind};
+use crate::{
+    constants::{DEFAULT_PRIORITY, NO_TASK},
+    modules::task_kind::TaskKind,
+};
 use std::time::{Duration, Instant};
 
 /// When a series should stop, if it should
@@ -52,6 +55,12 @@ pub(crate) struct TaskSetup {
     /// Whether the task waits for a give before each run, or each
     /// series
     pub(crate) waits: bool,
+
+    /// How long each run may take, if it has a limit
+    pub(crate) timeout: Option<Duration>,
+
+    /// The series a run of this publishes into, or `NO_TASK`
+    pub(crate) parent: usize,
 }
 
 impl Default for TaskSetup {
@@ -67,6 +76,8 @@ impl Default for TaskSetup {
             blocking: false,
             gives: u32::MAX,
             waits: false,
+            timeout: None,
+            parent: NO_TASK,
         }
     }
 }
@@ -84,6 +95,8 @@ impl TaskSetup {
             blocking: false,
             gives: u32::MAX,
             waits: false,
+            timeout: None,
+            parent: NO_TASK,
         }
     }
 

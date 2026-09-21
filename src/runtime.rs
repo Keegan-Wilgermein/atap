@@ -10,7 +10,7 @@ use crate::{
     futures::sleep::Sleep,
     futures::task::Task,
     modules::{
-        builder::TaskBuilder,
+        builder::{RuntimeBuilder, TaskBuilder},
         handle_kind::HandleKind,
         input::{self, Standalone},
         int_check::IntCheck,
@@ -18,6 +18,7 @@ use crate::{
         pool_stats::PoolStats,
         runtime_status::RuntimeStatus,
         task_handle::TaskHandle,
+        tuning::Tuning,
         worker_pool::POOL,
     },
     reactor::Reactor,
@@ -66,6 +67,31 @@ impl Runtime {
     ///
     /// For this reason, Runtimes are threadsafe
     pub fn init() -> Result<(), RuntimeError> {
+        Self::init_with(Tuning::new())
+    }
+
+    /// Starts a runtime with sizes of your own
+    ///
+    /// Nothing is started until the chain ends in `init`
+    ///
+    /// ```no_run
+    /// use atap::{Runtime, RuntimeError};
+    ///
+    /// # fn main() -> Result<(), RuntimeError> {
+    /// Runtime::builder().workers_per_core(2).init()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn builder() -> RuntimeBuilder {
+        RuntimeBuilder::new()
+    }
+
+    /// Inits a new runtime with these sizes
+    ///
+    /// The sizes are taken only by the call that starts the
+    /// runtime, so one that finds it already running changes
+    /// nothing
+    pub(crate) fn init_with(tuning: Tuning) -> Result<(), RuntimeError> {
         if INIT.swap(true, Ordering::SeqCst) {
             // Somebody else is part way through, so wait it out
             while !READY.load(Ordering::Acquire) {
@@ -74,10 +100,10 @@ impl Runtime {
 
             // Starts it again after a shutdown, and is `AlreadyInit`
             // otherwise
-            return Executor::init();
+            return Executor::init(tuning);
         }
 
-        let started = init_runtime();
+        let started = init_runtime(tuning);
 
         // Set whether or not it worked
         READY.store(true, Ordering::Release);
@@ -405,7 +431,7 @@ impl Runtime {
 /// The real non user facing init function
 ///
 /// Called by the `Runtime::init()` method only
-fn init_runtime() -> Result<(), RuntimeError> {
+fn init_runtime(tuning: Tuning) -> Result<(), RuntimeError> {
     let reactor_id = unsafe { libc::kqueue() }.check()?;
 
     REACTOR_KQUEUE_ID.store(reactor_id, Ordering::SeqCst);
@@ -450,5 +476,5 @@ fn init_runtime() -> Result<(), RuntimeError> {
     });
 
     // Not spawned, since the kqueue has to exist before `init` returns
-    Executor::init()
+    Executor::init(tuning)
 }

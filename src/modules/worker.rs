@@ -3,12 +3,13 @@
 //! task ids waiting for it
 
 use crate::{
-    constants::{HELP_DEPTH, LOCAL_QUEUE, LOCAL_QUEUE_MASK, NO_TASK, WORKER_STACK},
+    constants::{HELP_DEPTH, LOCAL_QUEUE, LOCAL_QUEUE_MASK, NO_TASK},
     executor,
     modules::{
         exit_guard::ExitGuard,
         faults, help,
         task_data::QUEUED_LOCAL,
+        tuning,
         thread_slot::{PoolThread, ThreadSlot},
         worker_pool::POOL,
         worker_state::WorkerState,
@@ -229,7 +230,7 @@ impl Worker {
     /// again
     pub(crate) fn start(&'static self) -> bool {
         self.slot
-            .start("atap-worker", Some(WORKER_STACK), self, Self::run)
+            .start("atap-worker", Some(tuning::worker_stack()), self, Self::run)
     }
 
     /// Records a task this worker is about to run while helping, `depth`

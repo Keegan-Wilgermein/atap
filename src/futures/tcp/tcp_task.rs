@@ -10,8 +10,8 @@ use crate::{
         net::{
             address::{Target, family, from_raw, local_of, peer_of, to_raw},
             exchange::{self, Stage},
-            socket::{begin_connect, configure, finished_connecting, open, set_flag},
-            step::{Clock, Progress, settle},
+            socket::{Options, begin_connect, configure, finished_connecting, open, set_flag},
+            step::{Progress, settle, wait_on},
         },
         task::{
             Nothing, Task,
@@ -41,8 +41,8 @@ pub struct ConnectTask {
     /// Where to connect
     target: Target,
 
-    /// The timeout, which covers every address tried
-    clock: Clock,
+    /// What the socket is set up with
+    options: Options,
 
     /// How far this run has got
     progress: Progress<Connecting>,
@@ -76,35 +76,34 @@ impl ConnectTask {
     pub(crate) fn new(target: Target) -> Self {
         Self {
             target,
-            clock: Clock::default(),
+            options: Options::default(),
             progress: Progress::default(),
         }
     }
 
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Counted from when the task starts, across every address it
-    /// tries. Running out gives [`RuntimeError::TimedOut`]
+    /// Sends small writes at once rather than waiting to batch them
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
-    ///
-    /// #### Note
-    /// A name lookup can't be interrupted, so one that is slow in
-    /// itself can run past the timeout before it is noticed
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
+    pub fn nodelay(mut self, nodelay: bool) -> Self {
+        self.options.nodelay = nodelay;
         self
     }
 
-    /// Runs to a clock already started, for a task made of other
-    /// tasks
+    /// Probes a quiet connection after `idle`, so a peer that has
+    /// gone is noticed
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn keepalive(mut self, idle: Duration) -> Self {
+        self.options.keepalive = Some(idle);
+        self
+    }
+
+    /// Carries settings over from a task this one runs inside
     #[cfg_attr(not(feature = "tls"), allow(dead_code))]
-    pub(crate) fn timed(mut self, clock: Clock) -> Self {
-        self.clock = clock;
+    pub(crate) fn with_options(mut self, options: Options) -> Self {
+        self.options = options;
         self
     }
 
@@ -118,7 +117,7 @@ impl ConnectTask {
                     Ok(true) => return Ok(Step::Done(connected(fd, addr))),
 
                     Ok(false) => {
-                        let step = self.clock.wait(fd.raw(), libc::EVFILT_WRITE)?;
+                        let step = wait_on(fd.raw(), libc::EVFILT_WRITE)?;
                         state.trying = Some((fd, addr));
 
                         return Ok(step);
@@ -143,11 +142,7 @@ impl ConnectTask {
                 return Err(state.failure.take().unwrap_or(RuntimeError::BadAddress));
             };
 
-            if self.clock.expired() {
-                return Err(RuntimeError::TimedOut);
-            }
-
-            match start_connect(&addr) {
+            match start_connect(&addr, &self.options) {
                 Ok(Started::Connected(fd)) => return Ok(Step::Done(connected(fd, addr))),
                 Ok(Started::Waiting(fd)) => state.trying = Some((fd, addr)),
                 Err(error) => state.failure = Some(error),
@@ -157,8 +152,11 @@ impl ConnectTask {
 }
 
 /// Starts a connect on a fresh socket
-fn start_connect(addr: &SocketAddr) -> Result<Started, RuntimeError> {
+fn start_connect(addr: &SocketAddr, options: &Options) -> Result<Started, RuntimeError> {
     let fd = open(family(addr), libc::SOCK_STREAM)?;
+
+    options.apply(fd.raw(), addr.is_ipv6())?;
+
     let (raw, len) = to_raw(addr);
 
     let at_once = begin_connect(
@@ -190,8 +188,8 @@ pub struct ListenTask {
     /// Where to listen
     target: Target,
 
-    /// The timeout, which only a name lookup can use up
-    clock: Clock,
+    /// What the socket is set up with
+    options: Options,
 }
 
 impl ListenTask {
@@ -199,37 +197,62 @@ impl ListenTask {
     pub(crate) fn new(target: Target) -> Self {
         Self {
             target,
-            clock: Clock::default(),
+            options: Options::default(),
         }
     }
 
-    /// Gives up once `timeout` has passed
+    /// How many connections may wait to be accepted
     ///
     /// ## Behaviour
-    /// Binding never waits, so only a slow name lookup can use
-    /// this up. Running out gives [`RuntimeError::TimedOut`]
+    /// The kernel's own limit caps it
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
+    pub fn backlog(mut self, backlog: u32) -> Self {
+        self.options.backlog = Some(backlog);
         self
+    }
+
+    /// Lets other sockets listen on the same port, each set up the
+    /// same way
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn reuse_port(mut self, reuse: bool) -> Self {
+        self.options.reuse_port = reuse;
+        self
+    }
+
+    /// Takes only IPv6 connections on an IPv6 address
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn v6_only(mut self, only: bool) -> Self {
+        self.options.v6_only = only;
+        self
+    }
+
+    /// Carries settings over from a task this one runs inside
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    pub(crate) fn with_options(mut self, options: Options) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// The settings the socket is set up with
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    pub(crate) fn options(&self) -> Options {
+        self.options
     }
 
     /// Binds and listens
     fn listen(&self) -> Result<Listener, RuntimeError> {
         let found = self.target.resolve()?;
 
-        if self.clock.expired() {
-            return Err(RuntimeError::TimedOut);
-        }
-
         let mut failure = RuntimeError::BadAddress;
 
         for addr in found {
-            match bind_listen(&addr) {
+            match bind_listen(&addr, &self.options) {
                 Ok(listener) => return Ok(listener),
                 Err(error) => failure = error,
             }
@@ -240,8 +263,10 @@ impl ListenTask {
 }
 
 /// Binds a fresh socket to `addr` and starts it listening
-fn bind_listen(addr: &SocketAddr) -> Result<Listener, RuntimeError> {
+fn bind_listen(addr: &SocketAddr, options: &Options) -> Result<Listener, RuntimeError> {
     let fd = open(family(addr), libc::SOCK_STREAM)?;
+
+    options.apply(fd.raw(), addr.is_ipv6())?;
 
     // So a port that was just in use can be listened on again at
     // once, rather than after the old connections time out
@@ -258,7 +283,7 @@ fn bind_listen(addr: &SocketAddr) -> Result<Listener, RuntimeError> {
     }
     .check()?;
 
-    unsafe { libc::listen(fd.raw(), libc::SOMAXCONN) }.check()?;
+    unsafe { libc::listen(fd.raw(), options.backlog()) }.check()?;
 
     // Port 0 was a free one picked by the kernel, so this is the
     // only way to know which
@@ -276,41 +301,12 @@ fn bind_listen(addr: &SocketAddr) -> Result<Listener, RuntimeError> {
 pub struct AcceptTask {
     /// Where the connections come from
     listener: Listener,
-
-    /// The timeout
-    clock: Clock,
 }
 
 impl AcceptTask {
     /// Accepts from `listener`
     pub(crate) fn new(listener: Listener) -> Self {
-        Self {
-            listener,
-            clock: Clock::default(),
-        }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Running out with nobody having connected gives
-    /// [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
-    }
-
-    /// Runs to a clock already started, for a task made of other
-    /// tasks
-    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
-    pub(crate) fn timed(mut self, clock: Clock) -> Self {
-        self.clock = clock;
-        self
+        Self { listener }
     }
 
     /// Takes a connection if one is waiting
@@ -339,7 +335,7 @@ impl AcceptTask {
                 Err(RuntimeError::CheckError(Some(libc::EINTR | libc::ECONNABORTED))) => {}
 
                 Err(RuntimeError::CheckError(Some(libc::EAGAIN))) => {
-                    return self.clock.wait(fd, libc::EVFILT_READ);
+                    return wait_on(fd, libc::EVFILT_READ);
                 }
 
                 Err(error) => return Err(error),
@@ -379,9 +375,6 @@ pub struct RequestTask {
     /// What it sends
     data: Arc<[u8]>,
 
-    /// The timeout, which covers the whole exchange
-    clock: Clock,
-
     /// How far this run has got
     stage: Progress<Stage>,
 }
@@ -392,24 +385,8 @@ impl RequestTask {
         Self {
             connect: ConnectTask::new(target),
             data,
-            clock: Clock::default(),
             stage: Progress::default(),
         }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Covers the whole exchange: connecting, sending, and reading
-    /// the answer. Running out gives [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
     }
 
     /// Takes the exchange as far as it can go without waiting
@@ -418,7 +395,6 @@ impl RequestTask {
             &mut self.connect,
             &mut self.stage.0,
             &self.data,
-            self.clock,
             reactor_id,
             task_id,
         )
@@ -440,7 +416,6 @@ impl Task for ConnectTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        self.clock.start();
         self.progress = Progress::default();
     }
 
@@ -464,10 +439,6 @@ impl Task for ListenTask {
         self.listen()
     }
 
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-    }
-
     /// A name lookup blocks, so only a literal address keeps it on
     /// a worker
     fn blocking(&self, _token: Token) -> bool {
@@ -482,10 +453,6 @@ impl Task for AcceptTask {
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
-    }
-
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
     }
 
     fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
@@ -503,8 +470,6 @@ impl Task for RequestTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-        self.connect.clock = self.clock;
         self.connect.progress = Progress::default();
         self.stage = Progress::default();
     }

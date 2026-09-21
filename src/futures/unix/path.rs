@@ -102,6 +102,15 @@ impl Bound {
         }
     }
 
+    /// A socket with no file, for one that was never bound
+    pub(crate) fn unbound() -> Self {
+        Self {
+            path: PathBuf::new(),
+            absolute: PathBuf::new(),
+            identity: None,
+        }
+    }
+
     /// The path the socket was bound to
     #[inline(always)]
     pub(crate) fn path(&self) -> &Path {

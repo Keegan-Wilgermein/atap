@@ -70,6 +70,12 @@ pub(crate) const INDEX_MASK: usize = (1 << TAG_SHIFT) - 1;
 /// The id a handle gets when there was nowhere to put its task
 pub(crate) const MAX_TASK_ID: usize = (FIRST_BLOCK << TABLE_BLOCKS) - FIRST_BLOCK;
 
+/// The id a handle gets when there was no runtime running to take
+/// its task
+///
+/// Past every real id, the same as `MAX_TASK_ID`
+pub(crate) const UNSTARTED_TASK_ID: usize = MAX_TASK_ID + 1;
+
 /// The `kevent` ident the `Reactor` wakes a waiting thread on
 ///
 /// One ident covers every wake, since a thread only waits on
@@ -147,6 +153,9 @@ pub(crate) const STRANDED_POLL: Duration = Duration::from_secs(1);
 /// Stack reserved for each worker thread
 pub(crate) const WORKER_STACK: usize = 8 * 1024 * 1024;
 
+/// The smallest stack a worker thread can be given
+pub(crate) const MIN_WORKER_STACK: usize = 16 * 1024;
+
 /// How much of a file or a pipe one read or write
 /// syscall asks for
 ///
@@ -157,6 +166,9 @@ pub(crate) const FILE_CHUNK: usize = 64 * 1024;
 /// How long a process task waits before looking at
 /// a child again, when it has no queue to wait on
 pub(crate) const PROCESS_POLL: Duration = Duration::from_millis(50);
+
+/// How often a lock another file holds is asked for again
+pub(crate) const LOCK_POLL: Duration = Duration::from_millis(5);
 
 /// Tasks that may overtake a queued one before it counts
 /// as starving
@@ -237,6 +249,12 @@ pub(crate) const NO_TASK: usize = usize::MAX;
 ///
 /// Keeps task timers clear of `MANAGER_TICK_IDENT`
 pub(crate) const SCHEDULE_IDENT_BASE: usize = 2;
+
+/// The first `kevent` ident a run's timeout may use on the
+/// manager's queue
+///
+/// Past every schedule ident, so the two never meet
+pub(crate) const TIMEOUT_IDENT_BASE: usize = SCHEDULE_IDENT_BASE + MAX_TASK_ID + 1;
 
 /// The `kevent` ident the manager's own tick arrives on
 pub(crate) const MANAGER_TICK_IDENT: usize = 1;

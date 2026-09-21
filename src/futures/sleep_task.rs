@@ -61,6 +61,9 @@ pub struct SleepTask {
 
     /// Whether to trade cpu for precision
     pub(crate) mode: SleepMode,
+
+    /// The moment to sleep until, for a sleep made by `Sleep::until`
+    pub(crate) until: Option<Instant>,
 }
 
 impl SleepTask {
@@ -70,6 +73,19 @@ impl SleepTask {
             sleep_for: time,
             created: Instant::now(),
             mode: SleepMode::Precise,
+            until: None,
+        }
+    }
+
+    /// Creates a new `SleepTask` that wakes at `when`
+    pub(crate) fn until(when: Instant) -> Self {
+        let created = Instant::now();
+
+        Self {
+            sleep_for: when.saturating_duration_since(created),
+            created,
+            mode: SleepMode::Precise,
+            until: Some(when),
         }
     }
 
@@ -215,6 +231,10 @@ impl Task for SleepTask {
     #[inline(always)]
     fn prepare(&mut self, _token: Token) {
         self.created = Instant::now();
+
+        if let Some(when) = self.until {
+            self.sleep_for = when.saturating_duration_since(self.created);
+        }
     }
 
     /// Whether this sleep ends up waiting in the kernel

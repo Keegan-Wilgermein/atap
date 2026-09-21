@@ -116,6 +116,28 @@ where
         self
     }
 
+    /// Limits how long each run may take
+    ///
+    /// ## Behaviour
+    /// A run still going once `timeout` has passed ends the task as
+    /// `TimedOut`, and reads give [`RuntimeError::TimedOut`]. On a
+    /// repeat it limits each run, and the first run to overrun ends
+    /// the series. The time a run spends waiting to start isn't
+    /// counted
+    ///
+    /// A task waiting on the kernel stops where it is, and a file task
+    /// stops at its next chunk. A compute can't be stopped, so it
+    /// finishes unseen and its output is dropped
+    ///
+    /// ## Returns
+    /// The builder. Calling it twice keeps the last
+    ///
+    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.setup.timeout = Some(timeout);
+        self
+    }
+
     /// Waits out a delay before the first run
     ///
     /// On a repeat it delays only the first run, not the gaps
@@ -935,6 +957,32 @@ mod type_checks {
         let _ = TaskBuilder::new(task())
             .repeat()
             .until(Instant::now())
+            .spawn();
+    }
+
+    /// A timeout fits into every state
+    #[allow(dead_code)]
+    fn timeouts() {
+        let _ = TaskBuilder::new(task()).timeout(Duration::ZERO).spawn();
+        let _ = TaskBuilder::new(task())
+            .timeout(Duration::ZERO)
+            .repeat()
+            .count(10)
+            .spawn();
+        let _ = TaskBuilder::new(task())
+            .repeat()
+            .every(Duration::ZERO)
+            .after(Duration::ZERO)
+            .timeout(Duration::ZERO)
+            .spawn();
+        let _ = TaskBuilder::new(task())
+            .at_rate(Duration::ZERO)
+            .timeout(Duration::ZERO)
+            .spawn();
+        let _ = TaskBuilder::new(Compute::compute(|value: u8| value))
+            .wait_for::<u8>()
+            .timeout(Duration::ZERO)
+            .count(3)
             .spawn();
     }
 

@@ -9,8 +9,13 @@ use atap::{
     Runtime, RuntimeError,
     unix::{Unix, UnixConnection, UnixListener},
 };
-use common::until_started;
-use std::{fs, path::PathBuf, process, time::Duration};
+use common::{until_started, within};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process,
+    time::Duration,
+};
 
 /// How long a test waits for something that ought to be quick
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -110,12 +115,12 @@ fn a_spawned_accept_waits_for_a_connection() {
 fn a_unix_receive_times_out() {
     let (_listener, _client, server) = pair("timeout");
 
-    let handle = Runtime::task(server.recv(64).timeout(Duration::from_millis(100))).spawn();
+    let handle = Runtime::task(server.recv(64))
+        .timeout(Duration::from_millis(100))
+        .spawn();
 
     assert_eq!(
-        handle
-            .take_with_timeout(PATIENCE)
-            .expect("the timeout must settle it"),
+        handle.take_with_timeout(PATIENCE),
         Err(RuntimeError::TimedOut),
     );
 }
@@ -206,7 +211,7 @@ fn a_unix_datagram_arrives_with_its_sender() {
         2
     );
 
-    let (data, from) = Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap();
+    let (data, from) = within(b.recv_from(), PATIENCE).unwrap();
 
     assert_eq!(data, b"hi");
     assert_eq!(from.as_deref(), Some(a.path()));
@@ -221,14 +226,8 @@ fn unix_datagrams_keep_their_boundaries() {
     Runtime::block(a.send_to(b.path(), b"one".as_slice())).unwrap();
     Runtime::block(a.send_to(b.path(), b"two".as_slice())).unwrap();
 
-    assert_eq!(
-        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
-        b"one"
-    );
-    assert_eq!(
-        Runtime::block(b.recv_from().timeout(PATIENCE)).unwrap().0,
-        b"two"
-    );
+    assert_eq!(within(b.recv_from(), PATIENCE).unwrap().0, b"one");
+    assert_eq!(within(b.recv_from(), PATIENCE).unwrap().0, b"two");
 }
 
 /// A spawned datagram receive parks until one comes
@@ -257,7 +256,7 @@ fn a_unix_datagram_receive_times_out() {
     let b = Runtime::block(Unix::bind(sock("quiet"))).unwrap();
 
     assert_eq!(
-        Runtime::block(b.recv_from().timeout(Duration::from_millis(100))),
+        within(b.recv_from(), Duration::from_millis(100)),
         Err(RuntimeError::TimedOut),
     );
 }
@@ -284,4 +283,70 @@ fn the_datagram_socket_file_goes_with_it() {
 
     socket.close();
     assert!(!present(&path), "the last handle going removes the file");
+}
+
+/// Finishing a Unix connection ends the other side's read
+#[test]
+fn finishing_a_unix_connection_ends_the_other_read() {
+    let (_listener, client, server) = pair("finish");
+
+    Runtime::block(client.send(b"done".as_slice())).unwrap();
+    Runtime::block(client.finish()).unwrap();
+
+    assert_eq!(Runtime::block(server.recv_to_end()), Ok(b"done".to_vec()));
+}
+
+/// A listener with a short backlog still takes connections
+#[test]
+fn a_unix_listener_takes_a_backlog() {
+    let _ = Runtime::init();
+
+    let listener = Runtime::block(Unix::listen(sock("backlog")).backlog(2)).unwrap();
+    let accepting = Runtime::task(listener.accept()).spawn();
+
+    let client = Runtime::block(Unix::connect(listener.path())).unwrap();
+    let server = accepting.take_with_timeout(PATIENCE).unwrap().unwrap();
+
+    Runtime::block(client.send(b"in".as_slice())).unwrap();
+    assert_eq!(Runtime::block(server.recv(8)), Ok(b"in".to_vec()));
+}
+
+/// A pair talks both ways with nothing on disk, and each end knows
+/// who the other is
+#[test]
+fn a_pair_talks_both_ways() {
+    let _ = Runtime::init();
+
+    let (left, right) = Runtime::block(Unix::pair()).expect("a pair must open");
+
+    assert_eq!(left.path(), Path::new(""));
+
+    Runtime::block(left.send(b"ping".as_slice())).unwrap();
+    assert_eq!(within(right.recv(16), PATIENCE), Ok(b"ping".to_vec()));
+
+    Runtime::block(right.send(b"pong".as_slice())).unwrap();
+    assert_eq!(within(left.recv(16), PATIENCE), Ok(b"pong".to_vec()));
+
+    let them = left.peer_credentials().unwrap();
+
+    assert_eq!(them.uid(), unsafe { libc::geteuid() });
+    assert_eq!(them.gid(), unsafe { libc::getegid() });
+}
+
+/// An unbound socket can send but has no path of its own
+#[test]
+fn an_unbound_socket_sends() {
+    let _ = Runtime::init();
+
+    let receiver = Runtime::block(Unix::bind(sock("unbound-to"))).unwrap();
+    let sender = Runtime::block(Unix::unbound()).unwrap();
+
+    assert_eq!(sender.path(), Path::new(""));
+
+    Runtime::block(sender.send_to(receiver.path(), b"anonymous".as_slice())).unwrap();
+
+    let (data, from) = within(receiver.recv_from(), PATIENCE).unwrap();
+
+    assert_eq!(data, b"anonymous");
+    assert_eq!(from, None, "an unbound sender has no path to reply to");
 }

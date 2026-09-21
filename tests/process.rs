@@ -2,7 +2,7 @@
 //!
 //! Only programs a stock macOS install has are used
 
-use atap::{Runtime, RuntimeError, TaskHandle, process::Process};
+use atap::{Runtime, RuntimeError, TaskHandle, process::Process, signal::SignalKind};
 use std::{
     fs, thread,
     time::{Duration, Instant},
@@ -184,6 +184,68 @@ fn a_cancelled_child_stops_running() {
         "the task must settle cancelled, was {:?}",
         handle.state()
     );
+}
+
+/// A child whose task runs out of time stops running
+#[test]
+fn a_timed_out_child_stops_running() {
+    let _ = Runtime::init();
+
+    let scratch = std::env::temp_dir().join(format!("atap-timeout-{}.txt", std::process::id()));
+    let _ = fs::remove_file(&scratch);
+
+    let script = format!(
+        "while true; do echo x >> {}; sleep 0.05; done",
+        scratch.display()
+    );
+
+    let handle = Runtime::task(Process::run("/bin/sh", ["-c", &script]))
+        .timeout(Duration::from_millis(400))
+        .spawn();
+
+    assert_eq!(
+        handle.take_with_timeout(PATIENCE).map(|_| ()),
+        Err(RuntimeError::TimedOut)
+    );
+
+    let written = fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0);
+
+    assert!(written > 0, "the child never wrote, so this proves nothing");
+
+    // Long enough for a surviving child to write many more times
+    thread::sleep(Duration::from_millis(750));
+    let settled_at = fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0);
+
+    thread::sleep(Duration::from_millis(750));
+    let later = fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0);
+
+    let _ = fs::remove_file(&scratch);
+
+    assert_eq!(
+        settled_at, later,
+        "the child went on writing after its task timed out, {settled_at} bytes then {later}"
+    );
+}
+
+/// A task collecting output that runs out of time stops reading and
+/// ends its child
+#[test]
+fn a_timed_out_output_stops() {
+    let _ = Runtime::init();
+
+    let started = Instant::now();
+    let handle = Runtime::task(Process::output(
+        "/bin/sh",
+        ["-c", "while true; do echo line; done"],
+    ))
+    .timeout(Duration::from_millis(300))
+    .spawn();
+
+    assert_eq!(
+        handle.take_with_timeout(PATIENCE).map(|_| ()),
+        Err(RuntimeError::TimedOut)
+    );
+    assert!(started.elapsed() >= Duration::from_millis(300));
 }
 
 /// A program that isn't there says so
@@ -645,5 +707,184 @@ fn all_three_at_once() {
     assert_eq!(
         said, "fed\n/usr\nset",
         "the three settings interfered: {said:?}"
+    );
+}
+
+/// A spawned child can be written to and read from while it runs
+#[test]
+fn a_running_child_talks_back() {
+    let _ = Runtime::init();
+
+    let child =
+        Runtime::block(Process::spawn("/bin/cat", Process::NO_ARGS)).expect("cat must start");
+    let input = child.stdin().expect("a fresh child's input is open");
+
+    for line in [b"one\n".as_slice(), b"two\n".as_slice()] {
+        Runtime::block(input.send(line)).expect("the child must take its input");
+
+        let echoed = Runtime::task(child.stdout().recv_until(b"\n", 64))
+            .spawn()
+            .take_with_timeout(PATIENCE)
+            .expect("the echo must come back");
+
+        assert_eq!(echoed.as_deref(), Ok(line));
+    }
+
+    child.close_stdin();
+    drop(input);
+
+    assert!(child.stdin().is_none(), "a closed input is gone");
+
+    let status = Runtime::task(child.wait())
+        .spawn()
+        .take_with_timeout(PATIENCE)
+        .expect("cat must end once its input does")
+        .expect("cat must be reaped");
+
+    assert!(status.success());
+    assert_eq!(
+        Runtime::block(child.wait()),
+        Ok(status),
+        "a second wait gives the same answer"
+    );
+}
+
+/// A child's two output streams stay apart, and read to their ends
+#[test]
+fn a_running_child_keeps_its_streams_apart() {
+    let _ = Runtime::init();
+
+    let child = Runtime::block(Process::spawn("/bin/sh", ["-c", "echo out; echo err >&2"]))
+        .expect("sh must start");
+
+    assert_eq!(
+        Runtime::block(child.stdout().recv_to_end()),
+        Ok(b"out\n".to_vec())
+    );
+    assert_eq!(
+        Runtime::block(child.stderr().recv_to_end()),
+        Ok(b"err\n".to_vec())
+    );
+    assert!(Runtime::block(child.wait()).unwrap().success());
+}
+
+/// A killed child reports the kill, and can't be signalled once
+/// reaped
+#[test]
+fn a_running_child_can_be_killed() {
+    let _ = Runtime::init();
+
+    let child = Runtime::block(Process::spawn("/bin/sleep", ["60"])).expect("sleep must start");
+
+    assert!(child.id() > 0);
+
+    let waiting = Runtime::task(child.wait()).spawn();
+
+    Runtime::block(child.kill()).expect("the kill must go");
+
+    let status = waiting
+        .take_with_timeout(PATIENCE)
+        .expect("the wait must see the kill")
+        .expect("the child must be reaped");
+
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert_eq!(Runtime::block(child.kill()), Err(RuntimeError::Finished));
+}
+
+/// A signal of the program's choosing reaches the child
+#[test]
+fn a_running_child_can_be_signalled() {
+    let _ = Runtime::init();
+
+    let child = Runtime::block(Process::spawn("/bin/sleep", ["60"])).expect("sleep must start");
+
+    Runtime::block(child.signal(SignalKind::Terminate)).expect("the signal must go");
+
+    let status = Runtime::task(child.wait())
+        .spawn()
+        .take_with_timeout(PATIENCE)
+        .expect("the wait must see the signal")
+        .expect("the child must be reaped");
+
+    assert_eq!(status.signal(), Some(libc::SIGTERM));
+}
+
+/// A cancelled wait leaves the child running
+#[test]
+fn a_cancelled_wait_leaves_the_child() {
+    let _ = Runtime::init();
+
+    let child =
+        Runtime::block(Process::spawn("/bin/cat", Process::NO_ARGS)).expect("cat must start");
+
+    let waiting = Runtime::task(child.wait()).spawn();
+    thread::sleep(Duration::from_millis(100));
+
+    waiting.clone().cancel();
+    assert_eq!(
+        waiting.join_with_timeout(PATIENCE),
+        Err(RuntimeError::Cancelled)
+    );
+
+    let input = child.stdin().unwrap();
+    Runtime::block(input.send(b"still here\n".as_slice())).expect("the child must still read");
+
+    assert_eq!(
+        Runtime::block(child.stdout().recv_until(b"\n", 64)),
+        Ok(b"still here\n".to_vec())
+    );
+
+    Runtime::block(child.kill()).unwrap();
+    assert!(Runtime::block(child.wait()).unwrap().signal().is_some());
+}
+
+/// Dropping the last handle on a child ends it
+#[test]
+fn dropping_a_running_child_kills_it() {
+    let _ = Runtime::init();
+
+    let scratch = std::env::temp_dir().join(format!("atap-spawned-{}.txt", std::process::id()));
+    let _ = fs::remove_file(&scratch);
+
+    let script = format!(
+        "while true; do echo x >> {}; sleep 0.05; done",
+        scratch.display()
+    );
+
+    let child = Runtime::block(Process::spawn("/bin/sh", ["-c", &script])).expect("sh must start");
+    let copy = child.clone();
+
+    thread::sleep(Duration::from_millis(300));
+    drop(child);
+
+    thread::sleep(Duration::from_millis(200));
+    assert!(
+        fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0) > 0,
+        "the child never wrote, so this proves nothing"
+    );
+
+    drop(copy);
+
+    // Long enough for a surviving child to write many more times
+    thread::sleep(Duration::from_millis(300));
+    let settled_at = fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0);
+
+    thread::sleep(Duration::from_millis(750));
+    let later = fs::metadata(&scratch).map(|found| found.len()).unwrap_or(0);
+
+    let _ = fs::remove_file(&scratch);
+
+    assert_eq!(settled_at, later, "the child outlived its last handle");
+}
+
+/// A program that isn't there is refused before anything is handed
+/// back
+#[test]
+fn spawning_a_missing_program_fails() {
+    let _ = Runtime::init();
+
+    assert_eq!(
+        Runtime::block(Process::spawn("/no/such/program", Process::NO_ARGS)).map(|_| ()),
+        Err(RuntimeError::CheckError(Some(libc::ENOENT)))
     );
 }

@@ -22,10 +22,10 @@ use std::sync::Arc;
 /// # use atap::{Runtime, tcp::Tcp};
 /// # use std::time::Duration;
 /// # fn main() -> Result<(), atap::RuntimeError> {
-/// let reply = Runtime::block(
-///     Tcp::request("example.com:80", b"GET / HTTP/1.0\r\n\r\n".as_slice())
-///         .timeout(Duration::from_secs(5)),
-/// )?;
+/// let reply = Runtime::task(Tcp::request("example.com:80", b"GET / HTTP/1.0\r\n\r\n".as_slice()))
+///     .timeout(Duration::from_secs(5))
+///     .spawn()
+///     .join()??;
 /// # Ok(())
 /// # }
 /// ```
@@ -37,7 +37,7 @@ use std::sync::Arc;
 ///
 /// [`Runtime::block`] can't give its thread back, so a blocking
 /// call waits on the calling thread instead. It can't be
-/// cancelled either, which is what `.timeout()` is for
+/// cancelled or timed out, so spawn a task that needs a limit
 ///
 /// ## Cancellation
 /// A cancelled task comes down at once, even while it waits on a
@@ -100,7 +100,7 @@ impl Tcp {
     ///
     /// #### Note
     /// The whole answer lands in memory at once. A server that
-    /// never closes its end keeps this waiting until its timeout
+    /// never closes its end keeps this waiting, unless it has a timeout
     pub fn request(addr: impl NetAddress, data: impl Into<Arc<[u8]>>) -> RequestTask {
         RequestTask::new(addr.target(), data.into())
     }

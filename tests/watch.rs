@@ -6,7 +6,7 @@ use atap::{
     Runtime, RuntimeError, TaskHandle,
     fs::{Change, File},
 };
-use common::{TestPath, next_run, until_started};
+use common::{TestPath, next_run, until_started, within};
 use std::{
     fs,
     path::PathBuf,
@@ -80,9 +80,8 @@ fn a_watch_gives_up_when_asked_to() {
     let file = TestPath::new("untouched");
     fs::write(file.path(), b"still").unwrap();
 
-    let watch = File::watch(file.path()).timeout(Duration::from_millis(200));
     let started = Instant::now();
-    let change = Runtime::block(watch);
+    let change = within(File::watch(file.path()), Duration::from_millis(200));
 
     println!(
         "giving up took {:?} and gave {:?}",
@@ -351,8 +350,7 @@ fn a_blocking_watch_waits_for_its_change() {
         touch(&path, b" and after");
     });
 
-    let change = Runtime::block(File::watch(file.path()).timeout(PATIENCE))
-        .expect("the blocking watch failed");
+    let change = within(File::watch(file.path()), PATIENCE).expect("the blocking watch failed");
 
     writer.join().expect("the writing thread panicked");
 
@@ -393,5 +391,91 @@ fn a_cancelled_watch_settles() {
         watching.try_take(),
         Err(RuntimeError::Cancelled),
         "a cancelled watch reports the cancel",
+    );
+}
+
+/// A watch told to wait for a path settles once the path appears
+#[test]
+fn a_watch_can_wait_for_a_path_to_appear() {
+    let _ = Runtime::init();
+
+    let file = TestPath::new("appearing");
+    let handle = Runtime::task(File::watch(file.path()).appear()).spawn();
+
+    until_parked(&handle);
+    assert!(
+        handle.is_running(),
+        "a missing path settled before it appeared"
+    );
+
+    fs::write(file.path(), b"here now").unwrap();
+
+    let change = handle
+        .take_with_timeout(PATIENCE)
+        .expect("the watch must settle")
+        .expect("the appearance must be reported");
+
+    assert!(change.created(), "the change was {change:?}");
+    assert!(!change.written());
+}
+
+/// Once a path has appeared, a repeat watches what appeared
+#[test]
+fn an_appeared_path_is_watched_after() {
+    let _ = Runtime::init();
+
+    let file = TestPath::new("appeared-then");
+    let handle = Runtime::task(File::watch(file.path()).appear())
+        .repeat()
+        .every(Duration::from_millis(200))
+        .spawn();
+
+    until_parked(&handle);
+    fs::write(file.path(), b"first").unwrap();
+
+    let created = next_run(&handle, PATIENCE)
+        .expect("the appearance")
+        .unwrap();
+    assert!(created.created());
+
+    thread::sleep(Duration::from_millis(300));
+    touch(file.path(), b" and more");
+
+    let written = next_run(&handle, PATIENCE).expect("the write").unwrap();
+    assert!(written.written(), "the change was {written:?}");
+    assert!(!written.created());
+
+    handle.cancel();
+}
+
+/// A path already there is watched as usual, appear or not
+#[test]
+fn appear_on_a_path_already_there_watches_it() {
+    let _ = Runtime::init();
+
+    let file = TestPath::new("already-there");
+    fs::write(file.path(), b"was here").unwrap();
+
+    let handle = Runtime::task(File::watch(file.path()).appear()).spawn();
+
+    until_parked(&handle);
+    touch(file.path(), b"!");
+
+    let change = handle.take_with_timeout(PATIENCE).unwrap().unwrap();
+
+    assert!(change.written());
+    assert!(!change.created());
+}
+
+/// Waiting for a path still needs its directory
+#[test]
+fn appear_needs_the_directory() {
+    let _ = Runtime::init();
+
+    let file = TestPath::new("no-parent");
+
+    assert_eq!(
+        within(File::watch(file.path().join("child")).appear(), PATIENCE),
+        Err(RuntimeError::CheckError(Some(libc::ENOENT)))
     );
 }

@@ -7,7 +7,7 @@ use crate::{
     RuntimeError,
     constants::{FILE_CHUNK, INLINE_PAYLOAD, STEP_BUDGET},
     futures::{
-        net::step::{Clock, Progress, settle},
+        net::step::{Progress, settle, wait_on},
         task::{
             Nothing, Task,
             sealed::{self, Step},
@@ -20,7 +20,6 @@ use crate::{
 use std::{
     mem,
     sync::{Arc, Mutex, MutexGuard},
-    time::Duration,
 };
 
 #[cfg(feature = "tls")]
@@ -42,6 +41,12 @@ pub(crate) struct Pipe {
     /// Bytes a receive read past what it was asked for, which the
     /// next receive takes first
     leftover: Mutex<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Pipe {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_tuple("Pipe").field(&self.fd.raw()).finish()
+    }
 }
 
 impl Pipe {
@@ -81,6 +86,9 @@ pub(crate) enum Source {
     /// A TLS session over a TCP connection
     #[cfg(feature = "tls")]
     Tls(TlsConnection),
+
+    /// One end of a pipe to a child
+    Pipe(Arc<Pipe>),
 }
 
 /// What one read or write on a stream came to
@@ -115,6 +123,7 @@ impl Source {
         match self {
             Self::Tcp(conn) => conn.pipe(),
             Self::Unix(conn) => conn.pipe(),
+            Self::Pipe(pipe) => pipe,
 
             #[cfg(feature = "tls")]
             Self::Tls(conn) => conn.pipe(),
@@ -125,6 +134,7 @@ impl Source {
     fn read(&self, into: &mut Vec<u8>, room: usize) -> Result<Io, RuntimeError> {
         match self {
             Self::Tcp(_) | Self::Unix(_) => read_raw(self.pipe().fd(), into, room),
+            Self::Pipe(pipe) => read_pipe(pipe.fd(), into, room),
 
             #[cfg(feature = "tls")]
             Self::Tls(conn) => conn.read(into, room),
@@ -135,6 +145,7 @@ impl Source {
     fn write(&self, data: &[u8]) -> Result<Io, RuntimeError> {
         match self {
             Self::Tcp(_) | Self::Unix(_) => write_raw(self.pipe().fd(), data),
+            Self::Pipe(pipe) => write_pipe(pipe.fd(), data),
 
             #[cfg(feature = "tls")]
             Self::Tls(conn) => conn.write(data),
@@ -148,7 +159,7 @@ impl Source {
     /// anything back, so only TLS can have to wait
     fn flush(&self) -> Result<Io, RuntimeError> {
         match self {
-            Self::Tcp(_) | Self::Unix(_) => Ok(Io::Moved(0)),
+            Self::Tcp(_) | Self::Unix(_) | Self::Pipe(_) => Ok(Io::Moved(0)),
 
             #[cfg(feature = "tls")]
             Self::Tls(conn) => conn.flush(),
@@ -213,6 +224,113 @@ fn write_raw(fd: libc::c_int, data: &[u8]) -> Result<Io, RuntimeError> {
     }
 }
 
+/// Ends the sending side of a connection
+///
+/// ## Returns
+/// Nothing, once the other side has been told no more is coming.
+/// This side can still receive
+#[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
+pub struct FinishTask {
+    /// The connection to finish
+    source: Source,
+
+    /// Whether a TLS goodbye has been handed to the session
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    said: Progress<bool>,
+}
+
+impl FinishTask {
+    pub(crate) fn new(source: Source) -> Self {
+        Self {
+            source,
+            said: Progress::default(),
+        }
+    }
+
+    fn advance(&mut self) -> Result<Step<Result<(), RuntimeError>>, RuntimeError> {
+        #[cfg(feature = "tls")]
+        if let Source::Tls(conn) = &self.source {
+            if !self.said.0 {
+                conn.say_goodbye();
+                self.said.0 = true;
+            }
+        }
+
+        let fd = self.source.pipe().fd();
+
+        if let Io::Wait(filter) = self.source.flush()? {
+            return wait_on(fd, filter);
+        }
+
+        loop {
+            match unsafe { libc::shutdown(fd, libc::SHUT_WR) }.check() {
+                Ok(_) => return Ok(Step::Done(Ok(()))),
+                Err(RuntimeError::CheckError(Some(libc::EINTR))) => {}
+                Err(RuntimeError::CheckError(Some(libc::ENOTCONN))) => {
+                    return Err(RuntimeError::Closed);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+/// Reads up to `room` bytes from a pipe onto the end of a buffer
+fn read_pipe(fd: libc::c_int, into: &mut Vec<u8>, room: usize) -> Result<Io, RuntimeError> {
+    into.reserve(room);
+
+    loop {
+        let read = unsafe {
+            libc::read(
+                fd,
+                into.spare_capacity_mut()
+                    .as_mut_ptr()
+                    .cast::<libc::c_void>(),
+                room,
+            )
+        }
+        .check();
+
+        match read {
+            Ok(0) => return Ok(Io::Closed),
+
+            Ok(read) => {
+                // The kernel just wrote `read` bytes into the reserved
+                // capacity
+                unsafe { into.set_len(into.len() + read as usize) };
+
+                return Ok(Io::Moved(read as usize));
+            }
+
+            Err(RuntimeError::CheckError(Some(libc::EINTR))) => {}
+            Err(RuntimeError::CheckError(Some(libc::EAGAIN))) => {
+                return Ok(Io::Wait(libc::EVFILT_READ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Writes as much of `data` to a pipe as it will take
+fn write_pipe(fd: libc::c_int, data: &[u8]) -> Result<Io, RuntimeError> {
+    loop {
+        let put =
+            unsafe { libc::write(fd, data.as_ptr().cast::<libc::c_void>(), data.len()) }.check();
+
+        match put {
+            Ok(put) => return Ok(Io::Moved(put as usize)),
+            Err(RuntimeError::CheckError(Some(libc::EINTR))) => {}
+
+            Err(RuntimeError::CheckError(Some(libc::EAGAIN))) => {
+                return Ok(Io::Wait(libc::EVFILT_WRITE));
+            }
+
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Sends every byte of a buffer
 ///
 /// ## Returns
@@ -226,9 +344,6 @@ pub struct SendTask {
     /// What to send
     data: Arc<[u8]>,
 
-    /// The timeout
-    clock: Clock,
-
     /// Bytes this run has sent
     sent: Progress<usize>,
 }
@@ -239,31 +354,8 @@ impl SendTask {
         Self {
             source,
             data,
-            clock: Clock::default(),
             sent: Progress::default(),
         }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Running out part way gives [`RuntimeError::TimedOut`], and
-    /// whatever was already sent stays sent
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
-    }
-
-    /// Runs to a clock already started, for a task made of other
-    /// tasks
-    pub(crate) fn timed(mut self, clock: Clock) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// The connection it sends on
@@ -283,7 +375,7 @@ impl SendTask {
             // Handed over isn't sent until nothing is held back inside
             if sent == self.data.len() {
                 return match self.source.flush()? {
-                    Io::Wait(filter) => self.clock.wait(fd, filter),
+                    Io::Wait(filter) => wait_on(fd, filter),
                     _ => Ok(Step::Done(Ok(sent))),
                 };
             }
@@ -291,7 +383,7 @@ impl SendTask {
             // Enough for one turn. The socket is still writable, so the
             // park comes straight back
             if moved >= STEP_BUDGET {
-                return self.clock.wait(fd, libc::EVFILT_WRITE);
+                return wait_on(fd, libc::EVFILT_WRITE);
             }
 
             let want = (self.data.len() - sent).min(FILE_CHUNK);
@@ -302,7 +394,7 @@ impl SendTask {
                     moved += put;
                 }
 
-                Io::Wait(filter) => return self.clock.wait(fd, filter),
+                Io::Wait(filter) => return wait_on(fd, filter),
 
                 // A write never reports these, but a closed stream is the
                 // only thing they could mean
@@ -362,9 +454,6 @@ pub struct RecvTask {
     /// What counts as done
     want: Want,
 
-    /// The timeout
-    clock: Clock,
-
     /// How far this run has got
     progress: Progress<Reading>,
 }
@@ -394,31 +483,8 @@ impl RecvTask {
         Self {
             source,
             want,
-            clock: Clock::default(),
             progress: Progress::default(),
         }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Running out gives [`RuntimeError::TimedOut`], and whatever
-    /// had been read is put back for the next receive
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
-    }
-
-    /// Runs to a clock already started, for a task made of other
-    /// tasks
-    pub(crate) fn timed(mut self, clock: Clock) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// Reads as much as there is to read right now
@@ -449,7 +515,7 @@ impl RecvTask {
                     return Ok(Step::Done(Ok(self.take())));
                 }
 
-                return self.clock.wait(fd, libc::EVFILT_READ);
+                return wait_on(fd, libc::EVFILT_READ);
             }
 
             let room = match &self.want {
@@ -481,7 +547,7 @@ impl RecvTask {
                         return Ok(Step::Done(Ok(self.take())));
                     }
 
-                    return self.clock.wait(fd, filter);
+                    return wait_on(fd, filter);
                 }
             }
         }
@@ -629,6 +695,21 @@ fn settle_recv(read: &mut RecvTask) -> Step<Result<Vec<u8>, RuntimeError>> {
 }
 
 impl sealed::Sealed for SendTask {}
+impl sealed::Sealed for FinishTask {}
+
+impl Task for FinishTask {
+    type Output = Result<(), RuntimeError>;
+    type Input = Nothing;
+
+    /// Waits on this thread, for `Runtime::block`
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
+        park::drive(self.clone(), reactor_id, task_id)
+    }
+
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+        settle(self.advance())
+    }
+}
 impl sealed::Sealed for RecvTask {}
 
 impl Task for SendTask {
@@ -641,7 +722,6 @@ impl Task for SendTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        self.clock.start();
         self.sent = Progress::default();
     }
 
@@ -664,7 +744,6 @@ impl Task for RecvTask {
         // belongs to the connection
         self.put_back();
 
-        self.clock.start();
         self.progress = Progress::default();
     }
 

@@ -1,7 +1,10 @@
 //! # Extras
 //! What only some tasks carry, kept off the slot's header
 
-use crate::modules::{gate::Gate, receivers::Receivers, series::SeriesTask};
+use crate::{
+    constants::NO_TASK,
+    modules::{gate::Gate, receivers::Receivers, series::SeriesTask},
+};
 use libc::c_void;
 use std::{
     mem, ptr,
@@ -9,6 +12,7 @@ use std::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicPtr, Ordering},
     },
+    time::Duration,
 };
 
 /// A schedule's prototype, the gate of a task that waits, the
@@ -27,6 +31,13 @@ pub(crate) struct Extras {
     /// Claims kept until the task is finished, like those on the tasks
     /// it receives from
     held: Mutex<Vec<Box<dyn Send>>>,
+
+    /// How long each run may take, if it has a limit
+    timeout: Option<Duration>,
+
+    /// The series a run of it publishes into, which times out with
+    /// it, or `NO_TASK`
+    parent: usize,
 }
 
 impl Extras {
@@ -37,7 +48,29 @@ impl Extras {
             gate,
             receivers: Receivers::new(),
             held: Mutex::new(Vec::new()),
+            timeout: None,
+            parent: NO_TASK,
         }
+    }
+
+    /// The same extras, with each run limited to `timeout`, and a
+    /// run past it ending `parent` too
+    pub(crate) fn timed(mut self, timeout: Option<Duration>, parent: usize) -> Self {
+        self.timeout = timeout;
+        self.parent = parent;
+        self
+    }
+
+    /// How long each run may take, if it has a limit
+    #[inline(always)]
+    pub(crate) fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
+    /// The series this run publishes into, or `NO_TASK`
+    #[inline(always)]
+    pub(crate) fn parent(&self) -> usize {
+        self.parent
     }
 
     /// The task a series clones its runs from, or null

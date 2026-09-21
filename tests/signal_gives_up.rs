@@ -10,7 +10,7 @@ use atap::{
     Runtime, RuntimeError,
     signal::{Signal, SignalKind},
 };
-use common::until_started;
+use common::{until_started, within};
 use std::{
     process,
     time::{Duration, Instant},
@@ -29,7 +29,7 @@ fn a_wait_gives_up_when_asked_to() {
     let quiet = SignalKind::Quit;
 
     let started = Instant::now();
-    let got = Runtime::block(Signal::wait(quiet).timeout(Duration::from_millis(100)));
+    let got = within(Signal::wait(quiet), Duration::from_millis(100));
     let took = started.elapsed();
 
     assert_eq!(got, Err(RuntimeError::TimedOut));
@@ -43,12 +43,12 @@ fn a_wait_gives_up_when_asked_to() {
     );
 
     // A spawned one times out the same way, parked the whole time
-    let spawned = Runtime::task(Signal::wait(quiet).timeout(Duration::from_millis(100))).spawn();
+    let spawned = Runtime::task(Signal::wait(quiet))
+        .timeout(Duration::from_millis(100))
+        .spawn();
 
     assert_eq!(
-        spawned
-            .take_with_timeout(PATIENCE)
-            .expect("the timeout settles it"),
+        spawned.take_with_timeout(PATIENCE),
         Err(RuntimeError::TimedOut),
     );
 
@@ -69,8 +69,12 @@ fn a_wait_gives_up_when_asked_to() {
     // ignored by default, so taking it over changes nothing here
     let shared = SignalKind::Child;
 
-    let first = Runtime::task(Signal::wait(shared).timeout(PATIENCE)).spawn();
-    let second = Runtime::task(Signal::wait(shared).timeout(PATIENCE)).spawn();
+    let first = Runtime::task(Signal::wait(shared))
+        .timeout(PATIENCE)
+        .spawn();
+    let second = Runtime::task(Signal::wait(shared))
+        .timeout(PATIENCE)
+        .spawn();
 
     until_started(&first, PATIENCE);
     until_started(&second, PATIENCE);

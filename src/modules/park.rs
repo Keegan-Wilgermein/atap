@@ -23,8 +23,7 @@ use std::{ptr, thread, time::Instant};
 ///
 /// ## Behaviour
 /// What `Runtime::block` gets for a task that would park if it
-/// were spawned. The wait holds the thread, and a timeout is the
-/// task's own deadline, which it checks on every step
+/// were spawned. The wait holds the thread
 pub(crate) fn drive<F>(mut task: F, reactor_id: i32, task_id: usize) -> F::Output
 where
     F: Task,

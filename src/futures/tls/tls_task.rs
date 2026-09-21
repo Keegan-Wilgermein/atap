@@ -8,9 +8,10 @@ use crate::{
     constants::INLINE_PAYLOAD,
     futures::{
         net::{
-            address::Target,
+            address::{Target, sealed::Sealed as _},
             exchange::{self, Stage},
-            step::{Clock, Progress, settle},
+            socket::Options,
+            step::{Progress, settle, wait_on},
         },
         task::{
             Nothing, Task,
@@ -21,7 +22,7 @@ use crate::{
             tcp_task::{AcceptTask, ConnectTask, ListenTask},
         },
         tls::{
-            config::{self, tls_error},
+            config::{self, ClientSettings, Keys, ServerSettings, tls_error},
             connection::{TlsConnection, TlsListener},
             handshake::handshake,
         },
@@ -32,7 +33,6 @@ use rustls::pki_types::ServerName;
 use std::{
     mem,
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -93,14 +93,18 @@ pub struct TlsConnectTask {
     /// The name to check the certificate against instead
     server_name: Option<Arc<str>>,
 
-    /// Roots to trust on top of the system's, as PEM
-    roots: Option<Arc<[u8]>>,
+    /// Roots, protocols and identity beyond the defaults
+    settings: ClientSettings,
 
-    /// The timeout, which covers the connect and the handshake
-    clock: Clock,
+    /// A connection already open to run the handshake over, for an
+    /// upgrade
+    over: Option<Connection>,
 
     /// The TCP connect, remade for every run
     connect: ConnectTask,
+
+    /// What the TCP socket is set up with
+    options: Options,
 
     /// How far this run has got
     stage: Progress<Connecting>,
@@ -124,24 +128,29 @@ impl TlsConnectTask {
             connect: ConnectTask::new(target.clone()),
             target,
             server_name: None,
-            roots: None,
-            clock: Clock::default(),
+            settings: ClientSettings::default(),
+            over: None,
+            options: Options::default(),
             stage: Progress::default(),
         }
     }
 
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Covers the TCP connect and the handshake together. Running
-    /// out gives [`RuntimeError::TimedOut`]
+    /// Sends small writes at once rather than waiting to batch them
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
+    pub fn nodelay(mut self, nodelay: bool) -> Self {
+        self.options.nodelay = nodelay;
+        self
+    }
+
+    /// Probes a quiet connection after `idle`, so a peer that has
+    /// gone is noticed
     ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn keepalive(mut self, idle: Duration) -> Self {
+        self.options.keepalive = Some(idle);
         self
     }
 
@@ -173,23 +182,66 @@ impl TlsConnectTask {
     ///
     /// [`RuntimeError::BadCertificate`]: crate::RuntimeError::BadCertificate
     pub fn trust(mut self, pem: impl AsRef<[u8]>) -> Self {
-        self.roots = Some(Arc::from(pem.as_ref()));
+        self.settings.roots = Some(Arc::from(pem.as_ref()));
         self
     }
 
-    /// Starts a run against a clock that has already started
-    fn begin(&mut self, clock: Clock) {
-        self.clock = clock;
-        self.connect = ConnectTask::new(self.target.clone()).timed(clock);
+    /// Offers these protocols to the server, most wanted first
+    ///
+    /// ## Behaviour
+    /// The server picks one, and [`TlsConnection::alpn`] says which.
+    /// A server that picks none still connects
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    ///
+    /// [`TlsConnection::alpn`]: crate::tls::TlsConnection::alpn
+    pub fn alpn<I, P>(mut self, protocols: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
+    {
+        self.settings.alpn = protocols
+            .into_iter()
+            .map(|protocol| protocol.as_ref().to_vec())
+            .collect();
+        self
+    }
+
+    /// Shows the server this certificate chain, for a server that
+    /// asks who is connecting
+    ///
+    /// ## Behaviour
+    /// `cert` and `key` are PEM. Neither is read until the task
+    /// runs
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last. A chain or key
+    /// that doesn't parse, or don't fit each other, gives
+    /// [`RuntimeError::BadCertificate`]
+    ///
+    /// [`RuntimeError::BadCertificate`]: crate::RuntimeError::BadCertificate
+    pub fn identity(mut self, cert: impl AsRef<[u8]>, key: impl AsRef<[u8]>) -> Self {
+        self.settings.identity = Some((Arc::from(cert.as_ref()), Arc::from(key.as_ref())));
+        self
+    }
+
+    /// Runs the handshake over `conn` rather than connecting
+    pub(crate) fn over(conn: Connection) -> Self {
+        let mut task = Self::new(conn.peer_addr().target());
+        task.over = Some(conn);
+        task
+    }
+
+    /// Starts a run from the beginning
+    fn begin(&mut self) {
+        self.connect = ConnectTask::new(self.target.clone()).with_options(self.options);
         self.stage = Progress::default();
     }
 
     /// A fresh client session for this connect
     fn session(&self) -> Result<rustls::Connection, RuntimeError> {
-        let config = match &self.roots {
-            Some(pem) => config::client_trusting(pem)?,
-            None => config::client()?,
-        };
+        let config = config::client_with(&self.settings)?;
 
         let name = server_name(&self.target, self.server_name.as_deref())?;
         let session = rustls::ClientConnection::new(config, name).map_err(tls_error)?;
@@ -206,7 +258,7 @@ impl TlsConnectTask {
     ) -> Result<Step<Result<TlsConnection, RuntimeError>>, RuntimeError> {
         loop {
             match mem::take(&mut self.stage.0) {
-                Connecting::Tcp => match self.connect.step(token(), reactor_id, task_id) {
+                Connecting::Tcp => match self.opened(reactor_id, task_id) {
                     Step::Done(Ok(tcp)) => {
                         let session = self.session()?;
                         self.stage.0 = Connecting::Handshaking(tcp, session);
@@ -221,7 +273,7 @@ impl TlsConnectTask {
 
                     match handshake(&mut session, fd)? {
                         Some(filter) => {
-                            let step = self.clock.wait(fd, filter)?;
+                            let step = wait_on(fd, filter)?;
                             self.stage.0 = Connecting::Handshaking(tcp, session);
 
                             return Ok(step);
@@ -231,6 +283,17 @@ impl TlsConnectTask {
                     }
                 }
             }
+        }
+    }
+}
+
+impl TlsConnectTask {
+    /// The TCP connection, connecting it first unless the task was
+    /// handed one
+    fn opened(&mut self, reactor_id: i32, task_id: usize) -> Step<Result<Connection, RuntimeError>> {
+        match &self.over {
+            Some(conn) => Step::Done(Ok(conn.clone())),
+            None => self.connect.step(token(), reactor_id, task_id),
         }
     }
 }
@@ -245,40 +308,102 @@ pub struct TlsListenTask {
     /// The TCP listen
     listen: ListenTask,
 
-    /// The certificate chain, as a PEM file
-    cert: PathBuf,
-
-    /// The private key, as a PEM file
-    key: PathBuf,
-
-    /// The timeout, which only a name lookup can use up
-    clock: Clock,
+    /// The certificate, key and everything else it serves with
+    settings: ServerSettings,
 }
 
 impl TlsListenTask {
     /// Listens on `target` with the certificate and key in these
     /// files
-    pub(crate) fn new(target: Target, cert: PathBuf, key: PathBuf) -> Self {
+    pub(crate) fn new(target: Target, keys: Keys) -> Self {
         Self {
             listen: ListenTask::new(target),
-            cert,
-            key,
-            clock: Clock::default(),
+            settings: ServerSettings {
+                keys,
+                alpn: Arc::from([]),
+                client_roots: None,
+            },
         }
     }
 
-    /// Gives up once `timeout` has passed
+    /// Accepts these protocols, most wanted first
     ///
     /// ## Behaviour
-    /// Binding never waits, so only a slow name lookup can use
-    /// this up. Running out gives [`RuntimeError::TimedOut`]
+    /// Each connection gets the first of these the client offered.
+    /// A client that offers none still connects. One that offers
+    /// only others is refused
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
+    pub fn alpn<I, P>(mut self, protocols: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
+    {
+        self.settings.alpn = protocols
+            .into_iter()
+            .map(|protocol| protocol.as_ref().to_vec())
+            .collect();
+        self
+    }
+
+    /// Requires every client to show a certificate that chains to
+    /// one of the roots in `pem`
     ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
+    /// ## Behaviour
+    /// A client without one fails its handshake.
+    /// [`TlsConnection::peer_certificates`] gives the one it showed
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last. Roots that don't
+    /// parse give [`RuntimeError::BadCertificate`] when the task runs
+    ///
+    /// [`TlsConnection::peer_certificates`]: crate::tls::TlsConnection::peer_certificates
+    /// [`RuntimeError::BadCertificate`]: crate::RuntimeError::BadCertificate
+    pub fn require_client_cert(mut self, pem: impl AsRef<[u8]>) -> Self {
+        self.settings.client_roots = Some(Arc::from(pem.as_ref()));
+        self
+    }
+
+    /// How many connections may wait to be accepted
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn backlog(mut self, backlog: u32) -> Self {
+        let options = Options {
+            backlog: Some(backlog),
+            ..self.listen.options()
+        };
+
+        self.listen = self.listen.with_options(options);
+        self
+    }
+
+    /// Lets other sockets listen on the same port
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn reuse_port(mut self, reuse: bool) -> Self {
+        let options = Options {
+            reuse_port: reuse,
+            ..self.listen.options()
+        };
+
+        self.listen = self.listen.with_options(options);
+        self
+    }
+
+    /// Takes only IPv6 connections on an IPv6 address
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn v6_only(mut self, only: bool) -> Self {
+        let options = Options {
+            v6_only: only,
+            ..self.listen.options()
+        };
+
+        self.listen = self.listen.with_options(options);
         self
     }
 
@@ -286,12 +411,8 @@ impl TlsListenTask {
     ///
     /// The files first, so a bad one never opens a socket
     fn listen(&self, reactor_id: i32, task_id: usize) -> Result<TlsListener, RuntimeError> {
-        let config = config::server(&self.cert, &self.key)?;
+        let config = config::server_with(&self.settings)?;
         let tcp = self.listen.execute(token(), reactor_id, task_id)?;
-
-        if self.clock.expired() {
-            return Err(RuntimeError::TimedOut);
-        }
 
         Ok(TlsListener::new(tcp, config))
     }
@@ -308,11 +429,12 @@ pub struct TlsAcceptTask {
     /// Where the connections come from
     listener: TlsListener,
 
-    /// The timeout, which covers waiting and the handshake
-    clock: Clock,
-
     /// The TCP accept, remade for every run
     accept: AcceptTask,
+
+    /// A connection already open to run the handshake over, for an
+    /// upgrade
+    over: Option<Connection>,
 
     /// How far this run has got
     stage: Progress<Accepting>,
@@ -335,24 +457,29 @@ impl TlsAcceptTask {
         Self {
             accept: AcceptTask::new(listener.tcp().clone()),
             listener,
-            clock: Clock::default(),
+            over: None,
             stage: Progress::default(),
         }
     }
 
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Covers waiting for a connection and its handshake together.
-    /// Running out gives [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
+    /// Runs the handshake over `conn` rather than accepting
+    pub(crate) fn over(listener: TlsListener, conn: Connection) -> Self {
+        let mut task = Self::new(listener);
+        task.over = Some(conn);
+        task
+    }
+
+    /// The TCP connection, accepting it first unless the task was
+    /// handed one
+    fn opened(
+        &mut self,
+        reactor_id: i32,
+        task_id: usize,
+    ) -> Step<Result<(Connection, SocketAddr), RuntimeError>> {
+        match &self.over {
+            Some(conn) => Step::Done(Ok((conn.clone(), conn.peer_addr()))),
+            None => self.accept.step(token(), reactor_id, task_id),
+        }
     }
 
     /// Takes the accept and the handshake as far as they can go
@@ -364,7 +491,7 @@ impl TlsAcceptTask {
     ) -> Result<Step<Result<(TlsConnection, SocketAddr), RuntimeError>>, RuntimeError> {
         loop {
             match mem::take(&mut self.stage.0) {
-                Accepting::Tcp => match self.accept.step(token(), reactor_id, task_id) {
+                Accepting::Tcp => match self.opened(reactor_id, task_id) {
                     Step::Done(Ok((tcp, peer))) => {
                         let session = rustls::ServerConnection::new(self.listener.config())
                             .map_err(tls_error)?;
@@ -381,7 +508,7 @@ impl TlsAcceptTask {
 
                     match handshake(&mut session, fd)? {
                         Some(filter) => {
-                            let step = self.clock.wait(fd, filter)?;
+                            let step = wait_on(fd, filter)?;
                             self.stage.0 = Accepting::Handshaking(tcp, peer, session);
 
                             return Ok(step);
@@ -410,9 +537,6 @@ pub struct TlsRequestTask {
     /// What it sends
     data: Arc<[u8]>,
 
-    /// The timeout, which covers the whole exchange
-    clock: Clock,
-
     /// How far this run has got
     stage: Progress<Stage>,
 }
@@ -423,25 +547,8 @@ impl TlsRequestTask {
         Self {
             connect: TlsConnectTask::new(target),
             data,
-            clock: Clock::default(),
             stage: Progress::default(),
         }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Covers the whole exchange: connecting, the handshake,
-    /// sending, and reading the answer. Running out gives
-    /// [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
     }
 
     /// Checks the certificate against `name` instead of the host
@@ -464,13 +571,35 @@ impl TlsRequestTask {
         self
     }
 
+    /// Offers these protocols to the server, most wanted first
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn alpn<I, P>(mut self, protocols: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
+    {
+        self.connect = self.connect.alpn(protocols);
+        self
+    }
+
+    /// Shows the server this certificate chain, for a server that
+    /// asks who is connecting
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn identity(mut self, cert: impl AsRef<[u8]>, key: impl AsRef<[u8]>) -> Self {
+        self.connect = self.connect.identity(cert, key);
+        self
+    }
+
     /// Takes the exchange as far as it can go without waiting
     fn advance(&mut self, reactor_id: i32, task_id: usize) -> Step<Result<Vec<u8>, RuntimeError>> {
         exchange::advance(
             &mut self.connect,
             &mut self.stage.0,
             &self.data,
-            self.clock,
             reactor_id,
             task_id,
         )
@@ -492,10 +621,7 @@ impl Task for TlsConnectTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        let mut clock = self.clock;
-        clock.start();
-
-        self.begin(clock);
+        self.begin();
     }
 
     /// Always. It still parks between steps
@@ -517,10 +643,6 @@ impl Task for TlsListenTask {
         self.listen(reactor_id, task_id)
     }
 
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-    }
-
     /// It reads files, and may look a name up
     fn blocking(&self, _token: Token) -> bool {
         true
@@ -537,8 +659,7 @@ impl Task for TlsAcceptTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-        self.accept = AcceptTask::new(self.listener.tcp().clone()).timed(self.clock);
+        self.accept = AcceptTask::new(self.listener.tcp().clone());
         self.stage = Progress::default();
     }
 
@@ -557,8 +678,7 @@ impl Task for TlsRequestTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-        self.connect.begin(self.clock);
+        self.connect.begin();
         self.stage = Progress::default();
     }
 

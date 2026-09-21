@@ -4,8 +4,9 @@
 
 use crate::RuntimeError;
 use rustls::{
-    ClientConfig, ServerConfig,
+    ClientConfig, RootCertStore, ServerConfig,
     crypto::CryptoProvider,
+    server::WebPkiClientVerifier,
     pki_types::{
         CertificateDer, PrivateKeyDer,
         pem::{self, PemObject},
@@ -13,7 +14,7 @@ use rustls::{
 };
 use rustls_platform_verifier::Verifier;
 use std::{
-    path::Path,
+    path::PathBuf,
     sync::{Arc, OnceLock},
 };
 
@@ -38,20 +39,81 @@ pub(crate) fn client() -> Result<Arc<ClientConfig>, RuntimeError> {
         .clone()
 }
 
-/// Client settings that also trust the roots in `pem`
+/// A certificate chain and its private key, as PEM
+#[derive(Debug, Clone)]
+pub(crate) enum Keys {
+    /// Two files, read when the settings are built
+    Files(PathBuf, PathBuf),
+
+    /// Two buffers already in memory
+    Pem(Arc<[u8]>, Arc<[u8]>),
+}
+
+/// What a client connect asks for beyond the defaults
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClientSettings {
+    /// Roots to trust on top of the system's, as PEM
+    pub(crate) roots: Option<Arc<[u8]>>,
+
+    /// Protocols offered through ALPN, most wanted first
+    pub(crate) alpn: Arc<[Vec<u8>]>,
+
+    /// A certificate and key to show a server that asks for one
+    pub(crate) identity: Option<(Arc<[u8]>, Arc<[u8]>)>,
+}
+
+/// Client settings for a connect
 ///
 /// ## Returns
-/// `BadCertificate` when `pem` holds no certificate that parses
-pub(crate) fn client_trusting(pem: &[u8]) -> Result<Arc<ClientConfig>, RuntimeError> {
-    let roots: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
+/// The shared defaults when nothing is asked for. `BadCertificate`
+/// when a certificate or key doesn't parse
+pub(crate) fn client_with(settings: &ClientSettings) -> Result<Arc<ClientConfig>, RuntimeError> {
+    if settings.roots.is_none() && settings.alpn.is_empty() && settings.identity.is_none() {
+        return client();
+    }
+
+    let verifier = match &settings.roots {
+        Some(pem) => Verifier::new_with_extra_roots(certificates(pem)?, provider()),
+        None => Verifier::new(provider()),
+    };
+
+    let builder = ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(tls_error)?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier.map_err(tls_error)?));
+
+    let mut config = match &settings.identity {
+        Some((cert, key)) => builder
+            .with_client_auth_cert(certificates(cert)?, private_key(key)?)
+            .map_err(|_| RuntimeError::BadCertificate)?,
+
+        None => builder.with_no_client_auth(),
+    };
+
+    config.alpn_protocols = settings.alpn.to_vec();
+
+    Ok(Arc::new(config))
+}
+
+/// Every certificate in `pem`
+///
+/// ## Returns
+/// `BadCertificate` when there are none, or one doesn't parse
+fn certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, RuntimeError> {
+    let found: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<_, _>>()
         .map_err(|_| RuntimeError::BadCertificate)?;
 
-    if roots.is_empty() {
-        return Err(RuntimeError::BadCertificate);
+    match found.is_empty() {
+        true => Err(RuntimeError::BadCertificate),
+        false => Ok(found),
     }
+}
 
-    build_client(Verifier::new_with_extra_roots(roots, provider()))
+/// The private key in `pem`
+fn private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, RuntimeError> {
+    PrivateKeyDer::from_pem_slice(pem).map_err(|_| RuntimeError::BadCertificate)
 }
 
 /// Client settings around a platform verifier
@@ -70,30 +132,70 @@ fn build_client(
     Ok(Arc::new(config))
 }
 
-/// Server settings from a certificate chain and a private key,
-/// both PEM files
+/// What a listener serves with
+#[derive(Debug, Clone)]
+pub(crate) struct ServerSettings {
+    /// The certificate chain and key
+    pub(crate) keys: Keys,
+
+    /// Protocols accepted through ALPN, most wanted first
+    pub(crate) alpn: Arc<[Vec<u8>]>,
+
+    /// Roots a client's certificate has to chain to, when one is
+    /// required
+    pub(crate) client_roots: Option<Arc<[u8]>>,
+}
+
+/// Server settings for a listener
 ///
 /// ## Returns
 /// `CheckError` when a file can't be read, and `BadCertificate`
 /// when one doesn't parse or the key doesn't fit the certificate
-pub(crate) fn server(cert: &Path, key: &Path) -> Result<Arc<ServerConfig>, RuntimeError> {
-    let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert)
-        .map_err(pem_error)?
-        .collect::<Result<_, _>>()
-        .map_err(pem_error)?;
+pub(crate) fn server_with(settings: &ServerSettings) -> Result<Arc<ServerConfig>, RuntimeError> {
+    let (chain, key) = match &settings.keys {
+        Keys::Files(cert, key) => {
+            let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert)
+                .map_err(pem_error)?
+                .collect::<Result<_, _>>()
+                .map_err(pem_error)?;
+
+            (chain, PrivateKeyDer::from_pem_file(key).map_err(pem_error)?)
+        }
+
+        Keys::Pem(cert, key) => (certificates(cert)?, private_key(key)?),
+    };
 
     if chain.is_empty() {
         return Err(RuntimeError::BadCertificate);
     }
 
-    let key = PrivateKeyDer::from_pem_file(key).map_err(pem_error)?;
-
-    let config = ServerConfig::builder_with_provider(provider())
+    let builder = ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
-        .map_err(tls_error)?
-        .with_no_client_auth()
+        .map_err(tls_error)?;
+
+    let builder = match &settings.client_roots {
+        Some(pem) => {
+            let mut roots = RootCertStore::empty();
+
+            for root in certificates(pem)? {
+                roots.add(root).map_err(|_| RuntimeError::BadCertificate)?;
+            }
+
+            let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider())
+                .build()
+                .map_err(|_| RuntimeError::BadCertificate)?;
+
+            builder.with_client_cert_verifier(verifier)
+        }
+
+        None => builder.with_no_client_auth(),
+    };
+
+    let mut config = builder
         .with_single_cert(chain, key)
         .map_err(|_| RuntimeError::BadCertificate)?;
+
+    config.alpn_protocols = settings.alpn.to_vec();
 
     Ok(Arc::new(config))
 }
@@ -143,24 +245,33 @@ mod tests {
     /// is built around them
     #[test]
     fn roots_that_are_not_certificates_are_refused() {
-        assert_eq!(
-            client_trusting(b"").map(|_| ()),
-            Err(RuntimeError::BadCertificate)
-        );
-        assert_eq!(
-            client_trusting(b"not a certificate").map(|_| ()),
-            Err(RuntimeError::BadCertificate),
-        );
+        for pem in [&b""[..], b"not a certificate"] {
+            let settings = ClientSettings {
+                roots: Some(Arc::from(pem)),
+                ..ClientSettings::default()
+            };
+
+            assert_eq!(
+                client_with(&settings).map(|_| ()),
+                Err(RuntimeError::BadCertificate)
+            );
+        }
     }
 
     /// A certificate file that isn't there keeps the kernel's
     /// reason
     #[test]
     fn a_missing_certificate_file_is_not_found() {
-        let missing = Path::new("/nonexistent/atap/cert.pem");
+        let missing = PathBuf::from("/nonexistent/atap/cert.pem");
+
+        let settings = ServerSettings {
+            keys: Keys::Files(missing.clone(), missing),
+            alpn: Arc::from([]),
+            client_roots: None,
+        };
 
         assert_eq!(
-            server(missing, missing).map(|_| ()),
+            server_with(&settings).map(|_| ()),
             Err(RuntimeError::CheckError(Some(libc::ENOENT))),
         );
     }

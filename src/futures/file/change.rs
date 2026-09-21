@@ -22,6 +22,9 @@ pub(super) const EVERY_NOTE: u32 = libc::NOTE_WRITE
     | libc::NOTE_RENAME
     | libc::NOTE_DELETE;
 
+/// The bit `Change::CREATED` is, past every note the kernel has
+const CREATED_NOTE: u32 = 1 << 31;
+
 /// What happened to a watched path
 ///
 /// Several of these can be true at once: one write that makes a
@@ -66,6 +69,9 @@ impl Change {
     /// it is told otherwise
     pub const ANY: Self = Self(EVERY_NOTE);
 
+    /// The path came into being, for a watch told to wait for it
+    pub const CREATED: Self = Self(CREATED_NOTE);
+
     /// Wraps a set of notes
     pub(super) const fn new(notes: u32) -> Self {
         Self(notes)
@@ -73,7 +79,7 @@ impl Change {
 
     /// The notes themselves, for handing to the kernel
     pub(super) const fn notes(self) -> u32 {
-        self.0
+        self.0 & EVERY_NOTE
     }
 
     /// Whether nothing at all is named
@@ -132,6 +138,14 @@ impl Change {
     /// Nothing can happen to the file after this
     pub fn removed(self) -> bool {
         self.holds(Self::REMOVED)
+    }
+
+    /// Whether the path came into being
+    ///
+    /// Only a watch set up with `appear` reports this, and only
+    /// on its own
+    pub fn created(self) -> bool {
+        self.holds(Self::CREATED)
     }
 
     /// Whether every note in `part` is named here

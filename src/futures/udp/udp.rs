@@ -19,7 +19,10 @@ use crate::futures::{net::address::NetAddress, udp::udp_task::BindTask};
 /// let socket = Runtime::block(Udp::bind("127.0.0.1:0"))?;
 ///
 /// Runtime::block(socket.send_to("127.0.0.1:9000", b"ping".as_slice()))?;
-/// let (reply, from) = Runtime::block(socket.recv_from().timeout(Duration::from_secs(1)))?;
+/// let (reply, from) = Runtime::task(socket.recv_from())
+///     .timeout(Duration::from_secs(1))
+///     .spawn()
+///     .join()??;
 /// # Ok(())
 /// # }
 /// ```
@@ -27,7 +30,7 @@ use crate::futures::{net::address::NetAddress, udp::udp_task::BindTask};
 /// ## Waiting
 /// A spawned receive waiting for a datagram holds no thread, the
 /// same as a TCP one. A blocking call waits on the calling thread,
-/// and can't be cancelled, which is what `.timeout()` is for
+/// and can't be cancelled or timed out
 ///
 /// #### Note
 /// A socket task still waiting on the network when the runtime

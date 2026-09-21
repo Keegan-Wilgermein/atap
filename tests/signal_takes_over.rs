@@ -7,7 +7,7 @@ use atap::{
     Runtime, RuntimeError,
     signal::{Signal, SignalKind},
 };
-use common::taken_over;
+use common::{taken_over, within};
 use std::{
     process, thread,
     time::{Duration, Instant},
@@ -64,12 +64,12 @@ fn watching_an_interrupt_takes_it_over() {
 
     // The two nobody can take over
     assert_eq!(
-        Runtime::block(Signal::wait(SignalKind::Other(libc::SIGKILL)).timeout(PATIENCE)),
+        within(Signal::wait(SignalKind::Other(libc::SIGKILL)), PATIENCE),
         Err(RuntimeError::BadSignal),
     );
 
     assert_eq!(
-        Runtime::block(Signal::wait(SignalKind::Other(libc::SIGSTOP)).timeout(PATIENCE)),
+        within(Signal::wait(SignalKind::Other(libc::SIGSTOP)), PATIENCE),
         Err(RuntimeError::BadSignal),
     );
 }

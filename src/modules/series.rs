@@ -13,6 +13,7 @@ use crate::{
         sealed::{self, Step},
     },
 };
+use std::time::Duration;
 
 /// A task a schedule can make more of
 ///
@@ -22,7 +23,7 @@ pub(crate) trait SeriesTask: Send {
     ///
     /// ## Returns
     /// Whether a run is on its way
-    fn launch(&self, series: usize, priority: u8) -> bool;
+    fn launch(&self, series: usize, priority: u8, timeout: Option<Duration>) -> bool;
 }
 
 impl<F> SeriesTask for F
@@ -30,7 +31,7 @@ where
     F: Task + Clone,
 {
     #[inline(always)]
-    fn launch(&self, series: usize, priority: u8) -> bool {
+    fn launch(&self, series: usize, priority: u8, timeout: Option<Duration>) -> bool {
         // Held until the run is dropped, so the series slot can't be
         // freed and reused while a run could still publish into it
         Executor::add_listener(series);
@@ -41,6 +42,8 @@ where
                 inner: self.clone(),
             },
             priority,
+            timeout,
+            series,
         )
     }
 }

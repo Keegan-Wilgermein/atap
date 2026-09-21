@@ -164,6 +164,11 @@ where
         self.state() == TaskState::Cancelled
     }
 
+    /// Whether a run went past the task's timeout
+    pub fn is_timed_out(&self) -> bool {
+        self.state() == TaskState::TimedOut
+    }
+
     /// Whether nothing is ever going to produce an output
     pub fn is_failed(&self) -> bool {
         self.state() == TaskState::Failed

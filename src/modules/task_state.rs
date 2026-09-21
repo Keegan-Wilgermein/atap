@@ -38,6 +38,12 @@ pub enum TaskState {
     /// The task panicked, the thread running it died, or nothing
     /// was left to run it
     Failed = 6,
+
+    /// A run went past the task's timeout
+    ///
+    /// Like a cancel, a run already in flight may still finish, but
+    /// its result never reaches anyone
+    TimedOut = 7,
 }
 
 impl TaskState {
@@ -53,6 +59,7 @@ impl TaskState {
             3 => Self::Ready,
             4 => Self::Taken,
             5 => Self::Cancelled,
+            7 => Self::TimedOut,
             _ => Self::Failed,
         }
     }
@@ -65,5 +72,12 @@ impl TaskState {
     #[inline(always)]
     pub fn terminal(self) -> bool {
         !matches!(self, Self::Pending | Self::Running)
+    }
+
+    /// Whether the task was stopped before it could finish, by a
+    /// cancel or a timeout
+    #[inline(always)]
+    pub(crate) fn stopped(self) -> bool {
+        matches!(self, Self::Cancelled | Self::TimedOut)
     }
 }

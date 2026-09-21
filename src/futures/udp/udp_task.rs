@@ -10,8 +10,8 @@ use crate::{
         net::{
             address::{Target, family, from_raw, local_of, to_raw},
             datagram::{recv_datagram, send_datagram},
-            socket::open,
-            step::{Clock, Progress, settle},
+            socket::{Options, open},
+            step::{Progress, settle, wait_on},
         },
         task::{
             Nothing, Task,
@@ -21,7 +21,7 @@ use crate::{
     },
     modules::{int_check::IntCheck, park},
 };
-use std::{mem, net::SocketAddr, sync::Arc, time::Duration};
+use std::{mem, net::SocketAddr, ptr, sync::Arc};
 
 // Anything larger costs a page mapping per task
 const _: () = assert!(mem::size_of::<Result<UdpSocket, RuntimeError>>() <= INLINE_PAYLOAD);
@@ -38,8 +38,8 @@ pub struct BindTask {
     /// Where to bind
     target: Target,
 
-    /// The timeout, which only a name lookup can use up
-    clock: Clock,
+    /// What the socket is set up with
+    options: Options,
 }
 
 impl BindTask {
@@ -47,22 +47,35 @@ impl BindTask {
     pub(crate) fn new(target: Target) -> Self {
         Self {
             target,
-            clock: Clock::default(),
+            options: Options::default(),
         }
     }
 
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Binding never waits, so only a slow name lookup can use
-    /// this up. Running out gives [`RuntimeError::TimedOut`]
+    /// Lets the socket send to a broadcast address
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
+    pub fn broadcast(mut self, broadcast: bool) -> Self {
+        self.options.broadcast = broadcast;
+        self
+    }
+
+    /// Lets other sockets bind the same port, each set up the same
+    /// way, so all of them hear multicast traffic to it
     ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn reuse_port(mut self, reuse: bool) -> Self {
+        self.options.reuse_port = reuse;
+        self
+    }
+
+    /// Takes only IPv6 traffic on an IPv6 address
+    ///
+    /// ## Returns
+    /// The task. Calling it twice keeps the last
+    pub fn v6_only(mut self, only: bool) -> Self {
+        self.options.v6_only = only;
         self
     }
 
@@ -70,14 +83,10 @@ impl BindTask {
     fn bind(&self) -> Result<UdpSocket, RuntimeError> {
         let found = self.target.resolve()?;
 
-        if self.clock.expired() {
-            return Err(RuntimeError::TimedOut);
-        }
-
         let mut failure = RuntimeError::BadAddress;
 
         for addr in found {
-            match bind_one(&addr) {
+            match bind_one(&addr, &self.options) {
                 Ok(socket) => return Ok(socket),
                 Err(error) => failure = error,
             }
@@ -88,8 +97,10 @@ impl BindTask {
 }
 
 /// Binds a fresh socket to `addr`
-fn bind_one(addr: &SocketAddr) -> Result<UdpSocket, RuntimeError> {
+fn bind_one(addr: &SocketAddr, options: &Options) -> Result<UdpSocket, RuntimeError> {
     let fd = open(family(addr), libc::SOCK_DGRAM)?;
+
+    options.apply(fd.raw(), addr.is_ipv6())?;
     let (raw, len) = to_raw(addr);
 
     unsafe {
@@ -124,9 +135,6 @@ pub struct SendToTask {
     /// What to send
     data: Arc<[u8]>,
 
-    /// The timeout
-    clock: Clock,
-
     /// Where this run is sending, once it has been looked up
     dest: Progress<Option<SocketAddr>>,
 }
@@ -138,25 +146,8 @@ impl SendToTask {
             socket,
             target,
             data,
-            clock: Clock::default(),
             dest: Progress::default(),
         }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// A send only waits while the socket has no room, which is
-    /// rare. Running out gives [`RuntimeError::TimedOut`], and
-    /// nothing was sent
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
     }
 
     /// Sends, if the socket has room
@@ -183,7 +174,7 @@ impl SendToTask {
 
         match sent {
             Some(sent) => Ok(Step::Done(Ok(sent))),
-            None => self.clock.wait(fd, libc::EVFILT_WRITE),
+            None => wait_on(fd, libc::EVFILT_WRITE),
         }
     }
 }
@@ -211,8 +202,8 @@ pub struct RecvFromTask {
     /// Where to receive
     socket: UdpSocket,
 
-    /// The timeout
-    clock: Clock,
+    /// Whether the datagram is left for the next receive
+    peek: bool,
 }
 
 impl RecvFromTask {
@@ -220,22 +211,17 @@ impl RecvFromTask {
     pub(crate) fn new(socket: UdpSocket) -> Self {
         Self {
             socket,
-            clock: Clock::default(),
+            peek: false,
         }
     }
 
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Running out with nothing having arrived gives
-    /// [`RuntimeError::TimedOut`]
+    /// Looks at the next datagram without taking it, so the next
+    /// receive gets it again
     ///
     /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
+    /// The task
+    pub fn peek(mut self) -> Self {
+        self.peek = true;
         self
     }
 
@@ -245,15 +231,171 @@ impl RecvFromTask {
     ) -> Result<Step<Result<(Vec<u8>, SocketAddr), RuntimeError>>, RuntimeError> {
         let fd = self.socket.fd();
 
-        match recv_datagram(fd)? {
+        match recv_datagram(fd, self.peek)? {
             Some((data, storage, _)) => {
                 let from = from_raw(&storage).ok_or(RuntimeError::BadAddress)?;
 
                 Ok(Step::Done(Ok((data, from))))
             }
 
-            None => self.clock.wait(fd, libc::EVFILT_READ),
+            None => wait_on(fd, libc::EVFILT_READ),
         }
+    }
+}
+
+/// Fixes the one address a socket sends to and hears from
+///
+/// ## Returns
+/// Nothing, once the kernel has taken the address
+#[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
+pub struct UdpConnectTask {
+    /// The socket to fix
+    socket: UdpSocket,
+
+    /// Where to
+    target: Target,
+}
+
+impl UdpConnectTask {
+    pub(crate) fn new(socket: UdpSocket, target: Target) -> Self {
+        Self { socket, target }
+    }
+
+    fn connect(&self) -> Result<(), RuntimeError> {
+        let peer = pick(&self.target, self.socket.local_addr())?;
+        let (raw, len) = to_raw(&peer);
+
+        loop {
+            let done = unsafe {
+                libc::connect(
+                    self.socket.fd(),
+                    (&raw as *const libc::sockaddr_storage).cast::<libc::sockaddr>(),
+                    len,
+                )
+            }
+            .check();
+
+            match done {
+                Ok(_) => return Ok(()),
+                Err(RuntimeError::CheckError(Some(libc::EINTR))) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+/// Sends one datagram to the address a socket is connected to
+///
+/// ## Returns
+/// The number of bytes sent, which is all of them
+#[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
+pub struct UdpSendTask {
+    socket: UdpSocket,
+    data: Arc<[u8]>,
+}
+
+impl UdpSendTask {
+    pub(crate) fn new(socket: UdpSocket, data: Arc<[u8]>) -> Self {
+        Self { socket, data }
+    }
+
+    fn advance(&mut self) -> Result<Step<Result<usize, RuntimeError>>, RuntimeError> {
+        let fd = self.socket.fd();
+
+        match send_datagram(fd, &self.data, ptr::null(), 0)? {
+            Some(sent) => Ok(Step::Done(Ok(sent))),
+            None => wait_on(fd, libc::EVFILT_WRITE),
+        }
+    }
+}
+
+/// Receives one datagram from the address a socket is connected to
+///
+/// ## Returns
+/// The whole datagram
+#[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
+pub struct UdpRecvTask {
+    socket: UdpSocket,
+
+    /// Whether the datagram is left for the next receive
+    peek: bool,
+}
+
+impl UdpRecvTask {
+    pub(crate) fn new(socket: UdpSocket) -> Self {
+        Self {
+            socket,
+            peek: false,
+        }
+    }
+
+    /// Looks at the next datagram without taking it, so the next
+    /// receive gets it again
+    ///
+    /// ## Returns
+    /// The task
+    pub fn peek(mut self) -> Self {
+        self.peek = true;
+        self
+    }
+
+    fn advance(&mut self) -> Result<Step<Result<Vec<u8>, RuntimeError>>, RuntimeError> {
+        let fd = self.socket.fd();
+
+        match recv_datagram(fd, self.peek)? {
+            Some((data, _, _)) => Ok(Step::Done(Ok(data))),
+            None => wait_on(fd, libc::EVFILT_READ),
+        }
+    }
+}
+
+impl sealed::Sealed for UdpConnectTask {}
+impl sealed::Sealed for UdpSendTask {}
+impl sealed::Sealed for UdpRecvTask {}
+
+impl Task for UdpConnectTask {
+    type Output = Result<(), RuntimeError>;
+    type Input = Nothing;
+
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
+        self.connect()
+    }
+
+    /// A name lookup blocks, so only a literal address keeps it on
+    /// a worker
+    fn blocking(&self, _token: Token) -> bool {
+        self.target.needs_lookup()
+    }
+}
+
+impl Task for UdpSendTask {
+    type Output = Result<usize, RuntimeError>;
+    type Input = Nothing;
+
+    /// Waits on this thread, for `Runtime::block`
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
+        park::drive(self.clone(), reactor_id, task_id)
+    }
+
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+        settle(self.advance())
+    }
+}
+
+impl Task for UdpRecvTask {
+    type Output = Result<Vec<u8>, RuntimeError>;
+    type Input = Nothing;
+
+    /// Waits on this thread, for `Runtime::block`
+    fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
+        park::drive(self.clone(), reactor_id, task_id)
+    }
+
+    fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
+        settle(self.advance())
     }
 }
 
@@ -268,10 +410,6 @@ impl Task for BindTask {
     /// Never waits on the socket, so this is the whole task
     fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.bind()
-    }
-
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
     }
 
     /// A name lookup blocks, so only a literal address keeps it on
@@ -291,7 +429,6 @@ impl Task for SendToTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        self.clock.start();
         self.dest = Progress::default();
     }
 
@@ -313,10 +450,6 @@ impl Task for RecvFromTask {
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
-    }
-
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
     }
 
     fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {

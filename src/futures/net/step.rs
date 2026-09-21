@@ -5,66 +5,17 @@ use crate::{
     RuntimeError,
     futures::task::sealed::{Park, Step},
 };
-use std::{
-    fmt,
-    time::{Duration, Instant},
-};
+use std::fmt;
 
-/// A task's timeout, and the deadline one run of it works to
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Clock {
-    /// How long a run may take, if it has a limit
-    timeout: Option<Duration>,
-
-    /// When the current run has to be done by
-    deadline: Option<Instant>,
-}
-
-impl Clock {
-    /// Sets how long a run may take
-    #[inline(always)]
-    pub(crate) fn limit(&mut self, timeout: Duration) {
-        self.timeout = Some(timeout);
-    }
-
-    /// Starts the clock on a run
-    pub(crate) fn start(&mut self) {
-        self.deadline = self
-            .timeout
-            .and_then(|timeout| Instant::now().checked_add(timeout));
-    }
-
-    /// Whether the run is out of time
-    pub(crate) fn expired(&self) -> bool {
-        self.deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-    }
-
-    /// When the run has to be done by, if it has a limit
-    ///
-    /// For a task that parks on its own terms rather than through
-    /// `wait`
-    #[inline(always)]
-    pub(crate) fn deadline(&self) -> Option<Instant> {
-        self.deadline
-    }
-
-    /// Parks on `ident` until it is ready for `filter`, or the
-    /// deadline comes
-    ///
-    /// Out of time already is a timeout instead
-    pub(crate) fn wait<T>(&self, ident: libc::c_int, filter: i16) -> Result<Step<T>, RuntimeError> {
-        if self.expired() {
-            return Err(RuntimeError::TimedOut);
-        }
-
-        Ok(Step::Park(Park {
-            ident,
-            filter,
-            notes: 0,
-            deadline: self.deadline,
-        }))
-    }
+/// Parks on `ident` until it is ready for `filter`
+#[inline(always)]
+pub(crate) fn wait_on<T>(ident: libc::c_int, filter: i16) -> Result<Step<T>, RuntimeError> {
+    Ok(Step::Park(Park {
+        ident,
+        filter,
+        notes: 0,
+        deadline: None,
+    }))
 }
 
 /// Where one run of a task has got to
@@ -108,27 +59,16 @@ mod tests {
         assert!(!fresh.0.1);
     }
 
-    /// A clock with no timeout never runs out, and one that has
-    /// run out turns a wait into a timeout
+    /// A wait always parks on what it was given
     #[test]
-    fn a_wait_past_the_deadline_is_a_timeout() {
-        let mut open = Clock::default();
-        open.start();
-
-        assert!(!open.expired());
+    fn a_wait_parks() {
         assert!(matches!(
-            open.wait::<()>(0, libc::EVFILT_READ),
-            Ok(Step::Park(_))
-        ));
-
-        let mut spent = Clock::default();
-        spent.limit(Duration::ZERO);
-        spent.start();
-
-        assert!(spent.expired());
-        assert!(matches!(
-            spent.wait::<()>(0, libc::EVFILT_READ),
-            Err(RuntimeError::TimedOut),
+            wait_on::<()>(3, libc::EVFILT_READ),
+            Ok(Step::Park(Park {
+                ident: 3,
+                deadline: None,
+                ..
+            }))
         ));
     }
 }

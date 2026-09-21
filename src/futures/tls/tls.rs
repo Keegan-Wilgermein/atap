@@ -3,7 +3,11 @@
 
 use crate::futures::{
     net::address::NetAddress,
-    tls::tls_task::{TlsConnectTask, TlsListenTask, TlsRequestTask},
+    tcp::Connection,
+    tls::{
+        config::Keys,
+        tls_task::{TlsConnectTask, TlsListenTask, TlsRequestTask},
+    },
 };
 use std::{path::Path, sync::Arc};
 
@@ -21,13 +25,13 @@ use std::{path::Path, sync::Arc};
 /// # use atap::{Runtime, tls::Tls};
 /// # use std::time::Duration;
 /// # fn main() -> Result<(), atap::RuntimeError> {
-/// let reply = Runtime::block(
-///     Tls::request(
-///         "www.example.com:443",
-///         b"GET / HTTP/1.0\r\nHost: www.example.com\r\n\r\n".as_slice(),
-///     )
-///     .timeout(Duration::from_secs(10)),
-/// )?;
+/// let reply = Runtime::task(Tls::request(
+///     "www.example.com:443",
+///     b"GET / HTTP/1.0\r\nHost: www.example.com\r\n\r\n".as_slice(),
+/// ))
+/// .timeout(Duration::from_secs(10))
+/// .spawn()
+/// .join()??;
 /// # Ok(())
 /// # }
 /// ```
@@ -104,8 +108,49 @@ impl Tls {
     ) -> TlsListenTask {
         TlsListenTask::new(
             addr.target(),
-            cert.as_ref().to_path_buf(),
-            key.as_ref().to_path_buf(),
+            Keys::Files(cert.as_ref().to_path_buf(), key.as_ref().to_path_buf()),
         )
+    }
+
+    /// Opens a socket that waits for TLS connections on `addr`,
+    /// with a certificate and key already in memory
+    ///
+    /// ## Behaviour
+    /// The same as [`Tls::listen`], with `cert` and `key` given as
+    /// PEM rather than read from files
+    ///
+    /// ## Returns
+    /// The listener. A chain or key that doesn't parse, or a key
+    /// that doesn't match, gives [`RuntimeError::BadCertificate`]
+    ///
+    /// [`RuntimeError::BadCertificate`]: crate::RuntimeError::BadCertificate
+    pub fn listen_pem(
+        addr: impl NetAddress,
+        cert: impl AsRef<[u8]>,
+        key: impl AsRef<[u8]>,
+    ) -> TlsListenTask {
+        TlsListenTask::new(
+            addr.target(),
+            Keys::Pem(Arc::from(cert.as_ref()), Arc::from(key.as_ref())),
+        )
+    }
+
+    /// Starts TLS on a TCP connection that is already open, as the
+    /// client
+    ///
+    /// ## Behaviour
+    /// For a protocol that begins in the clear and switches, such
+    /// as SMTP's `STARTTLS`. The certificate is checked against the
+    /// peer's address unless `.server_name()` says otherwise. The
+    /// other side runs [`TlsListener::upgrade`] or its own
+    /// equivalent
+    ///
+    /// ## Returns
+    /// The TLS connection. The TCP one should not be used for
+    /// anything else afterwards
+    ///
+    /// [`TlsListener::upgrade`]: crate::tls::TlsListener::upgrade
+    pub fn upgrade(conn: Connection) -> TlsConnectTask {
+        TlsConnectTask::over(conn)
     }
 }

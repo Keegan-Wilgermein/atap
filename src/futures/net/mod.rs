@@ -11,4 +11,4 @@ pub(crate) mod step;
 pub mod stream;
 
 pub use address::NetAddress;
-pub use stream::{RecvTask, SendTask};
+pub use stream::{FinishTask, RecvTask, SendTask};

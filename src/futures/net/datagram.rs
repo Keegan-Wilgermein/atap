@@ -48,13 +48,15 @@ pub(crate) fn send_datagram(
     }
 }
 
-/// Takes one datagram off a socket, whole
+/// Takes one datagram off a socket, whole, or looks at it and
+/// leaves it there if `peek` says to
 ///
 /// ## Returns
 /// The bytes, and the raw address they came from with its
 /// length. `None` when nothing is waiting
 pub(crate) fn recv_datagram(
     fd: libc::c_int,
+    peek: bool,
 ) -> Result<Option<(Vec<u8>, libc::sockaddr_storage, libc::socklen_t)>, RuntimeError> {
     let mut data: Vec<u8> = Vec::with_capacity(MAX_DATAGRAM);
 
@@ -69,7 +71,7 @@ pub(crate) fn recv_datagram(
                     .as_mut_ptr()
                     .cast::<libc::c_void>(),
                 MAX_DATAGRAM,
-                0,
+                if peek { libc::MSG_PEEK } else { 0 },
                 (&mut storage as *mut libc::sockaddr_storage).cast::<libc::sockaddr>(),
                 &mut len,
             )

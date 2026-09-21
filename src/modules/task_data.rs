@@ -134,6 +134,10 @@ pub(crate) struct TaskData {
     /// for everything else
     interval: AtomicU64,
 
+    /// When the run under way times out, in the same form as `until`,
+    /// or zero for no limit
+    run_deadline: AtomicU64,
+
     /// The kqueue this task is waiting on, or `NOT_WAITING`, so a
     /// cancel can reach into the wait
     waiting: AtomicI32,
@@ -240,6 +244,7 @@ impl TaskData {
                 until: AtomicU64::new(encode_until(setup.until())),
                 start_delay: AtomicU64::new(setup.start_delay.as_nanos() as u64),
                 interval: AtomicU64::new(setup.interval.as_nanos() as u64),
+                run_deadline: AtomicU64::new(0),
                 waiting: AtomicI32::new(NOT_WAITING),
                 select: AtomicI32::new(NO_SELECT),
                 priority: AtomicU64::new(0),
@@ -542,7 +547,9 @@ impl TaskData {
     /// then reads the other's, so one of them always sees the other
     pub(crate) fn publishes_nothing_more(&self) -> bool {
         match TaskState::from_u32(self.state.load(Ordering::SeqCst)) {
-            TaskState::Cancelled | TaskState::Failed | TaskState::Free => true,
+            TaskState::Cancelled | TaskState::TimedOut | TaskState::Failed | TaskState::Free => {
+                true
+            }
             TaskState::Pending | TaskState::Running => false,
 
             TaskState::Ready | TaskState::Taken => {
@@ -662,6 +669,40 @@ impl TaskData {
     #[inline(always)]
     pub(crate) fn clear_start_delay(&self) {
         self.start_delay.store(0, Ordering::Release);
+    }
+
+    /// Starts the clock on a run limited to `timeout`
+    ///
+    /// ## Returns
+    /// The deadline's word, which the timer carries so a late one
+    /// can be told apart
+    pub(crate) fn time_run(&self, timeout: Duration) -> u64 {
+        let word = encode_until(Some(Instant::now() + timeout));
+
+        self.run_deadline.store(word, Ordering::Release);
+
+        word
+    }
+
+    /// The word of the run under way's deadline, or zero
+    #[inline(always)]
+    pub(crate) fn run_deadline(&self) -> u64 {
+        self.run_deadline.load(Ordering::Acquire)
+    }
+
+    /// When the run under way times out, if it has a limit
+    #[inline(always)]
+    pub(crate) fn run_deadline_at(&self) -> Option<Instant> {
+        decode_until(self.run_deadline())
+    }
+
+    /// Stops the clock on the run
+    ///
+    /// ## Returns
+    /// Whether it had one running
+    #[inline(always)]
+    pub(crate) fn untime_run(&self) -> bool {
+        self.run_deadline.swap(0, Ordering::AcqRel) != 0
     }
 
     /// Owes a delay before the next run, for a give that waits one

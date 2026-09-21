@@ -1249,7 +1249,7 @@ fn everything_at_once() {
             while !stop.load(Ordering::Relaxed) {
                 Tally::bump(&tally.spawned);
 
-                let handle = Runtime::task(File::watch(&path).timeout(STALL)).spawn();
+                let handle = Runtime::task(File::watch(&path)).timeout(STALL).spawn();
 
                 // Touched over and over, since a single append can land
                 // before the watch's first look and become its baseline

@@ -4,7 +4,11 @@
 pub mod exit_status;
 pub mod process;
 pub mod process_task;
+pub mod running;
 
 pub use exit_status::{ExitStatus, ProcessOutput};
 pub use process::Process;
 pub use process_task::{OutputTask, StatusTask};
+pub use running::{
+    ChildOutput, ChildSignalTask, ChildStdin, ChildWaitTask, RunningChild, SpawnTask,
+};

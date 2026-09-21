@@ -8,19 +8,22 @@ use crate::{
     constants::{FILE_CHUNK, INLINE_PAYLOAD},
     executor,
     futures::{
-        file::metadata::Metadata,
+        file::{
+            dir_entry::DirEntry,
+            metadata::{FileKind, Metadata},
+        },
         task::sealed,
         task::{Nothing, Task},
     },
     modules::{c_path::c_path, fd::Fd, int_check::IntCheck, retried::retried},
 };
 use std::{
-    ffi::{CString, OsStr},
+    ffi::{CStr, CString, OsStr},
     io::Error,
     mem,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
-    slice,
+    ptr, slice,
     sync::Arc,
 };
 
@@ -28,8 +31,10 @@ use std::{
 const _: () = assert!(mem::size_of::<Result<Vec<u8>, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<usize, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<Metadata, RuntimeError>>() <= INLINE_PAYLOAD);
-const _: () = assert!(mem::size_of::<Result<Vec<PathBuf>, RuntimeError>>() <= INLINE_PAYLOAD);
+const _: () = assert!(mem::size_of::<Result<Vec<DirEntry>, RuntimeError>>() <= INLINE_PAYLOAD);
 const _: () = assert!(mem::size_of::<Result<(), RuntimeError>>() <= INLINE_PAYLOAD);
+const _: () = assert!(mem::size_of::<Result<PathBuf, RuntimeError>>() <= INLINE_PAYLOAD);
+const _: () = assert!(mem::size_of::<Result<u64, RuntimeError>>() <= INLINE_PAYLOAD);
 
 /// How much of a file a read wants
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +78,34 @@ enum PathOp {
 
     /// `rename`
     Rename,
+
+    /// `symlink`, with the link at the path and the target in `other`
+    Symlink,
+
+    /// `link`, with the new name in `other`
+    HardLink,
+
+    /// `chmod`
+    SetPermissions(u32),
+
+    /// `truncate`
+    SetLen(u64),
+
+    /// `mkdir` on every missing directory down to the path
+    CreateDirAll,
+
+    /// Everything under the path, then the path itself
+    RemoveDirAll,
+}
+
+/// What a `PathBufTask` asks for
+#[derive(Debug, Clone, Copy)]
+enum Resolve {
+    /// Where a symbolic link points
+    ReadLink,
+
+    /// The absolute path with every link and `..` taken out
+    Canonical,
 }
 
 /// An open directory stream that closes itself
@@ -135,8 +168,8 @@ pub struct MetadataTask {
 /// Lists what is in a directory
 ///
 /// ## Returns
-/// One path per entry, each joined onto the directory that was
-/// asked for. `.` and `..` are left out
+/// One entry per thing in it, each path joined onto the directory
+/// that was asked for. `.` and `..` are left out
 #[derive(Debug, Clone)]
 #[must_use = "a task does nothing until it is run or spawned"]
 pub struct ReadDirTask {
@@ -144,9 +177,11 @@ pub struct ReadDirTask {
     path: Option<CString>,
 }
 
-/// One of the operations that is a single syscall and no output
+/// An operation on a path with no output
 ///
-/// Not cancellable once it has started
+/// Everything but the two that walk a tree is a single syscall, and
+/// can't be cancelled once it has started. The tree walks check
+/// between entries
 #[derive(Debug, Clone)]
 #[must_use = "a task does nothing until it is run or spawned"]
 pub struct PathTask {
@@ -158,6 +193,62 @@ pub struct PathTask {
 
     /// Which call to make
     op: PathOp,
+}
+
+/// Asks the filesystem for a path
+///
+/// ## Returns
+/// The path it answered with
+#[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
+pub struct PathBufTask {
+    /// The path asked about
+    path: Option<CString>,
+
+    /// What is asked
+    resolve: Resolve,
+}
+
+/// Copies a file's contents and metadata to another path
+///
+/// ## Returns
+/// The number of bytes in the copy
+#[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
+pub struct CopyTask {
+    /// The file copied
+    from: Option<CString>,
+
+    /// Where the copy goes
+    to: Option<CString>,
+}
+
+impl PathBufTask {
+    /// Reads where a link points
+    pub(crate) fn read_link(path: impl AsRef<Path>) -> Self {
+        Self {
+            path: c_path(path),
+            resolve: Resolve::ReadLink,
+        }
+    }
+
+    /// Resolves a path to its canonical form
+    pub(crate) fn canonical(path: impl AsRef<Path>) -> Self {
+        Self {
+            path: c_path(path),
+            resolve: Resolve::Canonical,
+        }
+    }
+}
+
+impl CopyTask {
+    /// Copies `from` to `to`
+    pub(crate) fn new(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Self {
+        Self {
+            from: c_path(from),
+            to: c_path(to),
+        }
+    }
 }
 
 impl ReadTask {
@@ -257,7 +348,45 @@ impl PathTask {
         }
     }
 
-    /// The shape every op but `rename` has
+    /// Makes a symbolic link at `link` pointing at `target`
+    pub(crate) fn symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) -> Self {
+        Self {
+            path: c_path(link),
+            other: c_path(target),
+            op: PathOp::Symlink,
+        }
+    }
+
+    /// Gives `existing` another name, `new`
+    pub(crate) fn hard_link(existing: impl AsRef<Path>, new: impl AsRef<Path>) -> Self {
+        Self {
+            path: c_path(existing),
+            other: c_path(new),
+            op: PathOp::HardLink,
+        }
+    }
+
+    /// Sets a path's permission bits
+    pub(crate) fn set_permissions(path: impl AsRef<Path>, mode: u32) -> Self {
+        Self::one(path, PathOp::SetPermissions(mode))
+    }
+
+    /// Makes a file exactly `len` bytes long
+    pub(crate) fn set_len(path: impl AsRef<Path>, len: u64) -> Self {
+        Self::one(path, PathOp::SetLen(len))
+    }
+
+    /// Creates a directory and every missing one above it
+    pub(crate) fn create_dir_all(path: impl AsRef<Path>) -> Self {
+        Self::one(path, PathOp::CreateDirAll)
+    }
+
+    /// Removes a directory and everything in it
+    pub(crate) fn remove_dir_all(path: impl AsRef<Path>) -> Self {
+        Self::one(path, PathOp::RemoveDirAll)
+    }
+
+    /// The shape every op with one path has
     fn one(path: impl AsRef<Path>, op: PathOp) -> Self {
         Self {
             path: c_path(path),
@@ -272,6 +401,8 @@ impl sealed::Sealed for WriteTask {}
 impl sealed::Sealed for MetadataTask {}
 impl sealed::Sealed for ReadDirTask {}
 impl sealed::Sealed for PathTask {}
+impl sealed::Sealed for PathBufTask {}
+impl sealed::Sealed for CopyTask {}
 
 impl Task for ReadTask {
     type Output = Result<Vec<u8>, RuntimeError>;
@@ -350,7 +481,7 @@ impl Task for MetadataTask {
 }
 
 impl Task for ReadDirTask {
-    type Output = Result<Vec<PathBuf>, RuntimeError>;
+    type Output = Result<Vec<DirEntry>, RuntimeError>;
     type Input = Nothing;
 
     fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
@@ -404,7 +535,17 @@ impl Task for ReadDirTask {
                 continue;
             }
 
-            found.push(parent.join(OsStr::from_bytes(name)));
+            let path = parent.join(OsStr::from_bytes(name));
+
+            let kind = match unsafe { (*entry).d_type } {
+                libc::DT_REG => FileKind::File,
+                libc::DT_DIR => FileKind::Dir,
+                libc::DT_LNK => FileKind::Symlink,
+                libc::DT_UNKNOWN => kind_of(&path)?,
+                _ => FileKind::Other,
+            };
+
+            found.push(DirEntry::new(path, kind));
         }
 
         Ok(found)
@@ -422,22 +563,43 @@ impl Task for PathTask {
     fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
 
-        // Resolved first, so a rename with nowhere to go answers
-        // `BadPath`
-        let to = match self.op {
-            PathOp::Rename => Some(self.other.as_ref().ok_or(RuntimeError::BadPath)?),
+        // Resolved first, so an op with nowhere to go answers `BadPath`
+        let other = match self.op {
+            PathOp::Rename | PathOp::Symlink | PathOp::HardLink => {
+                Some(self.other.as_ref().ok_or(RuntimeError::BadPath)?)
+            }
             _ => None,
         };
 
-        retried(|| match self.op {
-            PathOp::Remove => unsafe { libc::unlink(path.as_ptr()) },
-            PathOp::RemoveDir => unsafe { libc::rmdir(path.as_ptr()) },
-            PathOp::CreateDir => unsafe { libc::mkdir(path.as_ptr(), 0o777) },
+        match self.op {
+            PathOp::CreateDirAll => return create_dir_all(path),
+            PathOp::RemoveDirAll => return remove_dir_all(path),
+            _ => {}
+        }
 
-            PathOp::Rename => match to {
-                Some(to) => unsafe { libc::rename(path.as_ptr(), to.as_ptr()) },
-                None => -1,
+        let mode = match self.op {
+            PathOp::SetPermissions(mode) if mode <= 0o7777 => mode as libc::mode_t,
+            PathOp::SetPermissions(_) => return Err(RuntimeError::BadArgument),
+            _ => 0,
+        };
+
+        let len = match self.op {
+            PathOp::SetLen(len) => seek_to(len)?,
+            _ => 0,
+        };
+
+        retried(|| match (self.op, other) {
+            (PathOp::Remove, _) => unsafe { libc::unlink(path.as_ptr()) },
+            (PathOp::RemoveDir, _) => unsafe { libc::rmdir(path.as_ptr()) },
+            (PathOp::CreateDir, _) => unsafe { libc::mkdir(path.as_ptr(), 0o777) },
+            (PathOp::SetPermissions(_), _) => unsafe { libc::chmod(path.as_ptr(), mode) },
+            (PathOp::SetLen(_), _) => unsafe { libc::truncate(path.as_ptr(), len) },
+            (PathOp::Rename, Some(to)) => unsafe { libc::rename(path.as_ptr(), to.as_ptr()) },
+            (PathOp::Symlink, Some(target)) => unsafe {
+                libc::symlink(target.as_ptr(), path.as_ptr())
             },
+            (PathOp::HardLink, Some(new)) => unsafe { libc::link(path.as_ptr(), new.as_ptr()) },
+            _ => -1,
         })?;
 
         Ok(())
@@ -448,11 +610,377 @@ impl Task for PathTask {
     }
 }
 
+impl Task for PathBufTask {
+    type Output = Result<PathBuf, RuntimeError>;
+    type Input = Nothing;
+
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
+        let path = self.path.as_ref().ok_or(RuntimeError::BadPath)?;
+
+        match self.resolve {
+            Resolve::ReadLink => read_link(path),
+            Resolve::Canonical => canonical(path),
+        }
+    }
+
+    fn blocking(&self, _token: Token) -> bool {
+        true
+    }
+}
+
+impl Task for CopyTask {
+    type Output = Result<u64, RuntimeError>;
+    type Input = Nothing;
+
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
+        let from = self.from.as_ref().ok_or(RuntimeError::BadPath)?;
+        let to = self.to.as_ref().ok_or(RuntimeError::BadPath)?;
+
+        copy(from, to)
+    }
+
+    fn blocking(&self, _token: Token) -> bool {
+        true
+    }
+}
+
+/// What a path is, without following a link, for a filesystem
+/// that doesn't say in its listing
+fn kind_of(path: &Path) -> Result<FileKind, RuntimeError> {
+    let path = c_path(path).ok_or(RuntimeError::BadPath)?;
+    let mut raw: libc::stat = unsafe { mem::zeroed() };
+
+    retried(|| unsafe { libc::lstat(path.as_ptr(), &mut raw) })?;
+
+    Ok(FileKind::from_mode(raw.st_mode))
+}
+
+/// Reads where a symbolic link points
+fn read_link(path: &CStr) -> Result<PathBuf, RuntimeError> {
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+
+    loop {
+        let read = unsafe {
+            libc::readlink(
+                path.as_ptr(),
+                buffer.as_mut_ptr().cast::<libc::c_char>(),
+                buffer.len(),
+            )
+        }
+        .check();
+
+        match read {
+            // Filled, so the target may have been cut short
+            Ok(read) if read as usize == buffer.len() => buffer.resize(buffer.len() * 2, 0),
+
+            Ok(read) => {
+                buffer.truncate(read as usize);
+
+                return Ok(PathBuf::from(OsStr::from_bytes(&buffer)));
+            }
+
+            Err(RuntimeError::CheckError(Some(libc::EINTR))) => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Resolves a path to the absolute one it names
+fn canonical(path: &CStr) -> Result<PathBuf, RuntimeError> {
+    let resolved = unsafe { libc::realpath(path.as_ptr(), ptr::null_mut()) };
+
+    if resolved.is_null() {
+        return Err(RuntimeError::CheckError(
+            Error::last_os_error().raw_os_error(),
+        ));
+    }
+
+    let found = PathBuf::from(OsStr::from_bytes(
+        unsafe { CStr::from_ptr(resolved) }.to_bytes(),
+    ));
+
+    unsafe { libc::free(resolved.cast::<libc::c_void>()) };
+
+    Ok(found)
+}
+
+/// Makes every directory down to `path` that isn't there yet
+fn create_dir_all(path: &CStr) -> Result<(), RuntimeError> {
+    let bytes = path.to_bytes();
+
+    if bytes.is_empty() {
+        return Err(RuntimeError::CheckError(Some(libc::ENOENT)));
+    }
+
+    // The end of every component, the root aside
+    let ends = bytes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(at, byte)| **byte == b'/' && bytes[at - 1] != b'/')
+        .map(|(at, _)| at)
+        .chain([bytes.len()]);
+
+    for end in ends {
+        if executor::cancelled() {
+            return Err(RuntimeError::Cancelled);
+        }
+
+        let prefix = CString::new(&bytes[..end]).map_err(|_| RuntimeError::BadPath)?;
+
+        match retried(|| unsafe { libc::mkdir(prefix.as_ptr(), 0o777) }) {
+            Ok(_) => {}
+
+            // Fine only if what is there is a directory
+            Err(RuntimeError::CheckError(Some(libc::EEXIST))) => {
+                let mut raw: libc::stat = unsafe { mem::zeroed() };
+
+                retried(|| unsafe { libc::stat(prefix.as_ptr(), &mut raw) })?;
+
+                if raw.st_mode & libc::S_IFMT != libc::S_IFDIR {
+                    return Err(RuntimeError::CheckError(Some(libc::ENOTDIR)));
+                }
+            }
+
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(())
+}
+
+/// A directory being emptied, and the entries in it still to go
+struct Emptying {
+    /// The open directory
+    fd: Fd,
+
+    /// Its name in the directory above it
+    name: CString,
+
+    /// Entries not yet removed
+    left: Vec<CString>,
+}
+
+/// Removes `path`, and everything under it if it is a directory
+///
+/// ## Behaviour
+/// A symbolic link is removed, never followed. Each directory is
+/// opened with `O_NOFOLLOW` and worked on through its descriptor,
+/// so a directory swapped for a link part way through isn't entered
+fn remove_dir_all(path: &CStr) -> Result<(), RuntimeError> {
+    let mut raw: libc::stat = unsafe { mem::zeroed() };
+
+    retried(|| unsafe { libc::lstat(path.as_ptr(), &mut raw) })?;
+
+    if raw.st_mode & libc::S_IFMT != libc::S_IFDIR {
+        retried(|| unsafe { libc::unlink(path.as_ptr()) })?;
+
+        return Ok(());
+    }
+
+    let root = open_dir(libc::AT_FDCWD, path)?;
+    let left = entries(&root)?;
+
+    let mut stack = vec![Emptying {
+        fd: root,
+        name: CString::default(),
+        left,
+    }];
+
+    while let Some(top) = stack.last_mut() {
+        if executor::cancelled() {
+            return Err(RuntimeError::Cancelled);
+        }
+
+        let Some(name) = top.left.pop() else {
+            let done = stack.pop();
+
+            // The root itself goes by its path, below
+            if let (Some(parent), Some(done)) = (stack.last(), done) {
+                retried(|| unsafe {
+                    libc::unlinkat(parent.fd.raw(), done.name.as_ptr(), libc::AT_REMOVEDIR)
+                })?;
+            }
+
+            continue;
+        };
+
+        let dir = top.fd.raw();
+        let mut raw: libc::stat = unsafe { mem::zeroed() };
+
+        retried(|| unsafe {
+            libc::fstatat(dir, name.as_ptr(), &mut raw, libc::AT_SYMLINK_NOFOLLOW)
+        })?;
+
+        if raw.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            retried(|| unsafe { libc::unlinkat(dir, name.as_ptr(), 0) })?;
+            continue;
+        }
+
+        let fd = open_dir(dir, &name)?;
+        let left = entries(&fd)?;
+
+        stack.push(Emptying { fd, name, left });
+    }
+
+    retried(|| unsafe { libc::rmdir(path.as_ptr()) })?;
+
+    Ok(())
+}
+
+/// Opens a directory under `at` without following a link
+fn open_dir(at: libc::c_int, name: &CStr) -> Result<Fd, RuntimeError> {
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
+    loop {
+        match unsafe { libc::openat(at, name.as_ptr(), flags) }.check() {
+            Ok(fd) => return Ok(Fd::new(fd)),
+            Err(RuntimeError::CheckError(Some(libc::EINTR))) => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Every entry in an open directory, `.` and `..` aside
+///
+/// Read in full before anything is removed, since removing entries
+/// while reading can skip some
+fn entries(fd: &Fd) -> Result<Vec<CString>, RuntimeError> {
+    let copy = retried(|| unsafe { libc::fcntl(fd.raw(), libc::F_DUPFD_CLOEXEC, 0) })?;
+    let raw = unsafe { libc::fdopendir(copy) };
+
+    if raw.is_null() {
+        let failed = Error::last_os_error().raw_os_error();
+
+        unsafe { libc::close(copy) };
+
+        return Err(RuntimeError::CheckError(failed));
+    }
+
+    // The stream is read from the start, whoever read the descriptor
+    unsafe { libc::rewinddir(raw) };
+
+    let dir = Dir(raw);
+    let mut found = Vec::new();
+
+    loop {
+        unsafe { *libc::__error() = 0 };
+
+        let entry = unsafe { libc::readdir(dir.0) };
+
+        if entry.is_null() {
+            let failed = Error::last_os_error().raw_os_error().unwrap_or(0);
+
+            if failed != 0 {
+                return Err(RuntimeError::CheckError(Some(failed)));
+            }
+
+            return Ok(found);
+        }
+
+        let name = unsafe {
+            slice::from_raw_parts(
+                (*entry).d_name.as_ptr().cast::<u8>(),
+                (*entry).d_namlen as usize,
+            )
+        };
+
+        if name == b"." || name == b".." {
+            continue;
+        }
+
+        found.push(CString::new(name).map_err(|_| RuntimeError::BadPath)?);
+    }
+}
+
+/// Copies a file, as a clone where the filesystem allows
+///
+/// ## Returns
+/// The size of the copy
+fn copy(from: &CStr, to: &CStr) -> Result<u64, RuntimeError> {
+    let source = open_at(from, libc::O_RDONLY, 0)?;
+
+    if directory(&source)? {
+        return Err(RuntimeError::CheckError(Some(libc::EISDIR)));
+    }
+
+    let size = hint(&source)? as u64;
+
+    // Instant on APFS, and refused when `to` exists or the volume
+    // can't clone
+    if retried(|| unsafe { libc::fclonefileat(source.raw(), libc::AT_FDCWD, to.as_ptr(), 0) })
+        .is_ok()
+    {
+        return Ok(size);
+    }
+
+    let target = open_at(to, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC, 0o666)?;
+
+    let state = unsafe { libc::copyfile_state_alloc() };
+
+    if state.is_null() {
+        return Err(RuntimeError::CheckError(Some(libc::ENOMEM)));
+    }
+
+    let progress: extern "C" fn(
+        libc::c_int,
+        libc::c_int,
+        libc::copyfile_state_t,
+        *const libc::c_char,
+        *const libc::c_char,
+        *mut libc::c_void,
+    ) -> libc::c_int = copy_progress;
+
+    unsafe {
+        libc::copyfile_state_set(
+            state,
+            libc::COPYFILE_STATE_STATUS_CB as u32,
+            progress as *const libc::c_void,
+        )
+    };
+
+    let copied = retried(|| unsafe {
+        libc::fcopyfile(
+            source.raw(),
+            target.raw(),
+            state,
+            libc::COPYFILE_METADATA | libc::COPYFILE_DATA,
+        )
+    });
+
+    unsafe { libc::copyfile_state_free(state) };
+
+    match copied {
+        Ok(_) => Ok(size),
+        Err(RuntimeError::CheckError(Some(libc::ECANCELED))) => Err(RuntimeError::Cancelled),
+        Err(error) => Err(error),
+    }
+}
+
+/// Stops a copy between chunks once its task is stopped
+extern "C" fn copy_progress(
+    _what: libc::c_int,
+    _stage: libc::c_int,
+    _state: libc::copyfile_state_t,
+    _from: *const libc::c_char,
+    _to: *const libc::c_char,
+    _context: *mut libc::c_void,
+) -> libc::c_int {
+    match executor::cancelled() {
+        true => libc::COPYFILE_QUIT,
+        false => libc::COPYFILE_CONTINUE,
+    }
+}
+
 /// Opens a path, always closing on exec
 ///
 /// `mode` is only used when the flags create the file, but
 /// `open` is variadic so it is always passed
-fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, RuntimeError> {
+pub(crate) fn open_at(
+    path: &CStr,
+    flags: libc::c_int,
+    mode: libc::c_int,
+) -> Result<Fd, RuntimeError> {
     loop {
         // Only here and between chunks can a cancel land
         if executor::cancelled() {
@@ -471,7 +999,7 @@ fn open_at(path: &CString, flags: libc::c_int, mode: libc::c_int) -> Result<Fd, 
 }
 
 /// Whether the open descriptor is a directory
-fn directory(fd: &Fd) -> Result<bool, RuntimeError> {
+pub(crate) fn directory(fd: &Fd) -> Result<bool, RuntimeError> {
     let mut raw: libc::stat = unsafe { mem::zeroed() };
 
     retried(|| unsafe { libc::fstat(fd.raw(), &mut raw) })?;
@@ -543,7 +1071,7 @@ fn read_whole(fd: &Fd) -> Result<Vec<u8>, RuntimeError> {
 /// ## Returns
 /// Up to `len` bytes. Short means the file ended, which is an
 /// answer rather than a failure
-fn read_range(fd: &Fd, offset: u64, len: usize) -> Result<Vec<u8>, RuntimeError> {
+pub(crate) fn read_range(fd: &Fd, offset: u64, len: usize) -> Result<Vec<u8>, RuntimeError> {
     let mut found = Vec::new();
 
     while found.len() < len {
@@ -590,7 +1118,7 @@ fn read_range(fd: &Fd, offset: u64, len: usize) -> Result<Vec<u8>, RuntimeError>
 ///
 /// `at` is `Some` for a positional write and `None` for one
 /// that follows the descriptor
-fn write_all(fd: &Fd, data: &[u8], at: Option<u64>) -> Result<usize, RuntimeError> {
+pub(crate) fn write_all(fd: &Fd, data: &[u8], at: Option<u64>) -> Result<usize, RuntimeError> {
     let mut done = 0;
 
     while done < data.len() {
@@ -639,7 +1167,7 @@ fn seek_to(offset: u64) -> Result<libc::off_t, RuntimeError> {
 }
 
 /// How much to reserve before the first read
-fn hint(fd: &Fd) -> Result<usize, RuntimeError> {
+pub(crate) fn hint(fd: &Fd) -> Result<usize, RuntimeError> {
     let mut raw: libc::stat = unsafe { mem::zeroed() };
 
     retried(|| unsafe { libc::fstat(fd.raw(), &mut raw) })?;

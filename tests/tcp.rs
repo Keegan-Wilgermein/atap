@@ -8,7 +8,7 @@ use atap::{
     Runtime, RuntimeError,
     tcp::{Connection, Listener, Tcp},
 };
-use common::until_started;
+use common::{until_started, within};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -271,7 +271,7 @@ fn nobody_listening_is_refused() {
     };
 
     assert_eq!(
-        Runtime::block(Tcp::connect(format!("127.0.0.1:{port}")).timeout(PATIENCE)).map(|_| ()),
+        within(Tcp::connect(format!("127.0.0.1:{port}")), PATIENCE).map(|_| ()),
         Err(RuntimeError::CheckError(Some(libc::ECONNREFUSED))),
     );
 }
@@ -294,7 +294,7 @@ fn a_blocking_receive_times_out() {
     let (_client, server) = pair();
 
     let started = Instant::now();
-    let got = Runtime::block(server.recv(64).timeout(Duration::from_millis(100)));
+    let got = within(server.recv(64), Duration::from_millis(100));
     let took = started.elapsed();
 
     assert_eq!(got, Err(RuntimeError::TimedOut));
@@ -314,10 +314,10 @@ fn a_spawned_receive_times_out() {
     let (_client, server) = pair();
 
     let started = Instant::now();
-    let handle = Runtime::task(server.recv(64).timeout(Duration::from_millis(100))).spawn();
-    let got = handle
-        .take_with_timeout(PATIENCE)
-        .expect("the timeout must settle it");
+    let handle = Runtime::task(server.recv(64))
+        .timeout(Duration::from_millis(100))
+        .spawn();
+    let got = handle.take_with_timeout(PATIENCE);
     let took = started.elapsed();
 
     assert_eq!(got, Err(RuntimeError::TimedOut));
@@ -340,7 +340,7 @@ fn a_timed_out_receive_keeps_its_bytes() {
     Runtime::block(client.send(b"abc".as_slice())).unwrap();
 
     assert_eq!(
-        Runtime::block(server.recv_exact(10).timeout(Duration::from_millis(50))),
+        within(server.recv_exact(10), Duration::from_millis(50)),
         Err(RuntimeError::TimedOut),
     );
 
@@ -438,9 +438,11 @@ fn a_request_reads_the_whole_answer() {
         asked
     });
 
-    let reply =
-        Runtime::block(Tcp::request(addr, b"GET / HTTP/1.0\r\n\r\n".as_slice()).timeout(PATIENCE))
-            .expect("the request must be answered");
+    let reply = within(
+        Tcp::request(addr, b"GET / HTTP/1.0\r\n\r\n".as_slice()),
+        PATIENCE,
+    )
+    .expect("the request must be answered");
 
     assert_eq!(reply, b"HTTP/1.0 200 OK\r\n\r\nhi");
     assert_eq!(server.join().unwrap(), b"GET / HTTP/1.0\r\n\r\n");
@@ -509,4 +511,80 @@ fn the_socket_closes_with_its_last_handle() {
         b"",
         "the last handle going closes the socket",
     );
+}
+
+/// Finishing the sending side ends the other side's read, and this
+/// side can still hear back
+#[test]
+fn finishing_a_connection_ends_the_other_read() {
+    let (client, server) = pair();
+
+    let reading = Runtime::task(server.recv_to_end()).spawn();
+
+    Runtime::block(client.send(b"all of it".as_slice())).unwrap();
+    Runtime::block(client.finish()).unwrap();
+
+    assert_eq!(
+        reading.join_with_timeout(PATIENCE),
+        Ok(Ok(b"all of it".to_vec()))
+    );
+
+    Runtime::block(server.send(b"reply".as_slice())).unwrap();
+    Runtime::block(server.finish()).unwrap();
+
+    assert_eq!(Runtime::block(client.recv_to_end()), Ok(b"reply".to_vec()));
+}
+
+/// A connection made with no delay reports it, and can change it
+#[test]
+fn nodelay_is_set_and_read_back() {
+    let listener = listener();
+    let accepting = Runtime::task(listener.accept()).spawn();
+
+    let client = Runtime::block(
+        Tcp::connect(listener.local_addr())
+            .nodelay(true)
+            .keepalive(Duration::from_secs(30)),
+    )
+    .expect("loopback must connect");
+
+    let (server, _) = accepting.take_with_timeout(PATIENCE).unwrap().unwrap();
+
+    assert_eq!(client.nodelay(), Ok(true));
+
+    client.set_nodelay(false).unwrap();
+    assert_eq!(client.nodelay(), Ok(false));
+
+    server.set_keepalive(Some(Duration::from_secs(5))).unwrap();
+    server.set_keepalive(None).unwrap();
+}
+
+/// Two listeners share a port when both ask to
+#[test]
+fn reused_ports_are_shared() {
+    let _ = Runtime::init();
+
+    let first = Runtime::block(Tcp::listen("127.0.0.1:0").reuse_port(true).backlog(4))
+        .expect("the first listener must open");
+
+    let second = Runtime::block(Tcp::listen(first.local_addr()).reuse_port(true))
+        .expect("the second listener must share the port");
+
+    assert_eq!(first.local_addr(), second.local_addr());
+
+    assert!(
+        Runtime::block(Tcp::listen(first.local_addr())).is_err(),
+        "a listener that didn't ask can't share it"
+    );
+}
+
+/// An IPv6 only listener opens on an IPv6 address
+#[test]
+fn a_v6_only_listener_opens() {
+    let _ = Runtime::init();
+
+    let listener = Runtime::block(Tcp::listen("[::1]:0").v6_only(true))
+        .expect("an IPv6 loopback listener must open");
+
+    assert!(listener.local_addr().is_ipv6());
 }

@@ -69,7 +69,7 @@ const SPAWN_FLAGS: libc::c_short = (libc::POSIX_SPAWN_CLOEXEC_DEFAULT
 
 /// A program and its arguments, in the form the kernel takes
 #[derive(Debug, Clone)]
-struct Program {
+pub(crate) struct Program {
     /// The program to run
     ///
     /// `None` when it had a zero byte in it and could not be
@@ -84,7 +84,7 @@ struct Program {
 
 impl Program {
     /// Converts a program and its arguments once
-    fn new<S, A, I>(program: S, args: A) -> Self
+    pub(crate) fn new<S, A, I>(program: S, args: A) -> Self
     where
         S: AsRef<OsStr>,
         A: IntoIterator<Item = I>,
@@ -127,20 +127,20 @@ impl Program {
 /// Everything a child is configured with beyond the program
 /// itself
 #[derive(Debug, Clone, Default)]
-struct Setup {
+pub(crate) struct Setup {
     /// What to feed the child, or `None` for `/dev/null`
-    input: Option<Arc<[u8]>>,
+    pub(crate) input: Option<Arc<[u8]>>,
 
     /// Where it starts
-    dir: Dir,
+    pub(crate) dir: Dir,
 
     /// What it is given for an environment
-    env: Env,
+    pub(crate) env: Env,
 }
 
 /// Where a child starts
 #[derive(Debug, Clone, Default)]
-enum Dir {
+pub(crate) enum Dir {
     /// Wherever this process happens to be
     #[default]
     Inherited,
@@ -156,7 +156,7 @@ enum Dir {
 ///
 /// Entries are kept pre-joined as `NAME=VALUE`
 #[derive(Debug, Clone, Default)]
-enum Env {
+pub(crate) enum Env {
     /// This process's own, unchanged
     #[default]
     Inherited,
@@ -536,7 +536,7 @@ impl Task for OutputTask {
 ///
 /// `Drop` kills before it waits, so an error after the spawn
 /// kills the child
-struct Child {
+pub(crate) struct Child {
     /// The child, or `NO_CHILD` once it has been reaped
     pid: libc::pid_t,
 
@@ -548,7 +548,7 @@ struct Child {
 
 impl Child {
     /// Takes hold of a freshly spawned child
-    fn new(pid: libc::pid_t) -> Self {
+    pub(crate) fn new(pid: libc::pid_t) -> Self {
         Self { pid, queue: None }
     }
 
@@ -559,7 +559,7 @@ impl Child {
 
     /// Says the child has been waited for, so `Drop` never
     /// signals a pid the kernel has handed back out
-    fn reaped(&mut self) {
+    pub(crate) fn reaped(&mut self) {
         self.pid = NO_CHILD;
     }
 }
@@ -710,7 +710,7 @@ fn join(dir: &CStr, file: &CStr) -> Result<CString, RuntimeError> {
 /// ## Returns
 /// `Dir::Bad` for a directory with a zero byte in it or one
 /// that isn't absolute
-fn as_dir(path: impl AsRef<Path>) -> Dir {
+pub(crate) fn as_dir(path: impl AsRef<Path>) -> Dir {
     let path = path.as_ref();
 
     if !path.is_absolute() {
@@ -749,7 +749,7 @@ fn as_c_var(name: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Option<CString
 /// Converts a set of variables, or says one of them wouldn't
 ///
 /// `into` is which kind of environment they are becoming
-fn as_env<I, K, V>(vars: I, into: fn(Arc<[CString]>) -> Env) -> Env
+pub(crate) fn as_env<I, K, V>(vars: I, into: fn(Arc<[CString]>) -> Env) -> Env
 where
     I: IntoIterator<Item = (K, V)>,
     K: AsRef<OsStr>,
@@ -858,7 +858,7 @@ fn key(entry: &[u8]) -> &[u8] {
 ///
 /// ## Returns
 /// The read end and the write end, in that order
-fn pipe() -> Result<(Fd, Fd), RuntimeError> {
+pub(crate) fn pipe() -> Result<(Fd, Fd), RuntimeError> {
     let mut ends: [libc::c_int; 2] = [-1, -1];
 
     unsafe { libc::pipe(ends.as_mut_ptr()) }.check()?;
@@ -878,7 +878,7 @@ fn pipe() -> Result<(Fd, Fd), RuntimeError> {
 ///
 /// ## Returns
 /// The read end for the child, and the write end for here
-fn input_pipe() -> Result<(Fd, Fd), RuntimeError> {
+pub(crate) fn input_pipe() -> Result<(Fd, Fd), RuntimeError> {
     let (read, write) = pipe()?;
 
     unsafe { libc::fcntl(write.raw(), libc::F_SETFL, libc::O_NONBLOCK) }.check()?;
@@ -890,17 +890,17 @@ fn input_pipe() -> Result<(Fd, Fd), RuntimeError> {
 }
 
 /// What a child is handed for its three standard descriptors
-struct Stdio {
+pub(crate) struct Stdio {
     /// The read end of an input pipe, or `None` for `/dev/null`
-    input: Option<libc::c_int>,
+    pub(crate) input: Option<libc::c_int>,
 
     /// The write ends for the child's output and error, or
     /// `None` to leave them this process's own
-    capture: Option<(libc::c_int, libc::c_int)>,
+    pub(crate) capture: Option<(libc::c_int, libc::c_int)>,
 }
 
 /// Starts a child
-fn spawn_child(
+pub(crate) fn spawn_child(
     program: &Program,
     setup: &Setup,
     stdio: Stdio,
@@ -1413,7 +1413,7 @@ fn read_chunk(fd: libc::c_int, into: &mut Vec<u8>) -> Result<bool, RuntimeError>
 ///
 /// The watch goes on before the child is first asked, so an
 /// exit can't fall between the two
-fn wait_exit(child: &mut Child, queue: Option<i32>) -> Result<ExitStatus, RuntimeError> {
+pub(crate) fn wait_exit(child: &mut Child, queue: Option<i32>) -> Result<ExitStatus, RuntimeError> {
     let pid = child.pid;
 
     let Some(queue) = queue else {
@@ -1583,7 +1583,7 @@ fn reap(pid: libc::pid_t) -> Result<ExitStatus, RuntimeError> {
 ///
 /// `SIGKILL` to the group first, so a shell takes its children
 /// with it, then to the child itself
-fn kill_and_reap(pid: libc::pid_t) {
+pub(crate) fn kill_and_reap(pid: libc::pid_t) {
     unsafe { libc::kill(-pid, libc::SIGKILL) };
     unsafe { libc::kill(pid, libc::SIGKILL) };
 

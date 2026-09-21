@@ -8,8 +8,7 @@
 use crate::{
     constants::{
         IDLE_REAP, IDLE_REAP_OVER, LIFO_STREAK, MANAGER_TICK, MAX_WORKERS, NO_TASK, OVERLOAD_RATIO,
-        RESTART_LIMIT, RESTART_WINDOW, SLEEP_MULTIPLIER, STARVE_AGE, THREAD_RESERVE, TRIM_INTERVAL,
-        WORKER_MULTIPLIER,
+        RESTART_LIMIT, RESTART_WINDOW, STARVE_AGE, THREAD_RESERVE, TRIM_INTERVAL,
     },
     executor,
     modules::{
@@ -19,6 +18,7 @@ use crate::{
         sleep_thread::SleepThread,
         task_data::{QUEUED_LOCAL, deadline_epoch},
         thread_slot::PoolThread,
+        tuning,
         worker::Worker,
         worker_state::WorkerState,
         worker_stats::WorkerStats,
@@ -84,8 +84,8 @@ pub(crate) struct WorkerPool {
     /// Workers asleep on their own state word
     parked: AtomicU32,
 
-    /// Whether the pool is shut, from a shutdown until the next
-    /// `init`
+    /// Whether the pool is shut, which it is until the first
+    /// `init` and from a shutdown until the next one
     stopped: AtomicBool,
 
     /// Manager ticks since the table was last trimmed
@@ -153,7 +153,7 @@ impl WorkerPool {
             sleeps_parked: AtomicU32::new(0),
             highest: AtomicUsize::new(0),
             parked: AtomicU32::new(0),
-            stopped: AtomicBool::new(false),
+            stopped: AtomicBool::new(true),
             trim_ticks: AtomicU32::new(0),
             wake: AtomicUsize::new(0),
             sweep: AtomicUsize::new(0),
@@ -267,10 +267,18 @@ impl WorkerPool {
 
         let mut index = 0;
 
+        // Past a slot a racing start has claimed, which it may not have
+        // counted in the highest yet
+        let mut claimed = 0;
+
         // A slot given back below the highest one used, or the next one up.
         // Read again each pass, so a slot a racing start has just claimed
         // moves the reach on rather than ending the search
-        while index < (self.sleeps_highest.load(Ordering::Acquire) + 1).min(MAX_WORKERS) {
+        while index
+            < (self.sleeps_highest.load(Ordering::Acquire) + 1)
+                .max(claimed)
+                .min(MAX_WORKERS)
+        {
             let sleep = &self.sleeps[index];
 
             index += 1;
@@ -290,6 +298,7 @@ impl WorkerPool {
 
             if !sleep.slot().claim() {
                 self.sleep_left();
+                claimed = index + 1;
                 continue;
             }
 
@@ -664,10 +673,18 @@ impl WorkerPool {
 
         let mut index = 0;
 
+        // Past a slot a racing start has claimed, which it may not have
+        // counted in the highest yet
+        let mut claimed = 0;
+
         // A slot given back below the highest one used, or the next one up.
         // Read again each pass, so a slot a racing start has just claimed
         // moves the reach on rather than ending the search
-        while index < (self.highest.load(Ordering::Acquire) + 1).min(MAX_WORKERS) {
+        while index
+            < (self.highest.load(Ordering::Acquire) + 1)
+                .max(claimed)
+                .min(MAX_WORKERS)
+        {
             let worker = &self.workers[index];
 
             index += 1;
@@ -687,6 +704,7 @@ impl WorkerPool {
 
             if !worker.slot().claim() {
                 self.left();
+                claimed = index + 1;
                 continue;
             }
 
@@ -1459,7 +1477,7 @@ fn earned(ticks: &AtomicU32, overloaded: bool, over: usize) -> bool {
 /// queue is deep, and never past the ceiling
 #[inline(always)]
 pub(crate) fn sleep_target() -> usize {
-    (cores() * SLEEP_MULTIPLIER).min(ceiling())
+    (cores() * tuning::sleep_threads_per_core()).min(ceiling())
 }
 
 /// Workers the pool never goes below
@@ -1473,7 +1491,7 @@ pub(crate) fn floor() -> usize {
 /// Passed only on overload or real need, and never past the ceiling
 #[inline(always)]
 pub(crate) fn target() -> usize {
-    (cores() * WORKER_MULTIPLIER).min(ceiling())
+    (cores() * tuning::workers_per_core()).min(ceiling())
 }
 
 /// The most threads of either kind the pool will ever run

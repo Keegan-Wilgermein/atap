@@ -10,7 +10,7 @@ use crate::{
     RuntimeError,
     constants::{INLINE_PAYLOAD, SIGNAL_POLL},
     futures::{
-        net::step::{Clock, settle},
+        net::step::settle,
         signal::{
             dispatch::{self, Watcher},
             signal::{SignalKind, SignalReleasePolicy},
@@ -22,10 +22,7 @@ use crate::{
     },
     modules::{int_check::IntCheck, park},
 };
-use std::{
-    mem,
-    time::{Duration, Instant},
-};
+use std::{mem, time::Instant};
 
 // Anything larger costs a page mapping per task
 const _: () = assert!(mem::size_of::<Result<u32, RuntimeError>>() <= INLINE_PAYLOAD);
@@ -55,9 +52,6 @@ pub struct SignalTask {
     /// What happens to it once nothing watches it
     policy: SignalReleasePolicy,
 
-    /// The timeout
-    clock: Clock,
-
     /// The count this task last reported, and `None` before it has
     /// ever run
     ///
@@ -74,25 +68,9 @@ impl SignalTask {
         Self {
             kind,
             policy: SignalReleasePolicy::default(),
-            clock: Clock::default(),
             seen: None,
             watch: None,
         }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Counted from when the run starts. Running out with nothing
-    /// having arrived gives [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
     }
 
     /// Decides what happens to the signal once nothing is watching
@@ -136,18 +114,9 @@ impl SignalTask {
             return Ok(Step::Done(Ok(arrived.wrapping_sub(seen))));
         }
 
-        if self.clock.expired() {
-            return Err(RuntimeError::TimedOut);
-        }
-
         // A delivery landing before the watch goes on wakes nothing, so
         // the backstop bounds the wait
-        let backstop = Instant::now() + SIGNAL_POLL;
-
-        let deadline = match self.clock.deadline() {
-            Some(limit) => limit.min(backstop),
-            None => backstop,
-        };
+        let deadline = Instant::now() + SIGNAL_POLL;
 
         Ok(Step::Park(Park {
             ident: signo,
@@ -205,12 +174,6 @@ impl Task for SignalTask {
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
-    }
-
-    /// Only the clock starts afresh. What this task has already
-    /// counted, and its claim on the signal, carry across runs
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
     }
 
     fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {

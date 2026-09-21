@@ -9,8 +9,8 @@ use crate::{
     futures::{
         net::{
             datagram::{recv_datagram, send_datagram},
-            socket::{begin_connect, configure, finished_connecting, open},
-            step::{Clock, Progress, settle},
+            socket::{Options, begin_connect, configure, finished_connecting, open},
+            step::{Progress, settle, wait_on},
         },
         task::{
             Nothing, Task,
@@ -28,7 +28,6 @@ use std::{
     path::{Path, PathBuf},
     ptr,
     sync::Arc,
-    time::Duration,
 };
 
 // Anything larger costs a page mapping per task
@@ -70,9 +69,6 @@ pub struct UnixConnectTask {
     /// Where to connect
     path: PathBuf,
 
-    /// The timeout
-    clock: Clock,
-
     /// A socket part way through connecting
     trying: Progress<Option<Fd>>,
 }
@@ -82,24 +78,8 @@ impl UnixConnectTask {
     pub(crate) fn new(path: PathBuf) -> Self {
         Self {
             path,
-            clock: Clock::default(),
             trying: Progress::default(),
         }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// A Unix connect almost always finishes at once, so this is
-    /// rarely reached. Running out gives [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
     }
 
     /// Does as much of the connect as can be done without waiting
@@ -129,7 +109,7 @@ impl UnixConnectTask {
             return Ok(Step::Done(Ok(UnixConnection::new(fd, self.path.clone()))));
         }
 
-        let step = self.clock.wait(fd.raw(), libc::EVFILT_WRITE)?;
+        let step = wait_on(fd.raw(), libc::EVFILT_WRITE)?;
         self.trying.0 = Some(fd);
 
         Ok(step)
@@ -146,8 +126,8 @@ pub struct UnixListenTask {
     /// Where to listen
     path: PathBuf,
 
-    /// The timeout, which nothing here can use up
-    clock: Clock,
+    /// What the socket is set up with
+    options: Options,
 }
 
 impl UnixListenTask {
@@ -155,19 +135,19 @@ impl UnixListenTask {
     pub(crate) fn new(path: PathBuf) -> Self {
         Self {
             path,
-            clock: Clock::default(),
+            options: Options::default(),
         }
     }
 
-    /// Gives up once `timeout` has passed
+    /// How many connections may wait to be accepted
     ///
     /// ## Behaviour
-    /// Binding a path never waits, so this can't run out
+    /// The kernel's own limit caps it
     ///
     /// ## Returns
     /// The task. Calling it twice keeps the last
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
+    pub fn backlog(mut self, backlog: u32) -> Self {
+        self.options.backlog = Some(backlog);
         self
     }
 
@@ -175,7 +155,7 @@ impl UnixListenTask {
     fn listen(&self) -> Result<UnixListener, RuntimeError> {
         let (fd, bound) = bind_path(&self.path, libc::SOCK_STREAM)?;
 
-        unsafe { libc::listen(fd.raw(), libc::SOMAXCONN) }.check()?;
+        unsafe { libc::listen(fd.raw(), self.options.backlog()) }.check()?;
 
         Ok(UnixListener::new(fd, bound))
     }
@@ -190,33 +170,12 @@ impl UnixListenTask {
 pub struct UnixAcceptTask {
     /// Where the connections come from
     listener: UnixListener,
-
-    /// The timeout
-    clock: Clock,
 }
 
 impl UnixAcceptTask {
     /// Accepts from `listener`
     pub(crate) fn new(listener: UnixListener) -> Self {
-        Self {
-            listener,
-            clock: Clock::default(),
-        }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Running out with nobody having connected gives
-    /// [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
+        Self { listener }
     }
 
     /// Takes a connection if one is waiting
@@ -240,7 +199,7 @@ impl UnixAcceptTask {
                 Err(RuntimeError::CheckError(Some(libc::EINTR | libc::ECONNABORTED))) => {}
 
                 Err(RuntimeError::CheckError(Some(libc::EAGAIN))) => {
-                    return self.clock.wait(fd, libc::EVFILT_READ);
+                    return wait_on(fd, libc::EVFILT_READ);
                 }
 
                 Err(error) => return Err(error),
@@ -256,39 +215,56 @@ impl UnixAcceptTask {
 #[derive(Debug, Clone)]
 #[must_use = "a task does nothing until it is run or spawned"]
 pub struct UnixBindTask {
-    /// Where to bind
-    path: PathBuf,
-
-    /// The timeout, which nothing here can use up
-    clock: Clock,
+    /// Where to bind, or `None` for a socket with no path
+    path: Option<PathBuf>,
 }
 
 impl UnixBindTask {
     /// Binds at `path`
     pub(crate) fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            clock: Clock::default(),
-        }
+        Self { path: Some(path) }
     }
 
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Binding a path never waits, so this can't run out
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
+    /// Opens a socket bound nowhere
+    pub(crate) fn unbound() -> Self {
+        Self { path: None }
     }
 
     /// Binds
     fn bind(&self) -> Result<UnixDatagram, RuntimeError> {
-        let (fd, bound) = bind_path(&self.path, libc::SOCK_DGRAM)?;
+        let (fd, bound) = match &self.path {
+            Some(path) => bind_path(path, libc::SOCK_DGRAM)?,
+            None => (open(libc::AF_UNIX, libc::SOCK_DGRAM)?, Bound::unbound()),
+        };
 
         Ok(UnixDatagram::new(fd, bound))
+    }
+}
+
+/// Opens both ends of a connection, with nothing on disk
+///
+/// ## Returns
+/// The two connected ends
+#[derive(Debug, Clone)]
+#[must_use = "a task does nothing until it is run or spawned"]
+pub struct UnixPairTask;
+
+impl UnixPairTask {
+    fn pair(&self) -> Result<(UnixConnection, UnixConnection), RuntimeError> {
+        let mut ends = [0; 2];
+
+        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, ends.as_mut_ptr()) }
+            .check()?;
+
+        let (first, second) = (Fd::new(ends[0]), Fd::new(ends[1]));
+
+        configure(first.raw())?;
+        configure(second.raw())?;
+
+        Ok((
+            UnixConnection::new(first, PathBuf::new()),
+            UnixConnection::new(second, PathBuf::new()),
+        ))
     }
 }
 
@@ -307,32 +283,12 @@ pub struct UnixSendToTask {
 
     /// What to send
     data: Arc<[u8]>,
-
-    /// The timeout
-    clock: Clock,
 }
 
 impl UnixSendToTask {
     /// Sends `data` from `socket` to the socket at `path`
     pub(crate) fn new(socket: UnixDatagram, path: PathBuf, data: Arc<[u8]>) -> Self {
-        Self {
-            socket,
-            path,
-            data,
-            clock: Clock::default(),
-        }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// A Unix datagram send never waits, so this can't run out
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
+        Self { socket, path, data }
     }
 
     /// Sends
@@ -361,33 +317,12 @@ impl UnixSendToTask {
 pub struct UnixRecvFromTask {
     /// Where to receive
     socket: UnixDatagram,
-
-    /// The timeout
-    clock: Clock,
 }
 
 impl UnixRecvFromTask {
     /// Receives on `socket`
     pub(crate) fn new(socket: UnixDatagram) -> Self {
-        Self {
-            socket,
-            clock: Clock::default(),
-        }
-    }
-
-    /// Gives up once `timeout` has passed
-    ///
-    /// ## Behaviour
-    /// Running out with nothing having arrived gives
-    /// [`RuntimeError::TimedOut`]
-    ///
-    /// ## Returns
-    /// The task. Calling it twice keeps the last
-    ///
-    /// [`RuntimeError::TimedOut`]: crate::RuntimeError::TimedOut
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.clock.limit(timeout);
-        self
+        Self { socket }
     }
 
     /// Takes a datagram if one is waiting
@@ -396,9 +331,9 @@ impl UnixRecvFromTask {
     ) -> Result<Step<Result<(Vec<u8>, Option<PathBuf>), RuntimeError>>, RuntimeError> {
         let fd = self.socket.fd();
 
-        match recv_datagram(fd)? {
+        match recv_datagram(fd, false)? {
             Some((data, storage, len)) => Ok(Step::Done(Ok((data, from_raw(&storage, len))))),
-            None => self.clock.wait(fd, libc::EVFILT_READ),
+            None => wait_on(fd, libc::EVFILT_READ),
         }
     }
 }
@@ -420,7 +355,6 @@ impl Task for UnixConnectTask {
     }
 
     fn prepare(&mut self, _token: Token) {
-        self.clock.start();
         self.trying = Progress::default();
     }
 
@@ -437,10 +371,6 @@ impl Task for UnixListenTask {
     fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.listen()
     }
-
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-    }
 }
 
 impl Task for UnixAcceptTask {
@@ -452,12 +382,19 @@ impl Task for UnixAcceptTask {
         park::drive(self.clone(), reactor_id, task_id)
     }
 
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-    }
-
     fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {
         settle(self.advance())
+    }
+}
+
+impl sealed::Sealed for UnixPairTask {}
+
+impl Task for UnixPairTask {
+    type Output = Result<(UnixConnection, UnixConnection), RuntimeError>;
+    type Input = Nothing;
+
+    fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
+        self.pair()
     }
 }
 
@@ -469,10 +406,6 @@ impl Task for UnixBindTask {
     fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.bind()
     }
-
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-    }
 }
 
 impl Task for UnixSendToTask {
@@ -483,10 +416,6 @@ impl Task for UnixSendToTask {
     fn execute(&self, _token: Token, _reactor_id: i32, _task_id: usize) -> Self::Output {
         self.send()
     }
-
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
-    }
 }
 
 impl Task for UnixRecvFromTask {
@@ -496,10 +425,6 @@ impl Task for UnixRecvFromTask {
     /// Waits on this thread, for `Runtime::block`
     fn execute(&self, _token: Token, reactor_id: i32, task_id: usize) -> Self::Output {
         park::drive(self.clone(), reactor_id, task_id)
-    }
-
-    fn prepare(&mut self, _token: Token) {
-        self.clock.start();
     }
 
     fn step(&mut self, _token: Token, _reactor_id: i32, _task_id: usize) -> Step<Self::Output> {

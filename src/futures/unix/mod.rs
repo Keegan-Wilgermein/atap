@@ -8,7 +8,8 @@ pub mod unix_socket;
 pub mod unix_task;
 
 pub use unix::Unix;
-pub use unix_socket::{UnixConnection, UnixDatagram, UnixListener};
+pub use unix_socket::{Credentials, UnixConnection, UnixDatagram, UnixListener};
 pub use unix_task::{
-    UnixAcceptTask, UnixBindTask, UnixConnectTask, UnixListenTask, UnixRecvFromTask, UnixSendToTask,
+    UnixAcceptTask, UnixBindTask, UnixConnectTask, UnixListenTask, UnixPairTask, UnixRecvFromTask,
+    UnixSendToTask,
 };

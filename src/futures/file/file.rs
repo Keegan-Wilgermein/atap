@@ -2,7 +2,8 @@
 //! The constructors every file task is started from
 
 use crate::futures::file::{
-    file_task::{MetadataTask, PathTask, ReadDirTask, ReadTask, WriteTask},
+    file_task::{CopyTask, MetadataTask, PathBufTask, PathTask, ReadDirTask, ReadTask, WriteTask},
+    open_file::OpenTask,
     watch_task::WatchTask,
 };
 use std::{path::Path, sync::Arc};
@@ -23,9 +24,11 @@ use std::{path::Path, sync::Arc};
 /// parks the way a socket task does and holds no thread at all
 ///
 /// ## Cancelling
-/// A read or a write is cancellable before it opens the file
-/// and between chunks, not during one. Everything else here is
-/// a single syscall and can't be cancelled once it has started
+/// A read, a write or a copy is cancellable before it opens the
+/// file and between chunks, not during one. The tree walks,
+/// [`File::create_dir_all`] and [`File::remove_dir_all`], check
+/// between entries. Everything else here is a single syscall and
+/// can't be cancelled once it has started
 ///
 /// **A cancelled write does not undo itself.** `write`
 /// truncates the file when it opens it, and a cancel part way
@@ -163,9 +166,12 @@ impl File {
     /// Lists what is in a directory
     ///
     /// ## Returns
-    /// One path per entry, each joined onto the directory that
-    /// was asked for, in whatever order the filesystem gives
-    /// them. `.` and `..` are left out
+    /// One [`DirEntry`] per thing in it, with its path joined onto
+    /// the directory that was asked for and what kind of thing it
+    /// is, in whatever order the filesystem gives them. `.` and
+    /// `..` are left out
+    ///
+    /// [`DirEntry`]: crate::fs::DirEntry
     pub fn read_dir<P>(path: P) -> ReadDirTask
     where
         P: AsRef<Path>,
@@ -231,13 +237,14 @@ impl File {
     ///
     /// A directory works as readily as a file, and reports a
     /// write when an entry comes or goes. [`WatchTask::only`]
-    /// narrows what counts, and [`WatchTask::timeout`] gives up
+    /// narrows what counts
     ///
     /// ## Returns
     /// What changed. Several parts of a [`Change`] can be true at
     /// once, since one write can be both a write and a growth
     ///
-    /// A path that isn't there is an error rather than a wait
+    /// A path that isn't there is an error rather than a wait,
+    /// unless the watch is told to [`WatchTask::appear`]
     ///
     /// The watch counts from when the task first runs, the same
     /// as a signal does: a change that happened beforehand is not
@@ -254,7 +261,7 @@ impl File {
     /// here, so any number of paths can be watched at once
     ///
     /// [`WatchTask::only`]: crate::fs::WatchTask::only
-    /// [`WatchTask::timeout`]: crate::fs::WatchTask::timeout
+    /// [`WatchTask::appear`]: crate::fs::WatchTask::appear
     /// [`Change`]: crate::fs::Change
     /// [`Change::renamed`]: crate::fs::Change::renamed
     pub fn watch<P>(path: P) -> WatchTask
@@ -275,5 +282,155 @@ impl File {
         Q: AsRef<Path>,
     {
         PathTask::rename(from, to)
+    }
+
+    /// Copies a file to another path
+    ///
+    /// ## Behaviour
+    /// Clones the file where the volume allows, which takes no time
+    /// and no space until either copy changes. Otherwise copies the
+    /// bytes, and the permissions and extended attributes with them.
+    /// Replaces `to` if something is already there
+    ///
+    /// ## Returns
+    /// The size of the copy in bytes
+    ///
+    /// #### Note
+    /// A directory can't be copied, and gives `EISDIR`. A link is
+    /// followed, so its target is what gets copied
+    pub fn copy<P, Q>(from: P, to: Q) -> CopyTask
+    where
+        P: AsRef<Path>,
+        Q: AsRef<Path>,
+    {
+        CopyTask::new(from, to)
+    }
+
+    /// Makes a symbolic link at `link` that points at `target`
+    ///
+    /// ## Behaviour
+    /// `target` is stored as written, and doesn't have to exist.
+    /// A relative one is read from the link's own directory
+    pub fn symlink<P, Q>(target: P, link: Q) -> PathTask
+    where
+        P: AsRef<Path>,
+        Q: AsRef<Path>,
+    {
+        PathTask::symlink(target, link)
+    }
+
+    /// Gives an existing file a second name
+    ///
+    /// ## Behaviour
+    /// Both names are the same file afterwards. `new` must not
+    /// exist yet, and both have to be on the same filesystem
+    pub fn hard_link<P, Q>(existing: P, new: Q) -> PathTask
+    where
+        P: AsRef<Path>,
+        Q: AsRef<Path>,
+    {
+        PathTask::hard_link(existing, new)
+    }
+
+    /// Reads where a symbolic link points
+    ///
+    /// ## Returns
+    /// The target as it was stored, which may be relative. A path
+    /// that isn't a link gives `EINVAL`
+    pub fn read_link<P>(path: P) -> PathBufTask
+    where
+        P: AsRef<Path>,
+    {
+        PathBufTask::read_link(path)
+    }
+
+    /// Resolves a path to the one it really names
+    ///
+    /// ## Returns
+    /// An absolute path with every link, `.` and `..` resolved.
+    /// The path has to exist
+    pub fn canonicalize<P>(path: P) -> PathBufTask
+    where
+        P: AsRef<Path>,
+    {
+        PathBufTask::canonical(path)
+    }
+
+    /// Sets a path's permission bits
+    ///
+    /// ## Behaviour
+    /// `mode` is the usual octal form, like `0o644`. Anything
+    /// above `0o7777` gives [`RuntimeError::BadArgument`]. A link is
+    /// followed
+    ///
+    /// [`RuntimeError::BadArgument`]: crate::RuntimeError::BadArgument
+    pub fn set_permissions<P>(path: P, mode: u32) -> PathTask
+    where
+        P: AsRef<Path>,
+    {
+        PathTask::set_permissions(path, mode)
+    }
+
+    /// Makes a file exactly `len` bytes long
+    ///
+    /// ## Behaviour
+    /// Cuts off whatever is past `len`, or adds zeros up to it
+    pub fn set_len<P>(path: P, len: u64) -> PathTask
+    where
+        P: AsRef<Path>,
+    {
+        PathTask::set_len(path, len)
+    }
+
+    /// Creates a directory and every missing one above it
+    ///
+    /// ## Behaviour
+    /// A directory already there is fine. Something else in the
+    /// way gives `ENOTDIR`
+    pub fn create_dir_all<P>(path: P) -> PathTask
+    where
+        P: AsRef<Path>,
+    {
+        PathTask::create_dir_all(path)
+    }
+
+    /// Removes a directory and everything in it
+    ///
+    /// ## Behaviour
+    /// A symbolic link inside is removed, never followed, so
+    /// nothing outside the directory is touched. A path that is
+    /// itself a file or a link is removed like [`File::remove`]
+    ///
+    /// #### Note
+    /// A cancel part way leaves whatever wasn't removed yet
+    pub fn remove_dir_all<P>(path: P) -> PathTask
+    where
+        P: AsRef<Path>,
+    {
+        PathTask::remove_dir_all(path)
+    }
+
+    /// Opens a file and keeps it open
+    ///
+    /// ## Behaviour
+    /// Read only unless told otherwise:
+    ///
+    /// ```no_run
+    /// # use atap::fs::File;
+    /// let task = File::open("data.bin").read(true).write(true).create(true);
+    /// ```
+    ///
+    /// ## Returns
+    /// An [`OpenFile`], whose methods work on the one descriptor.
+    /// A mix of settings that means nothing, like `create` without
+    /// `write`, gives [`RuntimeError::BadArgument`]
+    ///
+    /// [`OpenFile`]: crate::fs::OpenFile
+    /// [`RuntimeError::BadArgument`]: crate::RuntimeError::BadArgument
+    pub fn open<P>(path: P) -> OpenTask
+    where
+        P: AsRef<Path>,
+    {
+        OpenTask::new(path)
     }
 }

@@ -114,3 +114,15 @@ fn threads() -> u64 {
         false => 0,
     }
 }
+
+/// The memory the process is charged for right now, in bytes
+///
+/// One syscall, for a caller reading it over and over
+pub fn footprint() -> u64 {
+    let mut info: RusageInfoV4 = unsafe { mem::zeroed() };
+
+    match unsafe { proc_pid_rusage(libc::getpid(), RUSAGE_INFO_V4, &mut info) } == 0 {
+        true => info.phys_footprint,
+        false => 0,
+    }
+}

@@ -8,4 +8,4 @@ pub mod udp_task;
 
 pub use udp::Udp;
 pub use udp_socket::UdpSocket;
-pub use udp_task::{BindTask, RecvFromTask, SendToTask};
+pub use udp_task::{BindTask, RecvFromTask, SendToTask, UdpConnectTask, UdpRecvTask, UdpSendTask};

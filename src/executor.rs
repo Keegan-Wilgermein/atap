@@ -8,7 +8,8 @@ use crate::{
     constants::{
         DEAD_KQUEUE_ID, MANAGER_TICK, MANAGER_TICK_IDENT, MAX_TASK_ID, NO_SELECT, NO_TASK,
         PARK_TIMER, RESTART_BACKOFF, RESTART_LIMIT, RESTART_WINDOW, SCHEDULE_IDENT_BASE,
-        SELECT_IDENT, SELECT_POLL, SHUTDOWN_POLL, WAKE_IDENT,
+        SELECT_IDENT, SELECT_POLL, SHUTDOWN_POLL, TIMEOUT_IDENT_BASE, UNSTARTED_TASK_ID,
+        WAKE_IDENT,
     },
     futures::task::{Task, sealed::Park},
     modules::{
@@ -37,6 +38,7 @@ use crate::{
         task_setup::TaskSetup,
         task_state::TaskState,
         task_table::TaskTable,
+        tuning::{self, Tuning},
         worker_pool::POOL,
     },
 };
@@ -263,15 +265,16 @@ fn injected_fault() -> bool {
 pub(crate) struct Executor;
 
 impl Executor {
-    /// Starts the manager and opens the pool
+    /// Starts the manager and opens the pool with these sizes
     ///
     /// Used by the first `Runtime::init` and by every one after a
     /// shutdown
     ///
     /// ## Returns
-    /// `AlreadyInit` when the runtime is already running. A
-    /// shutdown or a start still in progress is waited out first
-    pub(crate) fn init() -> Result<(), RuntimeError> {
+    /// `AlreadyInit` when the runtime is already running, with the
+    /// sizes left as they are. A shutdown or a start still in
+    /// progress is waited out first
+    pub(crate) fn init(tuning: Tuning) -> Result<(), RuntimeError> {
         loop {
             match LIFECYCLE.compare_exchange(STOPPED, STARTING, Ordering::SeqCst, Ordering::SeqCst)
             {
@@ -290,6 +293,8 @@ impl Executor {
         };
 
         EXECUTOR_KQUEUE_ID.store(id, Ordering::SeqCst);
+
+        tuning::apply(tuning);
 
         // Started before any deadline could be stored against it
         let _ = deadline_epoch();
@@ -371,12 +376,17 @@ impl Executor {
     /// Why the give was refused, if it was. A refused value is dropped
     pub(crate) fn give<T>(id: usize, mailbox: &Mailbox<T>, value: T) -> Result<(), RuntimeError> {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::NoSuchTask);
+            return Err(missing(id));
         };
 
         let gate = mailbox.gate();
 
-        if gate.finished() || matches!(data.state(), TaskState::Cancelled | TaskState::Failed) {
+        if gate.finished()
+            || matches!(
+                data.state(),
+                TaskState::Cancelled | TaskState::TimedOut | TaskState::Failed
+            )
+        {
             return Err(closed(data));
         }
 
@@ -495,7 +505,7 @@ impl Executor {
 
         match state {
             // Over, whatever the kind
-            TaskState::Cancelled | TaskState::Failed => true,
+            TaskState::Cancelled | TaskState::TimedOut | TaskState::Failed => true,
 
             // Over only if it isn't going round again
             _ => state.terminal() && !data.kind().repeats() && !data.open_for_gives(),
@@ -525,7 +535,7 @@ impl Executor {
         deadline: Option<Instant>,
     ) -> Result<TaskState, RuntimeError> {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::NoSuchTask);
+            return Err(missing(id));
         };
 
         let mut patience = Patience::new();
@@ -610,7 +620,7 @@ impl Executor {
         T: Clone,
     {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::NoSuchTask);
+            return Err(missing(id));
         };
 
         loop {
@@ -650,7 +660,7 @@ impl Executor {
         T: Clone,
     {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::NoSuchTask);
+            return Err(missing(id));
         };
 
         if !data.enter_read() {
@@ -671,7 +681,7 @@ impl Executor {
     /// task turns this away by itself
     pub(crate) fn poll_take<T>(id: usize) -> Result<T, RuntimeError> {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::NoSuchTask);
+            return Err(missing(id));
         };
 
         if !data.claim_result() {
@@ -701,7 +711,7 @@ impl Executor {
         deadline: Option<Instant>,
     ) -> Result<T, RuntimeError> {
         let Some(data) = slot(id) else {
-            return Err(RuntimeError::NoSuchTask);
+            return Err(missing(id));
         };
 
         loop {
@@ -741,44 +751,55 @@ impl Executor {
     /// Never touches an output that has already landed, since a
     /// listener may be reading it
     pub(crate) fn cancel(id: usize) {
-        let Some(data) = slot(id) else {
-            return;
-        };
+        if let Some(data) = slot(id) {
+            stop(id, data, TaskState::Cancelled);
+        }
+    }
+}
 
-        loop {
-            let state = data.state();
+/// Ends a task early as `to`, from wherever it is
+///
+/// A task already over, or a one shot already taken, is left alone
+fn stop(id: usize, data: &TaskData, to: TaskState) {
+    loop {
+        let state = data.state();
 
-            // Re-read each time round, since a bounded series can finish
-            // meanwhile and change its kind
-            let repeats = data.kind().repeats();
+        // Re-read each time round, since a bounded series can finish
+        // meanwhile and change its kind
+        let repeats = data.kind().repeats();
 
-            match state {
-                // Over already, one way or another
-                TaskState::Cancelled | TaskState::Failed | TaskState::Free => return,
-
-                // A one shot that has been taken is finished. A repeat in the
-                // same state is only between runs
-                TaskState::Taken if !repeats => return,
-
-                _ => {}
-            }
-
-            if data.try_state(state, TaskState::Cancelled) {
-                wake(data);
-                interrupt(data, id);
-
-                // A parked task has no thread to notice, so it comes
-                // down here rather than waiting on its socket
-                unpark(id, data);
-
-                // Nor does a task between gives, which is let go here
-                if data.takes_input() {
-                    let_go_waiting(id, data);
-                }
-
+        match state {
+            // Over already, one way or another
+            TaskState::Cancelled | TaskState::TimedOut | TaskState::Failed | TaskState::Free => {
                 return;
             }
+
+            // A one shot that has been taken is finished. A repeat in the
+            // same state is only between runs
+            TaskState::Taken if !repeats => return,
+
+            _ => {}
         }
+
+        if data.try_state(state, to) {
+            stopped(id, data);
+            return;
+        }
+    }
+}
+
+/// Brings a task that has just been stopped out of wherever it waits
+fn stopped(id: usize, data: &TaskData) {
+    wake(data);
+    interrupt(data, id);
+
+    // A parked task has no thread to notice, so it comes down here
+    // rather than waiting on its socket
+    unpark(id, data);
+
+    // Nor does a task between gives, which is let go here
+    if data.takes_input() {
+        let_go_waiting(id, data);
     }
 }
 
@@ -792,6 +813,12 @@ where
 {
     let boxed: Box<dyn SeriesTask> = Box::new(task);
     let prototype = Box::into_raw(Box::new(boxed)).cast::<c_void>();
+
+    if !Runtime::initialised() {
+        drop(unsafe { Box::from_raw(prototype.cast::<Box<dyn SeriesTask>>()) });
+
+        return TaskHandle::new(UNSTARTED_TASK_ID);
+    }
 
     let Some(id) = DATA.alloc() else {
         return abandoned(prototype);
@@ -821,7 +848,7 @@ where
     // exists yet
     let waits = gate.is_some();
 
-    entry.attach_extras(Box::new(Extras::new(gate)));
+    entry.attach_extras(Box::new(Extras::new(gate).timed(setup.timeout, NO_TASK)));
     entry.set_prototype(prototype);
 
     let handle = TaskHandle::new(id);
@@ -870,6 +897,10 @@ where
     let boxed: Box<dyn ErasedTask> = Box::new(task);
     let erased = Box::into_raw(Box::new(boxed)).cast::<c_void>();
 
+    if !Runtime::initialised() {
+        return (unstarted(erased), false);
+    }
+
     let Some(id) = DATA.alloc() else {
         return (failed(erased), false);
     };
@@ -896,12 +927,18 @@ where
 
     let handle = TaskHandle::new(id);
 
-    // A task that waits sits in its slot until a give starts it. Still
-    // alone with the slot, since no handle has been handed out
-    if let Some(gate) = gate {
-        entry.attach_extras(Box::new(Extras::new(Some(gate))));
+    // Still alone with the slot, since no handle has been handed out
+    if gate.is_some() || setup.timeout.is_some() {
+        let waits = gate.is_some();
 
-        return (handle, true);
+        entry.attach_extras(Box::new(
+            Extras::new(gate).timed(setup.timeout, setup.parent),
+        ));
+
+        // A task that waits sits in its slot until a give starts it
+        if waits {
+            return (handle, true);
+        }
     }
 
     // Armed instead of queued when there is a start delay
@@ -929,11 +966,17 @@ where
 ///
 /// ## Returns
 /// Whether a run is on its way
-pub(crate) fn spawn_run<F>(task: F, priority: u8) -> bool
+pub(crate) fn spawn_run<F>(task: F, priority: u8, timeout: Option<Duration>, series: usize) -> bool
 where
     F: Task,
 {
-    create(task, TaskSetup::once(priority), None).1
+    let setup = TaskSetup {
+        timeout,
+        parent: series,
+        ..TaskSetup::once(priority)
+    };
+
+    create(task, setup, None).1
 }
 
 /// Leaves an output in a series slot for its listeners
@@ -1081,6 +1124,10 @@ pub(crate) fn run(id: usize) {
     // it re-arms is a gap, not a start delay
     data.clear_start_delay();
 
+    if !resumed {
+        time_run(id, data);
+    }
+
     let reactor = Runtime::reactor_id();
     let payload = data.payload();
 
@@ -1114,6 +1161,8 @@ pub(crate) fn run(id: usize) {
 
         Err(_) => false,
     };
+
+    untime_run(id, data);
 
     if !finished {
         // A panic means the output was never written, so there is
@@ -1214,6 +1263,112 @@ pub(crate) fn run(id: usize) {
 
     close_extras(data);
     release(id);
+}
+
+/// Puts a timer on the manager's queue for a run with a timeout
+fn time_run(id: usize, data: &TaskData) {
+    let Some(timeout) = data.extras().and_then(Extras::timeout) else {
+        return;
+    };
+
+    let word = data.time_run(timeout);
+
+    // With no manager to fire it, the run goes unlimited
+    let _ = arm_timeout(id, timeout, word);
+}
+
+/// Takes a finished run's timer back off the manager's queue
+#[inline(always)]
+fn untime_run(id: usize, data: &TaskData) {
+    if !data.untime_run() {
+        return;
+    }
+
+    let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
+
+    if manager == DEAD_KQUEUE_ID {
+        return;
+    }
+
+    let _ = unsafe {
+        KEvent::register(
+            manager,
+            id + TIMEOUT_IDENT_BASE,
+            0,
+            ptr::null_mut(),
+            EventDesc::new_timer_delete(),
+        )
+    }
+    .check();
+}
+
+/// Arms the timer that ends a run at its deadline
+///
+/// `word` is the deadline's word, carried so a timer left from an
+/// earlier run does nothing
+fn arm_timeout(id: usize, left: Duration, word: u64) -> bool {
+    let manager = EXECUTOR_KQUEUE_ID.load(Ordering::Relaxed);
+
+    if manager == DEAD_KQUEUE_ID {
+        return false;
+    }
+
+    // A timer of zero is not one the kernel fires
+    let nanos = left.as_nanos().clamp(1, libc::intptr_t::MAX as u128);
+
+    unsafe {
+        KEvent::register(
+            manager,
+            id + TIMEOUT_IDENT_BASE,
+            nanos as libc::intptr_t,
+            word as *mut c_void,
+            EventDesc::new_timer(),
+        )
+    }
+    .check()
+    .is_ok()
+}
+
+/// Ends a run that went past its timeout, and the series it
+/// belongs to if it is one run of a schedule
+fn timed_out(id: usize, word: u64) {
+    let Some(data) = slot(id) else {
+        return;
+    };
+
+    // Left from a run that has already ended
+    if word == 0 || data.run_deadline() != word {
+        return;
+    }
+
+    // A parked run is taken down before anyone hears it timed out, so
+    // whatever it gives back on the way is there for the next reader
+    if let Some(parked) = data.claim_parked() {
+        unwatch_park(id, parked, Fired::Neither);
+
+        let raw = data.claim();
+
+        if !raw.is_null() {
+            drop(unsafe { Box::from_raw(raw.cast::<Box<dyn ErasedTask>>()) });
+        }
+
+        if data.try_state(TaskState::Running, TaskState::TimedOut) {
+            close_extras(data);
+            wake(data);
+        }
+
+        release(id);
+    } else if data.try_state(TaskState::Running, TaskState::TimedOut) {
+        stopped(id, data);
+    } else {
+        return;
+    }
+
+    let parent = data.extras().map_or(NO_TASK, Extras::parent);
+
+    if let Some(series) = slot(parent) {
+        stop(parent, series, TaskState::TimedOut);
+    }
 }
 
 /// Hands a task to whichever half of the pool should have it
@@ -1637,7 +1792,10 @@ fn end_schedule(id: usize, data: &TaskData) {
 /// `Taken` are not
 #[inline(always)]
 fn over(state: TaskState) -> bool {
-    matches!(state, TaskState::Cancelled | TaskState::Failed)
+    matches!(
+        state,
+        TaskState::Cancelled | TaskState::TimedOut | TaskState::Failed
+    )
 }
 
 /// Spawns one run of the series in a slot
@@ -1656,7 +1814,9 @@ fn launch(id: usize, data: &TaskData) -> bool {
     // can see it, ever touches the prototype
     let task = unsafe { &**prototype.cast::<Box<dyn SeriesTask>>() };
 
-    task.launch(id, data.priority_class())
+    let timeout = data.extras().and_then(Extras::timeout);
+
+    task.launch(id, data.priority_class(), timeout)
 }
 
 /// Puts a series on the clock with a repeating timer, which
@@ -1723,7 +1883,7 @@ pub(crate) fn waiting_on(queue: i32) -> bool {
         return true;
     };
 
-    if data.state() == TaskState::Cancelled {
+    if data.state().stopped() {
         return false;
     }
 
@@ -1731,7 +1891,7 @@ pub(crate) fn waiting_on(queue: i32) -> bool {
 
     // Checked again, since a cancel between the check above and
     // the record would have found nothing to interrupt
-    if data.state() == TaskState::Cancelled {
+    if data.state().stopped() {
         data.clear_waiting();
         return false;
     }
@@ -1759,7 +1919,7 @@ pub(crate) fn stopped_waiting() -> bool {
 
     data.clear_waiting();
 
-    data.state() != TaskState::Cancelled
+    !data.state().stopped()
 }
 
 /// Whether the task on this thread has been cancelled
@@ -1777,7 +1937,7 @@ pub(crate) fn cancelled() -> bool {
         return false;
     };
 
-    data.state() == TaskState::Cancelled
+    data.state().stopped()
 }
 
 /// Takes a cancelled task back out of the kernel
@@ -1855,6 +2015,7 @@ fn lost(data: &TaskData, state: TaskState) -> RuntimeError {
             }
         }
         TaskState::Cancelled => RuntimeError::Cancelled,
+        TaskState::TimedOut => RuntimeError::TimedOut,
         TaskState::Failed => RuntimeError::TaskFailed,
 
         // A race lost to a repeat's next run. Trying again finds the
@@ -1977,6 +2138,23 @@ fn failed<T>(erased: *mut c_void) -> TaskHandle<T> {
     TaskHandle::new(MAX_TASK_ID)
 }
 
+/// Why a handle with no slot behind it has nothing to hand out
+#[inline(always)]
+fn missing(id: usize) -> RuntimeError {
+    match id == UNSTARTED_TASK_ID {
+        true => RuntimeError::NotInitialised,
+        false => RuntimeError::NoSuchTask,
+    }
+}
+
+/// A handle for a task there was no runtime to take, which reads
+/// `NotInitialised`
+fn unstarted<T>(erased: *mut c_void) -> TaskHandle<T> {
+    drop(unsafe { Box::from_raw(erased.cast::<Box<dyn ErasedTask>>()) });
+
+    TaskHandle::new(UNSTARTED_TASK_ID)
+}
+
 /// A handle for a series that never made it into the table,
 /// which reads `NoSuchTask`
 fn abandoned<T>(prototype: *mut c_void) -> TaskHandle<T> {
@@ -2031,6 +2209,7 @@ fn waiting_parts<T>(setup: TaskSetup) -> (Arc<Gate>, Arc<Mailbox<T>>, TaskSetup)
 fn closed(data: &TaskData) -> RuntimeError {
     match data.state() {
         TaskState::Cancelled => RuntimeError::Cancelled,
+        TaskState::TimedOut => RuntimeError::TimedOut,
         TaskState::Failed | TaskState::Free => RuntimeError::TaskFailed,
         _ => RuntimeError::Finished,
     }
@@ -2235,7 +2414,7 @@ pub(crate) fn write_off(id: usize) {
 
         if matches!(
             state,
-            TaskState::Cancelled | TaskState::Failed | TaskState::Free
+            TaskState::Cancelled | TaskState::TimedOut | TaskState::Failed | TaskState::Free
         ) {
             break;
         }
@@ -2362,6 +2541,11 @@ fn executor_loop(id: i32) {
                 // The tick carries nothing
                 libc::EVFILT_TIMER if event.ident == MANAGER_TICK_IDENT => {}
 
+                // A run that went past its timeout
+                libc::EVFILT_TIMER if event.ident >= TIMEOUT_IDENT_BASE => {
+                    timed_out(event.ident - TIMEOUT_IDENT_BASE, event.udata as u64);
+                }
+
                 // A parked task's deadline
                 libc::EVFILT_TIMER if event.udata as usize == PARK_TIMER => {
                     if let Some(id) = event.ident.checked_sub(SCHEDULE_IDENT_BASE) {
@@ -2435,6 +2619,12 @@ fn recover_waits() {
         let Some(data) = slot(task) else {
             continue;
         };
+
+        // A run's timeout went with the old queue too
+        if let Some(deadline) = data.run_deadline_at() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let _ = arm_timeout(task, left, data.run_deadline());
+        }
 
         // A park's wake can be lost the same way. Queued again, the task
         // looks at its socket and parks again if it still has to

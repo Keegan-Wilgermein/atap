@@ -7,7 +7,7 @@ use atap::{
     Runtime,
     tcp::{Connection, Tcp},
 };
-use common::report;
+use common::{report, within};
 use std::{
     thread,
     time::{Duration, Instant},
@@ -84,7 +84,7 @@ fn cancelling_parked_receives_frees_them() {
     // Their connections went with them, so the other ends see
     // them close
     for client in &clients {
-        let got = Runtime::block(client.recv(16).timeout(PATIENCE));
+        let got = within(client.recv(16), PATIENCE);
 
         assert_eq!(
             got,

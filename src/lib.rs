@@ -53,6 +53,7 @@ mod modules {
     pub mod task_state;
     pub(crate) mod task_table;
     pub(crate) mod thread_slot;
+    pub(crate) mod tuning;
     pub(crate) mod waiter;
     pub(crate) mod wake_target;
     pub(crate) mod worker;
@@ -62,6 +63,7 @@ mod modules {
 }
 
 mod futures {
+    pub mod channel;
     pub mod compute;
     pub mod file;
     pub(crate) mod kernel_wait;
@@ -93,6 +95,7 @@ pub use runtime::Runtime;
 
 /// Everything most programs need
 pub mod prelude {
+    pub use crate::channel::Channel;
     pub use crate::compute::Compute;
     pub use crate::fs::File;
     pub use crate::process::Process;
@@ -111,13 +114,21 @@ pub mod prelude {
 /// typed by
 pub mod builder {
     pub use crate::modules::builder::{
-        NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, Set, TaskBuilder,
-        Unset, WaitFor, Waits, Wiring,
+        NoWait, Once, Open, Rate, ReceiveAll, ReceiveAny, Repeat, Repeatable, RuntimeBuilder, Set,
+        TaskBuilder, Unset, WaitFor, Waits, Wiring,
     };
     pub use crate::modules::handle_kind::{HandleKind, Plain, Waiting};
     pub use crate::modules::handle_set::HandleSet;
     pub use crate::modules::input::{Ignore, Receives, Standalone, Use};
     pub use crate::modules::merge_set::MergeSet;
+}
+
+/// Handing values between threads and tasks
+pub mod channel {
+    pub use crate::futures::channel::{
+        Bounded, BoundedSender, Channel, ChannelRecvTask, ChannelSendTask, Receiver, Sender,
+        Unbounded,
+    };
 }
 
 /// Tasks that run the program's own closures
@@ -128,20 +139,24 @@ pub mod compute {
 /// Tasks that read, write and watch the filesystem
 pub mod fs {
     pub use crate::futures::file::{
-        Change, File, FileKind, Metadata, MetadataTask, PathTask, ReadDirTask, ReadTask, WatchTask,
-        WriteTask,
+        Change, CopyTask, DirEntry, File, FileKind, FileMetadataTask, FileOpTask, FileReadTask,
+        FileWriteTask, LockKind, Metadata, MetadataTask, OpenFile, OpenTask, PathBufTask, PathTask,
+        ReadDirTask, ReadTask, WatchTask, WriteTask,
     };
 }
 
 /// What every socket family shares: addresses, and the send and
 /// receive tasks a byte stream hands out
 pub mod net {
-    pub use crate::futures::net::{NetAddress, RecvTask, SendTask};
+    pub use crate::futures::net::{FinishTask, NetAddress, RecvTask, SendTask};
 }
 
 /// Tasks that run other programs
 pub mod process {
-    pub use crate::futures::process::{ExitStatus, OutputTask, Process, ProcessOutput, StatusTask};
+    pub use crate::futures::process::{
+        ChildOutput, ChildSignalTask, ChildStdin, ChildWaitTask, ExitStatus, OutputTask, Process,
+        ProcessOutput, RunningChild, SpawnTask, StatusTask,
+    };
 }
 
 /// Tasks that wait for signals and send them
@@ -176,14 +191,17 @@ pub mod tls {
 
 /// Tasks that send and receive datagrams over UDP
 pub mod udp {
-    pub use crate::futures::udp::{BindTask, RecvFromTask, SendToTask, Udp, UdpSocket};
+    pub use crate::futures::udp::{
+        BindTask, RecvFromTask, SendToTask, Udp, UdpConnectTask, UdpRecvTask, UdpSendTask,
+        UdpSocket,
+    };
 }
 
 /// Tasks that talk to other programs on this machine over Unix
 /// sockets
 pub mod unix {
     pub use crate::futures::unix::{
-        Unix, UnixAcceptTask, UnixBindTask, UnixConnectTask, UnixConnection, UnixDatagram,
-        UnixListenTask, UnixListener, UnixRecvFromTask, UnixSendToTask,
+        Credentials, Unix, UnixAcceptTask, UnixBindTask, UnixConnectTask, UnixConnection,
+        UnixDatagram, UnixListenTask, UnixListener, UnixPairTask, UnixRecvFromTask, UnixSendToTask,
     };
 }

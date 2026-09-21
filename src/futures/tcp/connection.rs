@@ -3,16 +3,18 @@
 //! tasks each of them starts
 
 use crate::{
+    RuntimeError,
     futures::{
         net::{
             exchange::Sends,
-            stream::{Pipe, RecvTask, SendTask, Source},
+            socket::{get_option, set_keepalive, set_option},
+            stream::{FinishTask, Pipe, RecvTask, SendTask, Source},
         },
         tcp::tcp_task::AcceptTask,
     },
     modules::fd::Fd,
 };
-use std::{fmt, net::SocketAddr, sync::Arc};
+use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
 
 /// What every copy of one connection shares
 struct Stream {
@@ -176,6 +178,38 @@ impl Connection {
     #[inline(always)]
     pub fn peer_addr(&self) -> SocketAddr {
         self.stream.peer
+    }
+
+    /// Sends small writes at once rather than waiting to batch
+    /// them, or goes back to batching
+    pub fn set_nodelay(&self, nodelay: bool) -> Result<(), RuntimeError> {
+        set_option(
+            self.pipe().fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_NODELAY,
+            nodelay as libc::c_int,
+        )
+    }
+
+    /// Whether small writes go at once
+    pub fn nodelay(&self) -> Result<bool, RuntimeError> {
+        Ok(get_option(self.pipe().fd(), libc::IPPROTO_TCP, libc::TCP_NODELAY)? != 0)
+    }
+
+    /// Probes the connection after `idle` without traffic, or stops
+    /// probing with `None`
+    pub fn set_keepalive(&self, idle: Option<Duration>) -> Result<(), RuntimeError> {
+        set_keepalive(self.pipe().fd(), idle)
+    }
+
+    /// Tells the other side this one will send no more
+    ///
+    /// ## Behaviour
+    /// Ends the sending half of the connection. This side can
+    /// still receive, and the other side's reads end once it has
+    /// everything
+    pub fn finish(&self) -> FinishTask {
+        FinishTask::new(self.source())
     }
 
     /// Lets go of this handle on the connection
